@@ -1,17 +1,14 @@
-import { writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
 
+import { PCM_RECORDER_WORKLET_NAME } from './pcm-recorder-worklet-shared';
 import {
   downsampleBuffer,
   encodePcm16WaveFile,
   float32ToInt16Pcm,
   mergeSampleChunks,
-  normalizeAudioBufferToMono,
   TARGET_WAV_CHANNEL_COUNT,
   TARGET_WAV_SAMPLE_RATE,
 } from './wav-encoder';
-
-const DEFAULT_BUFFER_SIZE = 4_096;
 
 type RecorderLogger = (message: string, error?: unknown) => void;
 
@@ -22,8 +19,8 @@ export interface RecordedAudioFile {
 }
 
 interface MicrophoneRecorderOptions {
-  bufferSize?: number;
   logger?: RecorderLogger;
+  resolveWorkletModulePath: () => Promise<string>;
   targetSampleRate?: number;
 }
 
@@ -31,12 +28,12 @@ export class MicrophoneRecorder {
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
   private muteNode: GainNode | null = null;
-  private processorNode: ScriptProcessorNode | null = null;
+  private recorderNode: AudioWorkletNode | null = null;
   private sampleChunks: Float32Array[] = [];
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private sourceSampleRate = 0;
 
-  constructor(private readonly options: MicrophoneRecorderOptions = {}) {}
+  constructor(private readonly options: MicrophoneRecorderOptions) {}
 
   isRecording(): boolean {
     return this.mediaStream !== null;
@@ -68,30 +65,41 @@ export class MicrophoneRecorder {
     try {
       const AudioContextConstructor = getAudioContextConstructor();
       audioContext = new AudioContextConstructor();
+      await installRecorderWorklet(
+        audioContext,
+        await this.options.resolveWorkletModulePath(),
+        this.options.logger,
+      );
       await audioContext.resume();
 
       const sourceNode = audioContext.createMediaStreamSource(mediaStream);
-      const processorNode = audioContext.createScriptProcessor(
-        this.options.bufferSize ?? DEFAULT_BUFFER_SIZE,
-        1,
-        1,
-      );
+      const recorderNode = new AudioWorkletNode(audioContext, PCM_RECORDER_WORKLET_NAME, {
+        channelCount: TARGET_WAV_CHANNEL_COUNT,
+        channelCountMode: 'explicit',
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [TARGET_WAV_CHANNEL_COUNT],
+      });
       const muteNode = audioContext.createGain();
       muteNode.gain.value = 0;
 
       this.sampleChunks = [];
-      processorNode.onaudioprocess = (event) => {
-        this.sampleChunks.push(normalizeAudioBufferToMono(event.inputBuffer));
+      recorderNode.port.onmessage = (event) => {
+        const sampleChunk = toFloat32Array(event.data);
+
+        if (sampleChunk.length > 0) {
+          this.sampleChunks.push(sampleChunk);
+        }
       };
 
-      sourceNode.connect(processorNode);
-      processorNode.connect(muteNode);
+      sourceNode.connect(recorderNode);
+      recorderNode.connect(muteNode);
       muteNode.connect(audioContext.destination);
 
       this.audioContext = audioContext;
       this.mediaStream = mediaStream;
       this.muteNode = muteNode;
-      this.processorNode = processorNode;
+      this.recorderNode = recorderNode;
       this.sourceNode = sourceNode;
       this.sourceSampleRate = audioContext.sampleRate;
     } catch (error) {
@@ -126,9 +134,7 @@ export class MicrophoneRecorder {
         : downsampleBuffer(mergedSamples, sourceSampleRate, targetSampleRate);
     const pcmSamples = float32ToInt16Pcm(outputSamples);
     const wavBytes = encodePcm16WaveFile(pcmSamples, targetSampleRate, TARGET_WAV_CHANNEL_COUNT);
-    const { mkdir } = await import('node:fs/promises');
 
-    await mkdir(dirname(outputFilePath), { recursive: true });
     await writeFile(outputFilePath, wavBytes);
 
     return {
@@ -154,28 +160,28 @@ export class MicrophoneRecorder {
     const audioContext = this.audioContext;
     const mediaStream = this.mediaStream;
     const muteNode = this.muteNode;
-    const processorNode = this.processorNode;
+    const recorderNode = this.recorderNode;
     const sourceNode = this.sourceNode;
     const capturedChunks = this.sampleChunks;
 
     this.audioContext = null;
     this.mediaStream = null;
     this.muteNode = null;
-    this.processorNode = null;
+    this.recorderNode = null;
     this.sampleChunks = [];
     this.sourceNode = null;
     this.sourceSampleRate = 0;
 
     try {
-      processorNode?.disconnect();
+      recorderNode?.disconnect();
       sourceNode?.disconnect();
       muteNode?.disconnect();
     } catch (error) {
       this.log('failed to disconnect microphone recorder nodes cleanly', error);
     }
 
-    if (processorNode !== null) {
-      processorNode.onaudioprocess = null;
+    if (recorderNode !== null) {
+      recorderNode.port.onmessage = null;
     }
 
     if (mediaStream !== null) {
@@ -220,6 +226,50 @@ async function closeAudioContext(audioContext: AudioContext): Promise<void> {
   if (audioContext.state !== 'closed') {
     await audioContext.close();
   }
+}
+
+async function installRecorderWorklet(
+  audioContext: AudioContext,
+  workletModulePath: string,
+  logger?: RecorderLogger,
+): Promise<void> {
+  if (audioContext.audioWorklet === undefined) {
+    throw new Error('AudioWorklet is not available in this Obsidian runtime.');
+  }
+
+  let workletModuleSource: string;
+
+  try {
+    workletModuleSource = await readFile(workletModulePath, 'utf8');
+  } catch (error) {
+    logger?.('failed to read recorder worklet module', error);
+    throw asError(error, `Failed to read recorder worklet module: ${workletModulePath}`);
+  }
+
+  const workletModuleUrl = URL.createObjectURL(
+    new Blob([workletModuleSource], { type: 'text/javascript' }),
+  );
+
+  try {
+    await audioContext.audioWorklet.addModule(workletModuleUrl);
+  } catch (error) {
+    logger?.('failed to load recorder worklet module', error);
+    throw asError(error, `Failed to load recorder worklet module: ${workletModulePath}`);
+  } finally {
+    URL.revokeObjectURL(workletModuleUrl);
+  }
+}
+
+function toFloat32Array(value: unknown): Float32Array {
+  if (value instanceof Float32Array) {
+    return value;
+  }
+
+  if (ArrayBuffer.isView(value) && value.buffer instanceof ArrayBuffer) {
+    return new Float32Array(value.buffer.slice(0));
+  }
+
+  throw new Error('Recorder worklet emitted an invalid audio sample payload.');
 }
 
 function asError(value: unknown, fallbackMessage: string): Error {

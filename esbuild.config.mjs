@@ -13,7 +13,7 @@ const externalModules = [
   ...builtinModules.map((moduleName) => `node:${moduleName}`),
 ];
 
-const buildOptions = {
+const mainBuildOptions = {
   entryPoints: ['src/main.ts'],
   bundle: true,
   format: 'cjs',
@@ -26,15 +26,35 @@ const buildOptions = {
   external: externalModules,
 };
 
+const recorderWorkletBuildOptions = {
+  entryPoints: ['src/audio/pcm-recorder.worklet.ts'],
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'es2022',
+  logLevel: 'info',
+  sourcemap: isProduction ? false : 'inline',
+  treeShaking: true,
+  outfile: 'assets/pcm-recorder.worklet.js',
+};
+
+async function buildAll() {
+  await Promise.all([build(mainBuildOptions), build(recorderWorkletBuildOptions)]);
+}
+
 async function main() {
   if (isWatch) {
-    const watcher = await context(buildOptions);
-    await watcher.watch();
+    const watchers = await Promise.all([
+      context(mainBuildOptions),
+      context(recorderWorkletBuildOptions),
+    ]);
+
+    await Promise.all(watchers.map((watcher) => watcher.watch()));
     console.log('[esbuild] watching for changes');
     return;
   }
 
-  await build(buildOptions);
+  await buildAll();
 }
 
 main().catch((error) => {

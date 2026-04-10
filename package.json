@@ -12,13 +12,14 @@
     "npm": "11.12.x"
   },
   "scripts": {
-    "build": "node esbuild.config.mjs production",
+    "build": "node esbuild.config.mjs production && node scripts/verify-build-output.mjs",
     "dev": "node esbuild.config.mjs watch",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "vitest run",
-    "check:js": "npm run typecheck && npm run lint",
+    "verify:build-output": "node scripts/verify-build-output.mjs",
+    "check:js": "npm run typecheck && npm run lint && npm run test && npm run build",
     "check:rust": "cargo fmt --manifest-path native/sidecar/Cargo.toml --check && cargo clippy --manifest-path native/sidecar/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path native/sidecar/Cargo.toml",
     "check": "npm run check:js && npm run check:rust"
   },

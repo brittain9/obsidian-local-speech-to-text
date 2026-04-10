@@ -1,6 +1,7 @@
 import type { MicrophoneRecorder } from '../audio/microphone-recorder';
 import { createTempWavFilePath, deleteFileIfExists } from '../audio/temp-audio-file';
 import type { EditorService } from '../editor/editor-service';
+import { assertAbsoluteExistingFilePath } from '../filesystem/path-validation';
 import type { PluginSettings } from '../settings/plugin-settings';
 import type { TranscribeFileResponsePayload } from '../sidecar/protocol';
 import type { SidecarClient } from '../sidecar/sidecar-client';
@@ -48,7 +49,7 @@ export class DictationController {
     }
 
     try {
-      this.requireConfiguredModelPath();
+      await this.requireConfiguredModelPath();
       this.dependencies.editorService.assertActiveEditorAvailable();
       await this.dependencies.recorder.start();
       this.applyUiState('recording');
@@ -64,15 +65,16 @@ export class DictationController {
       return;
     }
 
-    const modelFilePath = this.requireConfiguredModelPath();
-    const tempAudioPath = await createTempWavFilePath(
-      this.dependencies.getSettings().tempAudioDirectoryOverride,
-    );
     let recordedAudioPath: string | null = null;
 
     this.applyUiState('transcribing');
 
     try {
+      const modelFilePath = await this.requireConfiguredModelPath();
+      const tempAudioPath = await createTempWavFilePath(
+        this.dependencies.getSettings().tempAudioDirectoryOverride,
+      );
+      recordedAudioPath = tempAudioPath;
       const recordedAudio = await this.dependencies.recorder.stop(tempAudioPath);
       recordedAudioPath = recordedAudio.audioFilePath;
 
@@ -146,14 +148,14 @@ export class DictationController {
     this.dependencies.notice(`${message}: ${detail}`);
   }
 
-  private requireConfiguredModelPath(): string {
+  private async requireConfiguredModelPath(): Promise<string> {
     const modelFilePath = this.dependencies.getSettings().modelFilePath.trim();
 
     if (modelFilePath.length === 0) {
       throw new Error('Configure a Whisper model file path in Local STT settings.');
     }
 
-    return modelFilePath;
+    return assertAbsoluteExistingFilePath(modelFilePath, 'Whisper model file path');
   }
 }
 

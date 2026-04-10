@@ -14,7 +14,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   modelFilePath: '',
   sidecarPathOverride: '',
   sidecarStartupTimeoutMs: 4_000,
-  sidecarRequestTimeoutMs: 10_000,
+  sidecarRequestTimeoutMs: 300_000,
   tempAudioDirectoryOverride: '',
 };
 
@@ -48,7 +48,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function readString(value: unknown, fallback: string): string {
-  return typeof value === 'string' ? value : fallback;
+  return typeof value === 'string' ? value.trim() : fallback;
 }
 
 function readPositiveInteger(value: unknown, fallback: number): number {

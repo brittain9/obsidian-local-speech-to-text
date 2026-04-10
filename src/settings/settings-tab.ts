@@ -30,7 +30,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Whisper model file path')
       .setDesc(
-        'Absolute path to a local whisper.cpp-compatible Whisper model file, such as ggml-large-v3-turbo.bin.',
+        'Absolute path to a local whisper.cpp-compatible model file, such as ggml-small.en-q5_1.bin or ggml-large-v3-turbo-q8_0.bin.',
       )
       .addText((text) => {
         text.setPlaceholder('/absolute/path/to/ggml-large-v3-turbo.bin');
@@ -60,7 +60,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Temp audio directory override')
       .setDesc(
-        'Optional absolute directory for temporary WAV files. Defaults to the system temp directory.',
+        'Optional absolute directory for temporary WAV files. This must be a directory path, not a file path. Defaults to the system temp directory.',
       )
       .addText((text) => {
         text.setPlaceholder('System temp directory / obsidian-local-stt');
@@ -80,7 +80,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Sidecar path override')
-      .setDesc('Optional absolute path to a debug or manually installed sidecar binary.')
+      .setDesc('Optional absolute path to a debug or manually installed sidecar executable file.')
       .addText((text) => {
         text.setPlaceholder('Auto-detect from native/sidecar/target/debug');
         text.setValue(settings.sidecarPathOverride);
@@ -113,7 +113,9 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Request timeout (ms)')
-      .setDesc('Maximum time allowed for a sidecar request before failing it.')
+      .setDesc(
+        'Maximum time allowed for a transcription request before failing it. Increase this for slower CPUs or larger models.',
+      )
       .addText((text) => {
         text.inputEl.type = 'number';
         text.setValue(String(settings.sidecarRequestTimeoutMs));

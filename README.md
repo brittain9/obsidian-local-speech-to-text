@@ -67,12 +67,23 @@ Recommended dev-vault workflow:
 - place this repository at `<vault>/.obsidian/plugins/obsidian-local-stt`, or symlink it there
 - enable the plugin from Obsidian's community plugin screen
 - use the settings tab to override the sidecar path if your debug binary is not at the default location
+- reload or restart Obsidian after rebuilding the plugin bundle so it picks up the current `main.js`
+
+Local note:
+
+- `data.json` in the plugin directory is Obsidian runtime state, not checked-in source configuration
 
 ## Real Smoke Test
 
 This implementation expects a `whisper.cpp`-compatible model file, not the raw Hugging Face `safetensors` checkpoint.
 
-For the first real smoke test in this repository, use a converted `large-v3-turbo` model file such as:
+For the first real smoke test in this repository, use a smaller English model first, then move up to `large-v3-turbo` after the end-to-end path works. Recommended first-pass model:
+
+- Linux: `~/.local/share/obsidian-local-stt-dev/models/ggml-small.en-q5_1.bin`
+- macOS: `~/Library/Application Support/obsidian-local-stt-dev/models/ggml-small.en-q5_1.bin`
+- Windows: `%APPDATA%\obsidian-local-stt-dev\models\ggml-small.en-q5_1.bin`
+
+You can switch to a converted `large-v3-turbo` model file afterward, such as:
 
 - Linux: `~/.local/share/obsidian-local-stt-dev/models/ggml-large-v3-turbo.bin`
 - macOS: `~/Library/Application Support/obsidian-local-stt-dev/models/ggml-large-v3-turbo.bin`
@@ -82,13 +93,14 @@ Minimal verification flow:
 
 1. Open a Markdown note in the dev vault.
 2. Open `Settings -> Local STT`.
-3. Set `Whisper model file path` to your local `ggml-large-v3-turbo.bin`.
+3. Set `Whisper model file path` to your local `ggml-small.en-q5_1.bin`.
 4. Optionally set `Sidecar path override` if the debug sidecar is not at `native/sidecar/target/debug`.
 5. Run `Local STT: Check Sidecar Health`.
 6. Click the microphone ribbon button or run `Local STT: Start Dictation`.
 7. Speak for 5 to 10 seconds.
 8. Click the ribbon button again or run `Local STT: Stop And Transcribe`.
 9. Confirm the transcript text is inserted at the cursor.
+10. Only after that passes, switch to `ggml-large-v3-turbo-*` and allow a much longer CPU transcription time.
 
 ## Commands
 

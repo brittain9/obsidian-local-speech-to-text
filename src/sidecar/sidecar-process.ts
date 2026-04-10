@@ -1,5 +1,5 @@
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { Interface as ReadLineInterface } from 'node:readline';
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
 import { Platform } from 'obsidian';
 
 export interface SidecarLaunchSpec {
@@ -36,9 +36,6 @@ export class SidecarProcess {
     }
 
     assertDesktopRuntime();
-
-    const { spawn } = await import('node:child_process');
-    const { createInterface } = await import('node:readline');
 
     const launchSpec = await this.resolveLaunchSpec();
     const child = spawn(launchSpec.command, launchSpec.args ?? [], {

@@ -1,14 +1,19 @@
+import { dirname, join } from 'node:path';
+
 import { FileSystemAdapter, Notice, Platform, Plugin } from 'obsidian';
 
 import { MicrophoneRecorder } from './audio/microphone-recorder';
+import { PCM_RECORDER_WORKLET_OUTPUT_PATH } from './audio/pcm-recorder-worklet-shared';
 import { registerCommands } from './commands/register-commands';
 import { DictationController } from './dictation/dictation-controller';
 import { EditorService } from './editor/editor-service';
+import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
 import {
   DEFAULT_PLUGIN_SETTINGS,
   type PluginSettings,
   resolvePluginSettings,
 } from './settings/plugin-settings';
+import { normalizePersistedPluginSettings } from './settings/settings-normalization';
 import { LocalSttSettingTab } from './settings/settings-tab';
 import { SidecarClient } from './sidecar/sidecar-client';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
@@ -27,7 +32,19 @@ export default class LocalSttPlugin extends Plugin {
   private statusBar: StatusBarController | null = null;
 
   override async onload(): Promise<void> {
-    this.settings = resolvePluginSettings(await this.loadData());
+    const loadedSettings = resolvePluginSettings(await this.loadData());
+    const normalizedSettings = await normalizePersistedPluginSettings(loadedSettings);
+    this.settings = normalizedSettings.settings;
+
+    if (normalizedSettings.didChange) {
+      await this.saveData(this.settings);
+
+      for (const message of normalizedSettings.messages) {
+        console.warn('[Local STT]', message);
+        new Notice(`Local STT: ${message}`);
+      }
+    }
+
     this.editorService = new EditorService(this.app);
     this.statusBar = new StatusBarController(this.addStatusBarItem());
     this.sidecarClient = new SidecarClient({
@@ -41,6 +58,7 @@ export default class LocalSttPlugin extends Plugin {
       logger: (message, error) => {
         console.error('[Local STT] microphone recorder', message, error);
       },
+      resolveWorkletModulePath: async () => this.resolveRecorderWorkletModulePath(),
     });
     this.ribbonController = new DictationRibbonController(
       this.addRibbonIcon('mic', 'Local STT: Start Dictation', async () => {
@@ -97,7 +115,7 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     try {
-      await this.sidecarClient?.shutdown();
+      await this.sidecarClient?.shutdown(this.settings.sidecarStartupTimeoutMs);
     } catch (error) {
       console.error('[Local STT] failed to shut down sidecar cleanly', error);
     }
@@ -112,11 +130,7 @@ export default class LocalSttPlugin extends Plugin {
     this.statusBar?.setState('starting', 'health check');
 
     try {
-      const health = await withTimeout(
-        sidecarClient.healthCheck(),
-        this.settings.sidecarStartupTimeoutMs,
-        'Sidecar startup health check timed out.',
-      );
+      const health = await sidecarClient.healthCheck(this.settings.sidecarStartupTimeoutMs);
 
       this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
 
@@ -140,11 +154,7 @@ export default class LocalSttPlugin extends Plugin {
     this.statusBar?.setState('starting', 'restarting');
 
     try {
-      const health = await withTimeout(
-        sidecarClient.restart(),
-        this.settings.sidecarStartupTimeoutMs,
-        'Sidecar restart timed out.',
-      );
+      const health = await sidecarClient.restart(this.settings.sidecarStartupTimeoutMs);
 
       this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
       new Notice(`Restarted Local STT sidecar (${health.sidecarVersion}).`);
@@ -154,7 +164,7 @@ export default class LocalSttPlugin extends Plugin {
   }
 
   private async updateSettings(nextSettings: PluginSettings): Promise<void> {
-    this.settings = nextSettings;
+    this.settings = resolvePluginSettings(nextSettings);
     await this.saveData(this.settings);
   }
 
@@ -184,7 +194,6 @@ export default class LocalSttPlugin extends Plugin {
 
   private async resolveSidecarLaunchSpec(): Promise<SidecarLaunchSpec> {
     const executablePath = await this.resolveSidecarExecutablePath();
-    const { dirname } = await import('node:path');
 
     return {
       command: executablePath,
@@ -196,13 +205,11 @@ export default class LocalSttPlugin extends Plugin {
     const overridePath = this.settings.sidecarPathOverride.trim();
 
     if (overridePath.length > 0) {
-      return overridePath;
+      return assertAbsoluteExistingFilePath(overridePath, 'Sidecar path override');
     }
 
     const pluginDirectory = await this.resolvePluginDirectoryPath();
-    const { join } = await import('node:path');
-
-    return join(
+    const executablePath = join(
       pluginDirectory,
       'native',
       'sidecar',
@@ -210,6 +217,19 @@ export default class LocalSttPlugin extends Plugin {
       'debug',
       getSidecarExecutableName(),
     );
+    const pathKind = await getExistingPathKind(executablePath);
+
+    if (pathKind === 'missing') {
+      throw new Error(
+        `Sidecar executable was not found at ${executablePath}. Build native/sidecar first or configure Sidecar path override.`,
+      );
+    }
+
+    if (pathKind !== 'file') {
+      throw new Error(`Sidecar executable path must point to a file: ${executablePath}`);
+    }
+
+    return executablePath;
   }
 
   private async resolvePluginDirectoryPath(): Promise<string> {
@@ -223,9 +243,11 @@ export default class LocalSttPlugin extends Plugin {
       throw new Error('The current vault adapter does not expose a filesystem path.');
     }
 
-    const { join } = await import('node:path');
-
     return join(vaultAdapter.getBasePath(), this.app.vault.configDir, 'plugins', this.manifest.id);
+  }
+
+  private async resolveRecorderWorkletModulePath(): Promise<string> {
+    return join(await this.resolvePluginDirectoryPath(), PCM_RECORDER_WORKLET_OUTPUT_PATH);
   }
 
   private handleError(message: string, error: unknown, showNotice: boolean): void {
@@ -242,26 +264,4 @@ export default class LocalSttPlugin extends Plugin {
 
 function getSidecarExecutableName(): string {
   return Platform.isWin ? `${SIDECAR_BINARY_BASENAME}.exe` : SIDECAR_BINARY_BASENAME;
-}
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  timeoutMessage: string,
-): Promise<T> {
-  let timeoutHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
-
-  const timeoutPromise = new Promise<T>((_, reject) => {
-    timeoutHandle = globalThis.setTimeout(() => {
-      reject(new Error(timeoutMessage));
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutHandle !== undefined) {
-      globalThis.clearTimeout(timeoutHandle);
-    }
-  }
 }

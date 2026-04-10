@@ -11,11 +11,11 @@ describe('resolvePluginSettings', () => {
     expect(
       resolvePluginSettings({
         insertionMode: 'insert_at_cursor',
-        modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
-        sidecarPathOverride: '/tmp/sidecar',
+        modelFilePath: ' /tmp/models/ggml-large-v3-turbo.bin ',
+        sidecarPathOverride: ' /tmp/sidecar ',
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
-        tempAudioDirectoryOverride: '/tmp/local-stt-audio',
+        tempAudioDirectoryOverride: ' /tmp/local-stt-audio ',
       }),
     ).toEqual({
       insertionMode: 'insert_at_cursor',
@@ -38,5 +38,9 @@ describe('resolvePluginSettings', () => {
         tempAudioDirectoryOverride: false,
       }),
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);
+  });
+
+  it('uses the new CPU-realistic request timeout by default', () => {
+    expect(DEFAULT_PLUGIN_SETTINGS.sidecarRequestTimeoutMs).toBe(300_000);
   });
 });

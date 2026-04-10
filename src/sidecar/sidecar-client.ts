@@ -54,8 +54,8 @@ export class SidecarClient {
     await this.process.start();
   }
 
-  async healthCheck(): Promise<HealthResponsePayload> {
-    return this.request('health', {});
+  async healthCheck(timeoutMs?: number): Promise<HealthResponsePayload> {
+    return this.request('health', {}, timeoutMs);
   }
 
   async transcribeFile(
@@ -64,19 +64,19 @@ export class SidecarClient {
     return this.request('transcribe_file', payload);
   }
 
-  async restart(): Promise<HealthResponsePayload> {
-    await this.shutdown();
+  async restart(startupTimeoutMs?: number): Promise<HealthResponsePayload> {
+    await this.shutdown(startupTimeoutMs);
     await this.ensureStarted();
-    return this.healthCheck();
+    return this.healthCheck(startupTimeoutMs);
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(timeoutMs?: number): Promise<void> {
     if (!this.process.isRunning()) {
       return;
     }
 
     try {
-      await this.request('shutdown', {});
+      await this.request('shutdown', {}, timeoutMs);
     } finally {
       await this.process.stop();
     }
@@ -85,6 +85,7 @@ export class SidecarClient {
   private async request<TType extends SidecarRequestType>(
     type: TType,
     payload: RequestPayloadByType[TType],
+    timeoutMs = this.options.getRequestTimeoutMs(),
   ): Promise<ResponsePayloadByType[TType]> {
     await this.ensureStarted();
 
@@ -95,7 +96,7 @@ export class SidecarClient {
       const timeoutHandle = globalThis.setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new Error(`Sidecar request timed out: ${type}`));
-      }, this.options.getRequestTimeoutMs());
+      }, timeoutMs);
 
       this.pendingRequests.set(requestId, {
         reject,

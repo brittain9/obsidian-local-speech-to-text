@@ -1,7 +1,8 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DictationController } from '../src/dictation/dictation-controller';
 import type { PluginSettings } from '../src/settings/plugin-settings';
@@ -27,6 +28,16 @@ class FakeRecorder {
   }));
   public dispose = vi.fn(async () => {});
 }
+
+const tempDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    tempDirectories
+      .splice(0)
+      .map((directoryPath) => rm(directoryPath, { force: true, recursive: true })),
+  );
+});
 
 describe('DictationController', () => {
   it('fails fast when the model path is missing', async () => {
@@ -58,6 +69,7 @@ describe('DictationController', () => {
   });
 
   it('records, transcribes, and inserts text into the active note', async () => {
+    const modelFilePath = await createModelFile();
     const notices: string[] = [];
     const sidecarRequests: TranscribeFileRequestPayload[] = [];
     const statusStates: PluginRuntimeState[] = [];
@@ -67,7 +79,7 @@ describe('DictationController', () => {
       editorService,
       getSettings: () =>
         createSettings({
-          modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
+          modelFilePath,
           tempAudioDirectoryOverride: join(tmpdir(), 'obsidian-local-stt-tests'),
         }),
       notice: (message) => {
@@ -102,7 +114,7 @@ describe('DictationController', () => {
     expect(recorder.stop).toHaveBeenCalledTimes(1);
     expect(sidecarRequests).toHaveLength(1);
     expect(sidecarRequests[0]?.language).toBe('en');
-    expect(sidecarRequests[0]?.modelFilePath).toBe('/tmp/models/ggml-large-v3-turbo.bin');
+    expect(sidecarRequests[0]?.modelFilePath).toBe(modelFilePath);
     expect(editorService.insertedText).toBe('hello obsidian');
     expect(statusStates).toContain('recording');
     expect(statusStates.at(-1)).toBe('idle');
@@ -110,6 +122,7 @@ describe('DictationController', () => {
   });
 
   it('rejects cancellation while transcription is in progress', async () => {
+    const modelFilePath = await createModelFile();
     const notices: string[] = [];
     let releaseTranscription = () => {};
     const transcriptionStarted = new Promise<void>((resolve) => {
@@ -119,7 +132,7 @@ describe('DictationController', () => {
       editorService: new FakeEditorService(),
       getSettings: () =>
         createSettings({
-          modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
+          modelFilePath,
         }),
       notice: (message) => {
         notices.push(message);
@@ -150,6 +163,42 @@ describe('DictationController', () => {
 
     expect(notices).toContain('Cancellation is not available while transcription is in progress.');
   });
+
+  it('surfaces a bad temp audio override instead of failing silently', async () => {
+    const modelFilePath = await createModelFile();
+    const tempDirectory = await mkdtemp(join(tmpdir(), 'obsidian-local-stt-dictation-'));
+    const invalidTempPath = join(tempDirectory, 'sidecar-binary');
+    tempDirectories.push(tempDirectory);
+    await writeFile(invalidTempPath, 'not a directory');
+
+    const notices: string[] = [];
+    const recorder = new FakeRecorder();
+    const controller = new DictationController({
+      editorService: new FakeEditorService(),
+      getSettings: () =>
+        createSettings({
+          modelFilePath,
+          tempAudioDirectoryOverride: invalidTempPath,
+        }),
+      notice: (message) => {
+        notices.push(message);
+      },
+      recorder,
+      setRibbonState: () => {},
+      setStatusState: () => {},
+      sidecarClient: {
+        transcribeFile: vi.fn(),
+      },
+    });
+
+    await controller.startDictation();
+    await controller.stopAndTranscribe();
+
+    expect(recorder.stop).not.toHaveBeenCalled();
+    expect(notices.at(-1)).toContain(
+      'Temp audio directory override must be a directory, not a file',
+    );
+  });
 });
 
 function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
@@ -157,9 +206,17 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
     insertionMode: 'insert_at_cursor',
     modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
     sidecarPathOverride: '',
-    sidecarRequestTimeoutMs: 10_000,
+    sidecarRequestTimeoutMs: 300_000,
     sidecarStartupTimeoutMs: 4_000,
     tempAudioDirectoryOverride: '',
     ...overrides,
   };
+}
+
+async function createModelFile(): Promise<string> {
+  const tempDirectory = await mkdtemp(join(tmpdir(), 'obsidian-local-stt-model-'));
+  const modelFilePath = join(tempDirectory, 'ggml-small.en-q5_1.bin');
+  tempDirectories.push(tempDirectory);
+  await writeFile(modelFilePath, 'model placeholder');
+  return modelFilePath;
 }

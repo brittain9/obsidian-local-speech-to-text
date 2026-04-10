@@ -3,6 +3,7 @@ dist/
 coverage/
 main.js
 main.js.map
+assets/pcm-recorder.worklet.js
 *.tsbuildinfo
 
 native/sidecar/target/
@@ -10,6 +11,7 @@ native/sidecar/target/
 *.wav
 *.pcm
 *.tmp
+data.json
 
 .DS_Store
 .idea/
