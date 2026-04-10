@@ -51,8 +51,6 @@ native/sidecar/       Rust sidecar crate
 
 ## Local Development
 
-If you use `mise`, run `mise install` first. This repository includes [`.mise.toml`](.mise.toml) for Node.js and Rust.
-
 1. Install Node.js `24.14.1`.
 2. Upgrade npm to `11.12.1` with `npm install --global npm@11.12.1`.
 3. Install Rust `1.94.1`.

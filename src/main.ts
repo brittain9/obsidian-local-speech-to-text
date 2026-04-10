@@ -16,6 +16,7 @@ import {
 import { normalizePersistedPluginSettings } from './settings/settings-normalization';
 import { LocalSttSettingTab } from './settings/settings-tab';
 import { SidecarClient } from './sidecar/sidecar-client';
+import type { SidecarLogEntry } from './sidecar/sidecar-logging';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
 import { StatusBarController } from './ui/status-bar';
@@ -49,14 +50,18 @@ export default class LocalSttPlugin extends Plugin {
     this.statusBar = new StatusBarController(this.addStatusBarItem());
     this.sidecarClient = new SidecarClient({
       getRequestTimeoutMs: () => this.settings.sidecarRequestTimeoutMs,
-      logger: (message, error) => {
-        console.error('[Local STT]', message, error);
+      logger: (entry) => {
+        writePluginLog('[Local STT]', entry);
       },
       resolveLaunchSpec: async () => this.resolveSidecarLaunchSpec(),
     });
     this.microphoneRecorder = new MicrophoneRecorder({
       logger: (message, error) => {
-        console.error('[Local STT] microphone recorder', message, error);
+        writePluginLog('[Local STT] microphone recorder', {
+          error,
+          level: error === undefined ? 'warn' : 'error',
+          message,
+        });
       },
       resolveWorkletModulePath: async () => this.resolveRecorderWorkletModulePath(),
     });
@@ -69,7 +74,11 @@ export default class LocalSttPlugin extends Plugin {
       editorService: this.editorService,
       getSettings: () => this.settings,
       logger: (message, error) => {
-        console.error('[Local STT]', message, error);
+        writePluginLog('[Local STT]', {
+          error,
+          level: error === undefined ? 'warn' : 'error',
+          message,
+        });
       },
       notice: (message) => {
         new Notice(message);
@@ -259,6 +268,38 @@ export default class LocalSttPlugin extends Plugin {
     if (showNotice) {
       new Notice(`${message}: ${detail}`);
     }
+  }
+}
+
+type PluginLogLevel = SidecarLogEntry['level'] | 'error' | 'info';
+
+interface PluginLogEntry {
+  level: PluginLogLevel;
+  message: string;
+  error?: unknown;
+}
+
+function writePluginLog(prefix: string, entry: PluginLogEntry): void {
+  const logMethod = resolveConsoleMethod(entry.level);
+
+  if (entry.error === undefined) {
+    logMethod(prefix, entry.message);
+    return;
+  }
+
+  logMethod(prefix, entry.message, entry.error);
+}
+
+function resolveConsoleMethod(level: PluginLogLevel): typeof console.debug {
+  switch (level) {
+    case 'debug':
+      return console.debug;
+    case 'info':
+      return console.info;
+    case 'warn':
+      return console.warn;
+    case 'error':
+      return console.error;
   }
 }
 

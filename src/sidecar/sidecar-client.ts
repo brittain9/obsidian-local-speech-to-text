@@ -10,9 +10,10 @@ import {
   type TranscribeFileRequestPayload,
   type TranscribeFileResponsePayload,
 } from './protocol';
+import { createSidecarStderrLogEntry, type SidecarLogEntry } from './sidecar-logging';
 import { type ResolveSidecarLaunchSpec, SidecarProcess } from './sidecar-process';
 
-type SidecarLogger = (message: string, error?: unknown) => void;
+type SidecarLogger = (entry: SidecarLogEntry) => void;
 
 interface PendingRequest {
   reject: (error: Error) => void;
@@ -42,7 +43,11 @@ export class SidecarClient {
         );
       },
       onStderrLine: (line) => {
-        this.log(`sidecar stderr: ${line}`);
+        const entry = createSidecarStderrLogEntry(line);
+
+        if (entry !== null) {
+          this.log(entry);
+        }
       },
       onStdoutLine: (line) => {
         this.handleStdoutLine(line);
@@ -123,14 +128,21 @@ export class SidecarClient {
     try {
       response = parseResponseLine(line);
     } catch (error) {
-      this.log('failed to parse sidecar stdout line', error);
+      this.log({
+        level: 'warn',
+        message: 'failed to parse sidecar stdout line',
+        error,
+      });
       return;
     }
 
     const pendingRequest = this.pendingRequests.get(response.id);
 
     if (pendingRequest === undefined) {
-      this.log(`received sidecar response for unknown request id ${response.id}`);
+      this.log({
+        level: 'warn',
+        message: `received sidecar response for unknown request id ${response.id}`,
+      });
       return;
     }
 
@@ -162,8 +174,8 @@ export class SidecarClient {
     }
   }
 
-  private log(message: string, error?: unknown): void {
-    this.options.logger?.(message, error);
+  private log(entry: SidecarLogEntry): void {
+    this.options.logger?.(entry);
   }
 }
 

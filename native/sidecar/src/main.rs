@@ -3,14 +3,10 @@ use std::io::{self, BufRead, Write};
 use anyhow::{Context, Result};
 use obsidian_local_stt_sidecar::app::{AppState, ControlFlow};
 use obsidian_local_stt_sidecar::protocol::RequestEnvelope;
-
-const SIDECAR_VERSION: &str = env!("CARGO_PKG_VERSION");
+use whisper_rs::install_logging_hooks;
 
 fn main() -> Result<()> {
-    eprintln!(
-        "[local-stt-sidecar] starting sidecar v{} with protocol v1",
-        SIDECAR_VERSION
-    );
+    install_logging_hooks();
 
     run_stdio()
 }
@@ -19,7 +15,7 @@ fn run_stdio() -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut writer = io::BufWriter::new(stdout.lock());
-    let mut app_state = AppState::new(SIDECAR_VERSION);
+    let mut app_state = AppState::new(env!("CARGO_PKG_VERSION"));
 
     for line_result in stdin.lock().lines() {
         let line = line_result.context("failed to read stdin line")?;
@@ -48,8 +44,6 @@ fn run_stdio() -> Result<()> {
             break;
         }
     }
-
-    eprintln!("[local-stt-sidecar] shutdown complete");
 
     Ok(())
 }

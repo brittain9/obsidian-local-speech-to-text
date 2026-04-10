@@ -4,13 +4,17 @@
     "includes": [
       "**",
       "!.claude",
+      "!AGENTS.md",
+      "!PLANS.md",
       "!assets",
       "!data.json",
       "!main.js",
       "!main.js.map",
       "!node_modules",
       "!package-lock.json",
-      "!native/sidecar/target"
+      "!native/sidecar/target",
+      "!references",
+      "!tasks"
     ]
   },
   "formatter": {
