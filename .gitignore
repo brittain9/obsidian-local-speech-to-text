@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+main.js
+main.js.map
+*.tsbuildinfo
+
+native/sidecar/target/
+
+*.wav
+*.pcm
+*.tmp
+
+.DS_Store
+.idea/
+.vscode/

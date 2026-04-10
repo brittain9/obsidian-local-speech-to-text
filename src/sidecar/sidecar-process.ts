@@ -1,0 +1,144 @@
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { Interface as ReadLineInterface } from 'node:readline';
+import { Platform } from 'obsidian';
+
+export interface SidecarLaunchSpec {
+  command: string;
+  args?: string[];
+  cwd?: string;
+}
+
+interface SidecarProcessHandlers {
+  onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+  onStderrLine: (line: string) => void;
+  onStdoutLine: (line: string) => void;
+}
+
+export type ResolveSidecarLaunchSpec = () => Promise<SidecarLaunchSpec>;
+
+export class SidecarProcess {
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private stderrReader: ReadLineInterface | null = null;
+  private stdoutReader: ReadLineInterface | null = null;
+
+  constructor(
+    private readonly resolveLaunchSpec: ResolveSidecarLaunchSpec,
+    private readonly handlers: SidecarProcessHandlers,
+  ) {}
+
+  isRunning(): boolean {
+    return this.child !== null && this.child.exitCode === null && !this.child.killed;
+  }
+
+  async start(): Promise<void> {
+    if (this.isRunning()) {
+      return;
+    }
+
+    assertDesktopRuntime();
+
+    const { spawn } = await import('node:child_process');
+    const { createInterface } = await import('node:readline');
+
+    const launchSpec = await this.resolveLaunchSpec();
+    const child = spawn(launchSpec.command, launchSpec.args ?? [], {
+      cwd: launchSpec.cwd,
+      stdio: 'pipe',
+    });
+
+    await waitForSpawn(child);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+
+    this.child = child;
+    this.stdoutReader = createInterface({ input: child.stdout });
+    this.stderrReader = createInterface({ input: child.stderr });
+
+    this.stdoutReader.on('line', this.handlers.onStdoutLine);
+    this.stderrReader.on('line', this.handlers.onStderrLine);
+
+    child.once('exit', (code, signal) => {
+      this.disposeReaders();
+      this.child = null;
+      this.handlers.onExit(code, signal);
+    });
+  }
+
+  async stop(): Promise<void> {
+    const child = this.child;
+
+    if (child === null) {
+      return;
+    }
+
+    if (child.stdin.writable) {
+      child.stdin.end();
+    }
+
+    if (child.exitCode !== null) {
+      return;
+    }
+
+    await waitForExit(child);
+  }
+
+  writeLine(line: string): void {
+    const child = this.child;
+
+    if (child === null || !child.stdin.writable) {
+      throw new Error('Sidecar process is not running.');
+    }
+
+    child.stdin.write(`${line}\n`);
+  }
+
+  private disposeReaders(): void {
+    this.stdoutReader?.close();
+    this.stderrReader?.close();
+    this.stdoutReader = null;
+    this.stderrReader = null;
+  }
+}
+
+function assertDesktopRuntime(): void {
+  if (!Platform.isDesktopApp) {
+    throw new Error('Local STT sidecar support requires Obsidian desktop.');
+  }
+}
+
+async function waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      child.off('error', onError);
+      child.off('spawn', onSpawn);
+    };
+
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+
+    const onSpawn = () => {
+      cleanup();
+      resolve();
+    };
+
+    child.once('error', onError);
+    child.once('spawn', onSpawn);
+  });
+}
+
+async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timeoutHandle = globalThis.setTimeout(() => {
+      child.kill();
+      resolve();
+    }, 2_000);
+
+    child.once('exit', () => {
+      globalThis.clearTimeout(timeoutHandle);
+      resolve();
+    });
+  });
+}

@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-local-stt",
+  "name": "Local STT",
+  "version": "0.1.0",
+  "minAppVersion": "1.8.7",
+  "description": "Desktop-only local speech-to-text for Obsidian with a native sidecar.",
+  "author": "Alex",
+  "isDesktopOnly": true
+}
