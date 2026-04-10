@@ -1,11 +1,13 @@
 export const SIDECAR_PROTOCOL_VERSION = 'v1' as const;
 
-export type SidecarRequestType = 'health' | 'transcribe_mock' | 'shutdown';
+export type SidecarRequestType = 'health' | 'transcribe_file' | 'shutdown';
 
 export type EmptyPayload = Record<string, never>;
 
-export interface TranscribeMockRequestPayload {
-  seedText?: string;
+export interface TranscribeFileRequestPayload {
+  audioFilePath: string;
+  language: 'en';
+  modelFilePath: string;
 }
 
 export interface HealthResponsePayload {
@@ -20,7 +22,7 @@ export interface TranscriptSegment {
   text: string;
 }
 
-export interface TranscribeMockResponsePayload {
+export interface TranscribeFileResponsePayload {
   text: string;
   segments: TranscriptSegment[];
 }
@@ -37,13 +39,13 @@ export interface SidecarProtocolError {
 
 export interface RequestPayloadByType {
   health: EmptyPayload;
-  transcribe_mock: TranscribeMockRequestPayload;
+  transcribe_file: TranscribeFileRequestPayload;
   shutdown: EmptyPayload;
 }
 
 export interface ResponsePayloadByType {
   health: HealthResponsePayload;
-  transcribe_mock: TranscribeMockResponsePayload;
+  transcribe_file: TranscribeFileResponsePayload;
   shutdown: ShutdownResponsePayload;
 }
 
@@ -161,7 +163,7 @@ function readProtocolVersion(value: unknown): typeof SIDECAR_PROTOCOL_VERSION {
 function readRequestType(value: unknown): SidecarRequestType {
   const type = readString(value, 'response.type');
 
-  if (type === 'health' || type === 'transcribe_mock' || type === 'shutdown') {
+  if (type === 'health' || type === 'transcribe_file' || type === 'shutdown') {
     return type;
   }
 
@@ -184,7 +186,7 @@ function readSuccessPayload<TType extends SidecarRequestType>(
         sidecarVersion: readString(value.sidecarVersion, 'response.payload.sidecarVersion'),
       } as ResponsePayloadByType[TType];
 
-    case 'transcribe_mock':
+    case 'transcribe_file':
       return {
         text: readString(value.text, 'response.payload.text'),
         segments: readTranscriptSegments(value.segments),

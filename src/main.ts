@@ -1,6 +1,8 @@
 import { FileSystemAdapter, Notice, Platform, Plugin } from 'obsidian';
 
+import { MicrophoneRecorder } from './audio/microphone-recorder';
 import { registerCommands } from './commands/register-commands';
+import { DictationController } from './dictation/dictation-controller';
 import { EditorService } from './editor/editor-service';
 import {
   DEFAULT_PLUGIN_SETTINGS,
@@ -10,13 +12,16 @@ import {
 import { LocalSttSettingTab } from './settings/settings-tab';
 import { SidecarClient } from './sidecar/sidecar-client';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
+import { DictationRibbonController } from './ui/dictation-ribbon';
 import { StatusBarController } from './ui/status-bar';
 
-const BOOTSTRAP_INSERTION_TEXT = 'Local STT bootstrap path is wired correctly.\n';
 const SIDECAR_BINARY_BASENAME = 'obsidian-local-stt-sidecar';
 
 export default class LocalSttPlugin extends Plugin {
+  private dictationController: DictationController | null = null;
   private editorService: EditorService | null = null;
+  private microphoneRecorder: MicrophoneRecorder | null = null;
+  private ribbonController: DictationRibbonController | null = null;
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
   private sidecarClient: SidecarClient | null = null;
   private statusBar: StatusBarController | null = null;
@@ -32,6 +37,34 @@ export default class LocalSttPlugin extends Plugin {
       },
       resolveLaunchSpec: async () => this.resolveSidecarLaunchSpec(),
     });
+    this.microphoneRecorder = new MicrophoneRecorder({
+      logger: (message, error) => {
+        console.error('[Local STT] microphone recorder', message, error);
+      },
+    });
+    this.ribbonController = new DictationRibbonController(
+      this.addRibbonIcon('mic', 'Local STT: Start Dictation', async () => {
+        await this.requireDictationController().toggleDictation();
+      }),
+    );
+    this.dictationController = new DictationController({
+      editorService: this.editorService,
+      getSettings: () => this.settings,
+      logger: (message, error) => {
+        console.error('[Local STT]', message, error);
+      },
+      notice: (message) => {
+        new Notice(message);
+      },
+      recorder: this.microphoneRecorder,
+      setRibbonState: (state) => {
+        this.ribbonController?.setState(state);
+      },
+      setStatusState: (state, detail) => {
+        this.statusBar?.setState(state, detail);
+      },
+      sidecarClient: this.sidecarClient,
+    });
 
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
@@ -43,11 +76,12 @@ export default class LocalSttPlugin extends Plugin {
     );
 
     registerCommands({
+      cancelDictation: async () => this.requireDictationController().cancelDictation(),
       checkSidecarHealth: async () => this.checkSidecarHealth(),
-      insertBootstrapText: () => this.insertBootstrapText(),
-      insertMockTranscript: async () => this.insertMockTranscript(),
       plugin: this,
       restartSidecar: async () => this.restartSidecar(),
+      startDictation: async () => this.requireDictationController().startDictation(),
+      stopAndTranscribe: async () => this.requireDictationController().stopAndTranscribe(),
     });
 
     await this.checkSidecarHealth({ showNotice: false }).catch((error: unknown) => {
@@ -57,11 +91,18 @@ export default class LocalSttPlugin extends Plugin {
 
   override async onunload(): Promise<void> {
     try {
+      await this.dictationController?.dispose();
+    } catch (error) {
+      console.error('[Local STT] failed to dispose dictation controller cleanly', error);
+    }
+
+    try {
       await this.sidecarClient?.shutdown();
     } catch (error) {
       console.error('[Local STT] failed to shut down sidecar cleanly', error);
     }
 
+    this.ribbonController?.dispose();
     this.statusBar?.dispose();
   }
 
@@ -77,7 +118,7 @@ export default class LocalSttPlugin extends Plugin {
         'Sidecar startup health check timed out.',
       );
 
-      this.statusBar?.setState('ready', `v${health.sidecarVersion}`);
+      this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
 
       if (options.showNotice ?? true) {
         new Notice(`Local STT sidecar is ready (${health.sidecarVersion}).`);
@@ -88,32 +129,12 @@ export default class LocalSttPlugin extends Plugin {
     }
   }
 
-  private insertBootstrapText(): void {
-    try {
-      this.requireEditorService().insertTextAtCursor(BOOTSTRAP_INSERTION_TEXT);
-      this.statusBar?.setState('idle');
-      new Notice('Inserted bootstrap text into the active note.');
-    } catch (error) {
-      this.handleError('Failed to insert bootstrap text', error, true);
-    }
-  }
-
-  private async insertMockTranscript(): Promise<void> {
-    const sidecarClient = this.requireSidecarClient();
-
-    this.statusBar?.setState('starting', 'transcribing');
-
-    try {
-      const transcript = await sidecarClient.transcribeMock();
-      this.requireEditorService().insertTextAtCursor(transcript.text);
-      this.statusBar?.setState('ready', 'mock transcript');
-      new Notice('Inserted mock transcript from the local sidecar.');
-    } catch (error) {
-      this.handleError('Mock transcription failed', error, true);
-    }
-  }
-
   private async restartSidecar(): Promise<void> {
+    if (this.requireDictationController().isBusy()) {
+      new Notice('Restart the sidecar only when dictation is idle.');
+      return;
+    }
+
     const sidecarClient = this.requireSidecarClient();
 
     this.statusBar?.setState('starting', 'restarting');
@@ -125,7 +146,7 @@ export default class LocalSttPlugin extends Plugin {
         'Sidecar restart timed out.',
       );
 
-      this.statusBar?.setState('ready', `v${health.sidecarVersion}`);
+      this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
       new Notice(`Restarted Local STT sidecar (${health.sidecarVersion}).`);
     } catch (error) {
       this.handleError('Sidecar restart failed', error, true);
@@ -143,6 +164,14 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     return this.editorService;
+  }
+
+  private requireDictationController(): DictationController {
+    if (this.dictationController === null) {
+      throw new Error('Dictation controller has not been initialized.');
+    }
+
+    return this.dictationController;
   }
 
   private requireSidecarClient(): SidecarClient {

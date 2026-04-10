@@ -1,4 +1,4 @@
-export type PluginRuntimeState = 'idle' | 'starting' | 'ready' | 'error';
+export type PluginRuntimeState = 'idle' | 'starting' | 'recording' | 'transcribing' | 'error';
 
 export class StatusBarController {
   constructor(private readonly element: HTMLElement) {
@@ -25,8 +25,10 @@ function buildLabel(state: PluginRuntimeState, detail?: string): string {
       return `Local STT: idle${suffix}`;
     case 'starting':
       return `Local STT: starting${suffix}`;
-    case 'ready':
-      return `Local STT: ready${suffix}`;
+    case 'recording':
+      return `Local STT: recording${suffix}`;
+    case 'transcribing':
+      return `Local STT: transcribing${suffix}`;
     case 'error':
       return `Local STT: error${suffix}`;
   }

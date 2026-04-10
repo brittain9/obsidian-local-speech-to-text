@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use anyhow::{Context, Result};
-use obsidian_local_stt_sidecar::app::{ControlFlow, handle_request};
+use obsidian_local_stt_sidecar::app::{AppState, ControlFlow};
 use obsidian_local_stt_sidecar::protocol::RequestEnvelope;
 
 const SIDECAR_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -19,6 +19,7 @@ fn run_stdio() -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut writer = io::BufWriter::new(stdout.lock());
+    let mut app_state = AppState::new(SIDECAR_VERSION);
 
     for line_result in stdin.lock().lines() {
         let line = line_result.context("failed to read stdin line")?;
@@ -34,7 +35,7 @@ fn run_stdio() -> Result<()> {
             }
         };
 
-        let handled = handle_request(request, SIDECAR_VERSION);
+        let handled = app_state.handle_request(request);
 
         serde_json::to_writer(&mut writer, &handled.response)
             .context("failed to serialize response envelope")?;

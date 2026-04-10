@@ -7,7 +7,8 @@ import {
   type SidecarRequestType,
   type SidecarResponse,
   serializeRequest,
-  type TranscribeMockResponsePayload,
+  type TranscribeFileRequestPayload,
+  type TranscribeFileResponsePayload,
 } from './protocol';
 import { type ResolveSidecarLaunchSpec, SidecarProcess } from './sidecar-process';
 
@@ -57,8 +58,10 @@ export class SidecarClient {
     return this.request('health', {});
   }
 
-  async transcribeMock(): Promise<TranscribeMockResponsePayload> {
-    return this.request('transcribe_mock', {});
+  async transcribeFile(
+    payload: TranscribeFileRequestPayload,
+  ): Promise<TranscribeFileResponsePayload> {
+    return this.request('transcribe_file', payload);
   }
 
   async restart(): Promise<HealthResponsePayload> {

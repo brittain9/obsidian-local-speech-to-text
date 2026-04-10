@@ -47,6 +47,44 @@ describe('sidecar protocol', () => {
     });
   });
 
+  it('parses a successful transcription response', () => {
+    const response = parseResponseLine(
+      JSON.stringify({
+        id: 'req-0002',
+        ok: true,
+        payload: {
+          segments: [
+            {
+              endMs: 900,
+              startMs: 0,
+              text: 'hello world',
+            },
+          ],
+          text: 'hello world',
+        },
+        protocolVersion: SIDECAR_PROTOCOL_VERSION,
+        type: 'transcribe_file',
+      }),
+    );
+
+    expect(response).toEqual({
+      id: 'req-0002',
+      ok: true,
+      payload: {
+        segments: [
+          {
+            endMs: 900,
+            startMs: 0,
+            text: 'hello world',
+          },
+        ],
+        text: 'hello world',
+      },
+      protocolVersion: SIDECAR_PROTOCOL_VERSION,
+      type: 'transcribe_file',
+    });
+  });
+
   it('rejects responses with an unexpected protocol version', () => {
     expect(() =>
       parseResponseLine(

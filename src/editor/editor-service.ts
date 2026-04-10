@@ -6,6 +6,10 @@ import { type EditorWriter, insertSelectionText } from './insert-selection-text'
 export class EditorService {
   constructor(private readonly app: App) {}
 
+  assertActiveEditorAvailable(): void {
+    this.getActiveEditor();
+  }
+
   insertTextAtCursor(text: string): void {
     insertSelectionText(this.getActiveEditor(), text);
   }

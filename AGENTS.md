@@ -104,14 +104,16 @@ Recommended Obsidian workflow:
 
 ## Current Milestone
 
-The current repository milestone is not real transcription yet.
+The current repository milestone is the first real dictation path.
 
-Bootstrap is considered healthy when all of the following work:
+This milestone is considered healthy when all of the following work:
 
 - the plugin builds to `main.js`
 - Obsidian loads the plugin cleanly
 - the plugin can spawn the Rust sidecar
 - the sidecar responds to a health check over stdio
-- a mock transcript round-trip inserts text into the active note
+- the plugin can record microphone audio to a temp WAV file
+- the sidecar can transcribe that WAV with a local Whisper model
+- the transcript is inserted into the active note at the cursor
 
-Only after that spine is stable should the repo move into real microphone capture, model downloads, CPU inference, and later GPU acceleration.
+Model management is still manual in this milestone. Use a local whisper.cpp-compatible model file path in plugin settings, keep CPU inference as the default path, and layer later work such as model downloads and GPU acceleration onto the existing boundary.

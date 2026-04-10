@@ -24,7 +24,58 @@ export class LocalSttSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Local STT' });
     containerEl.createEl('p', {
-      text: 'Bootstrap settings for the native sidecar path and request timing.',
+      text: 'Configure the local Whisper model, temp audio directory, and native sidecar.',
+    });
+
+    new Setting(containerEl)
+      .setName('Whisper model file path')
+      .setDesc(
+        'Absolute path to a local whisper.cpp-compatible Whisper model file, such as ggml-large-v3-turbo.bin.',
+      )
+      .addText((text) => {
+        text.setPlaceholder('/absolute/path/to/ggml-large-v3-turbo.bin');
+        text.setValue(settings.modelFilePath);
+        text.onChange(async (value) => {
+          await this.dependencies.saveSettings({
+            ...this.dependencies.getSettings(),
+            modelFilePath: value.trim(),
+          });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Insertion mode')
+      .setDesc('Current implementation supports insertion at the cursor only.')
+      .addDropdown((dropdown) => {
+        dropdown.addOption('insert_at_cursor', 'Insert at cursor');
+        dropdown.setValue(settings.insertionMode);
+        dropdown.onChange(async (value) => {
+          await this.dependencies.saveSettings({
+            ...this.dependencies.getSettings(),
+            insertionMode: value === 'insert_at_cursor' ? value : 'insert_at_cursor',
+          });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Temp audio directory override')
+      .setDesc(
+        'Optional absolute directory for temporary WAV files. Defaults to the system temp directory.',
+      )
+      .addText((text) => {
+        text.setPlaceholder('System temp directory / obsidian-local-stt');
+        text.setValue(settings.tempAudioDirectoryOverride);
+        text.onChange(async (value) => {
+          await this.dependencies.saveSettings({
+            ...this.dependencies.getSettings(),
+            tempAudioDirectoryOverride: value.trim(),
+          });
+        });
+      });
+
+    containerEl.createEl('h3', { text: 'Sidecar' });
+    containerEl.createEl('p', {
+      text: 'Use these settings only if you need to point Obsidian at a non-default debug or manually installed sidecar.',
     });
 
     new Setting(containerEl)
@@ -78,10 +129,5 @@ export class LocalSttSettingTab extends PluginSettingTab {
           });
         });
       });
-
-    containerEl.createEl('h3', { text: 'Future STT Settings' });
-    containerEl.createEl('p', {
-      text: 'Model selection, language, timestamps, and audio capture settings will land after the bootstrap path is stable.',
-    });
   }
 }

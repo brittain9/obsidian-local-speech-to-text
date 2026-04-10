@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: &str = "v1";
@@ -8,7 +8,7 @@ pub const PROTOCOL_VERSION: &str = "v1";
 #[serde(rename_all = "snake_case")]
 pub enum RequestType {
     Health,
-    TranscribeMock,
+    TranscribeFile,
     Shutdown,
 }
 
@@ -21,6 +21,30 @@ pub struct RequestEnvelope {
     pub request_type: RequestType,
     #[serde(default)]
     pub payload: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscribeFileRequestPayload {
+    #[serde(rename = "audioFilePath")]
+    pub audio_file_path: String,
+    pub language: String,
+    #[serde(rename = "modelFilePath")]
+    pub model_file_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptSegment {
+    #[serde(rename = "endMs")]
+    pub end_ms: u64,
+    #[serde(rename = "startMs")]
+    pub start_ms: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscribeFileResponsePayload {
+    pub segments: Vec<TranscriptSegment>,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +81,11 @@ impl RequestEnvelope {
         );
 
         Ok(request)
+    }
+
+    pub fn parse_payload<T: DeserializeOwned>(&self) -> Result<T> {
+        serde_json::from_value(self.payload.clone())
+            .context("failed to deserialize request payload")
     }
 }
 
@@ -96,7 +125,10 @@ impl ResponseEnvelope {
 
 #[cfg(test)]
 mod tests {
-    use super::{PROTOCOL_VERSION, RequestEnvelope, RequestType, ResponseEnvelope};
+    use super::{
+        PROTOCOL_VERSION, RequestEnvelope, RequestType, ResponseEnvelope,
+        TranscribeFileRequestPayload,
+    };
     use serde_json::json;
 
     #[test]
@@ -129,6 +161,26 @@ mod tests {
         assert_eq!(serialized["ok"], json!(true));
         assert_eq!(serialized["protocolVersion"], json!(PROTOCOL_VERSION));
         assert_eq!(serialized["type"], json!("health"));
+    }
+
+    #[test]
+    fn parse_payload_reads_transcribe_file_shape() {
+        let request = RequestEnvelope::parse(
+            r#"{"id":"req-1","protocolVersion":"v1","type":"transcribe_file","payload":{"audioFilePath":"/tmp/audio.wav","language":"en","modelFilePath":"/tmp/model.bin"}}"#,
+        )
+        .expect("request should parse");
+
+        let payload: TranscribeFileRequestPayload =
+            request.parse_payload().expect("payload should parse");
+
+        assert_eq!(
+            payload,
+            TranscribeFileRequestPayload {
+                audio_file_path: "/tmp/audio.wav".to_string(),
+                language: "en".to_string(),
+                model_file_path: "/tmp/model.bin".to_string(),
+            }
+        );
     }
 
     #[test]

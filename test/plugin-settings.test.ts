@@ -10,23 +10,32 @@ describe('resolvePluginSettings', () => {
   it('merges valid persisted values', () => {
     expect(
       resolvePluginSettings({
+        insertionMode: 'insert_at_cursor',
+        modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
         sidecarPathOverride: '/tmp/sidecar',
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
+        tempAudioDirectoryOverride: '/tmp/local-stt-audio',
       }),
     ).toEqual({
+      insertionMode: 'insert_at_cursor',
+      modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
+      tempAudioDirectoryOverride: '/tmp/local-stt-audio',
     });
   });
 
   it('falls back when persisted values are invalid', () => {
     expect(
       resolvePluginSettings({
+        insertionMode: 'append_to_end',
+        modelFilePath: 42,
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,
         sidecarStartupTimeoutMs: 'fast',
+        tempAudioDirectoryOverride: false,
       }),
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);
   });
