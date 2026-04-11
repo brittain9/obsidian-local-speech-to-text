@@ -1,4 +1,11 @@
-export type PluginRuntimeState = 'idle' | 'starting' | 'recording' | 'transcribing' | 'error';
+export type PluginRuntimeState =
+  | 'idle'
+  | 'starting'
+  | 'listening'
+  | 'speech_detected'
+  | 'transcribing'
+  | 'paused'
+  | 'error';
 
 export class StatusBarController {
   constructor(private readonly element: HTMLElement) {
@@ -25,10 +32,14 @@ function buildLabel(state: PluginRuntimeState, detail?: string): string {
       return `Local STT: idle${suffix}`;
     case 'starting':
       return `Local STT: starting${suffix}`;
-    case 'recording':
-      return `Local STT: recording${suffix}`;
+    case 'listening':
+      return `Local STT: listening${suffix}`;
+    case 'speech_detected':
+      return `Local STT: speech detected${suffix}`;
     case 'transcribing':
       return `Local STT: transcribing${suffix}`;
+    case 'paused':
+      return `Local STT: paused${suffix}`;
     case 'error':
       return `Local STT: error${suffix}`;
   }

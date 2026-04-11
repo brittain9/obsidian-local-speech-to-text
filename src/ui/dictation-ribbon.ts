@@ -1,10 +1,14 @@
 import { setIcon } from 'obsidian';
 
-import type { DictationControllerState } from '../dictation/dictation-controller';
+import type { DictationControllerState } from '../dictation/dictation-session-controller';
 
 export class DictationRibbonController {
   constructor(private readonly element: HTMLElement) {
     this.setState('idle');
+  }
+
+  getElement(): HTMLElement {
+    return this.element;
   }
 
   setState(state: DictationControllerState): void {
@@ -27,28 +31,46 @@ function buildRibbonState(state: DictationControllerState): {
   label: string;
 } {
   switch (state) {
-    case 'recording':
+    case 'idle':
+      return {
+        icon: 'mic',
+        label: 'Local STT: Start Dictation Session',
+      };
+
+    case 'starting':
       return {
         icon: 'square',
-        label: 'Local STT: Stop And Transcribe',
+        label: 'Local STT: Starting Dictation Session',
+      };
+
+    case 'listening':
+      return {
+        icon: 'square',
+        label: 'Local STT: Stop Dictation Session',
+      };
+
+    case 'speech_detected':
+      return {
+        icon: 'square',
+        label: 'Local STT: Dictation Speech Detected',
       };
 
     case 'transcribing':
       return {
-        icon: 'mic',
-        label: 'Local STT: Transcribing',
+        icon: 'square',
+        label: 'Local STT: Dictation Session Transcribing',
+      };
+
+    case 'paused':
+      return {
+        icon: 'square',
+        label: 'Local STT: Dictation Session Paused',
       };
 
     case 'error':
       return {
         icon: 'mic',
-        label: 'Local STT: Error',
-      };
-
-    case 'idle':
-      return {
-        icon: 'mic',
-        label: 'Local STT: Start Dictation',
+        label: 'Local STT: Dictation Session Error',
       };
   }
 }

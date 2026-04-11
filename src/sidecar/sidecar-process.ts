@@ -1,17 +1,18 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
+
 import { Platform } from 'obsidian';
 
 export interface SidecarLaunchSpec {
-  command: string;
   args?: string[];
+  command: string;
   cwd?: string;
 }
 
 interface SidecarProcessHandlers {
   onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
   onStderrLine: (line: string) => void;
-  onStdoutLine: (line: string) => void;
+  onStdoutChunk: (chunk: Uint8Array) => void;
 }
 
 export type ResolveSidecarLaunchSpec = () => Promise<SidecarLaunchSpec>;
@@ -19,7 +20,6 @@ export type ResolveSidecarLaunchSpec = () => Promise<SidecarLaunchSpec>;
 export class SidecarProcess {
   private child: ChildProcessWithoutNullStreams | null = null;
   private stderrReader: ReadLineInterface | null = null;
-  private stdoutReader: ReadLineInterface | null = null;
 
   constructor(
     private readonly resolveLaunchSpec: ResolveSidecarLaunchSpec,
@@ -45,18 +45,18 @@ export class SidecarProcess {
 
     await waitForSpawn(child);
 
-    child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: Uint8Array) => {
+      this.handlers.onStdoutChunk(chunk);
+    });
 
     this.child = child;
-    this.stdoutReader = createInterface({ input: child.stdout });
     this.stderrReader = createInterface({ input: child.stderr });
-
-    this.stdoutReader.on('line', this.handlers.onStdoutLine);
     this.stderrReader.on('line', this.handlers.onStderrLine);
 
     child.once('exit', (code, signal) => {
       this.disposeReaders();
+      child.stdout.removeAllListeners('data');
       this.child = null;
       this.handlers.onExit(code, signal);
     });
@@ -80,20 +80,18 @@ export class SidecarProcess {
     await waitForExit(child);
   }
 
-  writeLine(line: string): void {
+  write(frameBytes: Uint8Array): void {
     const child = this.child;
 
     if (child === null || !child.stdin.writable) {
       throw new Error('Sidecar process is not running.');
     }
 
-    child.stdin.write(`${line}\n`);
+    child.stdin.write(frameBytes);
   }
 
   private disposeReaders(): void {
-    this.stdoutReader?.close();
     this.stderrReader?.close();
-    this.stdoutReader = null;
     this.stderrReader = null;
   }
 }

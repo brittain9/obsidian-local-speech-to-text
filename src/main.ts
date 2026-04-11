@@ -2,10 +2,10 @@ import { dirname, join } from 'node:path';
 
 import { FileSystemAdapter, Notice, Platform, Plugin } from 'obsidian';
 
-import { MicrophoneRecorder } from './audio/microphone-recorder';
+import { AudioCaptureStream } from './audio/audio-capture-stream';
 import { PCM_RECORDER_WORKLET_OUTPUT_PATH } from './audio/pcm-recorder-worklet-shared';
-import { registerCommands } from './commands/register-commands';
-import { DictationController } from './dictation/dictation-controller';
+import { PRESS_AND_HOLD_GATE_COMMAND_ID, registerCommands } from './commands/register-commands';
+import { DictationSessionController } from './dictation/dictation-session-controller';
 import { EditorService } from './editor/editor-service';
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
 import {
@@ -15,7 +15,8 @@ import {
 } from './settings/plugin-settings';
 import { normalizePersistedPluginSettings } from './settings/settings-normalization';
 import { LocalSttSettingTab } from './settings/settings-tab';
-import { SidecarClient } from './sidecar/sidecar-client';
+import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
+import { SidecarConnection } from './sidecar/sidecar-connection';
 import type { SidecarLogEntry } from './sidecar/sidecar-logging';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
@@ -24,12 +25,12 @@ import { StatusBarController } from './ui/status-bar';
 const SIDECAR_BINARY_BASENAME = 'obsidian-local-stt-sidecar';
 
 export default class LocalSttPlugin extends Plugin {
-  private dictationController: DictationController | null = null;
+  private audioCaptureStream: AudioCaptureStream | null = null;
+  private dictationController: DictationSessionController | null = null;
   private editorService: EditorService | null = null;
-  private microphoneRecorder: MicrophoneRecorder | null = null;
   private ribbonController: DictationRibbonController | null = null;
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
-  private sidecarClient: SidecarClient | null = null;
+  private sidecarConnection: SidecarConnection | null = null;
   private statusBar: StatusBarController | null = null;
 
   override async onload(): Promise<void> {
@@ -48,49 +49,68 @@ export default class LocalSttPlugin extends Plugin {
 
     this.editorService = new EditorService(this.app);
     this.statusBar = new StatusBarController(this.addStatusBarItem());
-    this.sidecarClient = new SidecarClient({
+    this.sidecarConnection = new SidecarConnection({
       getRequestTimeoutMs: () => this.settings.sidecarRequestTimeoutMs,
       logger: (entry) => {
         writePluginLog('[Local STT]', entry);
       },
       resolveLaunchSpec: async () => this.resolveSidecarLaunchSpec(),
     });
-    this.microphoneRecorder = new MicrophoneRecorder({
+    this.audioCaptureStream = new AudioCaptureStream({
       logger: (message, error) => {
-        writePluginLog('[Local STT] microphone recorder', {
+        writePluginLog('[Local STT] audio capture', {
           error,
-          level: error === undefined ? 'warn' : 'error',
+          level: 'warn',
           message,
         });
       },
       resolveWorkletModulePath: async () => this.resolveRecorderWorkletModulePath(),
     });
-    this.ribbonController = new DictationRibbonController(
-      this.addRibbonIcon('mic', 'Local STT: Start Dictation', async () => {
-        await this.requireDictationController().toggleDictation();
-      }),
-    );
-    this.dictationController = new DictationController({
+
+    const ribbonElement = this.addRibbonIcon('mic', 'Local STT: Start Dictation Session', () => {
+      this.requireDictationController().handleRibbonClick();
+    });
+    this.ribbonController = new DictationRibbonController(ribbonElement);
+    this.dictationController = new DictationSessionController({
+      app: this.app,
+      captureStream: this.audioCaptureStream,
       editorService: this.editorService,
       getSettings: () => this.settings,
       logger: (message, error) => {
         writePluginLog('[Local STT]', {
           error,
-          level: error === undefined ? 'warn' : 'error',
+          level: 'warn',
           message,
         });
       },
       notice: (message) => {
         new Notice(message);
       },
-      recorder: this.microphoneRecorder,
+      pressAndHoldGateCommandId: `${this.manifest.id}:${PRESS_AND_HOLD_GATE_COMMAND_ID}`,
       setRibbonState: (state) => {
         this.ribbonController?.setState(state);
       },
       setStatusState: (state, detail) => {
         this.statusBar?.setState(state, detail);
       },
-      sidecarClient: this.sidecarClient,
+      sidecarConnection: this.sidecarConnection,
+    });
+
+    this.registerDomEvent(this.ribbonController.getElement(), 'pointerdown', (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      this.requireDictationController().handleRibbonPointerDown();
+    });
+    this.registerDomEvent(window, 'pointerup', () => {
+      this.requireDictationController().handleRibbonPointerUp();
+    });
+    this.registerDomEvent(document, 'keydown', (event) => {
+      this.requireDictationController().handleDocumentKeyDown(event);
+    });
+    this.registerDomEvent(document, 'keyup', (event) => {
+      this.requireDictationController().handleDocumentKeyUp(event);
     });
 
     this.addSettingTab(
@@ -108,7 +128,7 @@ export default class LocalSttPlugin extends Plugin {
       plugin: this,
       restartSidecar: async () => this.restartSidecar(),
       startDictation: async () => this.requireDictationController().startDictation(),
-      stopAndTranscribe: async () => this.requireDictationController().stopAndTranscribe(),
+      stopDictation: async () => this.requireDictationController().stopDictation(),
     });
 
     await this.checkSidecarHealth({ showNotice: false }).catch((error: unknown) => {
@@ -124,7 +144,7 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     try {
-      await this.sidecarClient?.shutdown(this.settings.sidecarStartupTimeoutMs);
+      await this.sidecarConnection?.shutdown(this.settings.sidecarStartupTimeoutMs);
     } catch (error) {
       console.error('[Local STT] failed to shut down sidecar cleanly', error);
     }
@@ -134,12 +154,12 @@ export default class LocalSttPlugin extends Plugin {
   }
 
   private async checkSidecarHealth(options: { showNotice?: boolean } = {}): Promise<void> {
-    const sidecarClient = this.requireSidecarClient();
+    const sidecarConnection = this.requireSidecarConnection();
 
     this.statusBar?.setState('starting', 'health check');
 
     try {
-      const health = await sidecarClient.healthCheck(this.settings.sidecarStartupTimeoutMs);
+      const health = await sidecarConnection.healthCheck(this.settings.sidecarStartupTimeoutMs);
 
       this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
 
@@ -152,18 +172,28 @@ export default class LocalSttPlugin extends Plugin {
     }
   }
 
+  private handleError(message: string, error: unknown, showNotice: boolean): void {
+    const detail = error instanceof Error ? error.message : String(error);
+
+    this.statusBar?.setState('error', detail);
+
+    if (showNotice) {
+      new Notice(`${message}: ${detail}`);
+    }
+  }
+
   private async restartSidecar(): Promise<void> {
     if (this.requireDictationController().isBusy()) {
       new Notice('Restart the sidecar only when dictation is idle.');
       return;
     }
 
-    const sidecarClient = this.requireSidecarClient();
+    const sidecarConnection = this.requireSidecarConnection();
 
     this.statusBar?.setState('starting', 'restarting');
 
     try {
-      const health = await sidecarClient.restart(this.settings.sidecarStartupTimeoutMs);
+      const health = await sidecarConnection.restart(this.settings.sidecarStartupTimeoutMs);
 
       this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
       new Notice(`Restarted Local STT sidecar (${health.sidecarVersion}).`);
@@ -177,15 +207,7 @@ export default class LocalSttPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private requireEditorService(): EditorService {
-    if (this.editorService === null) {
-      throw new Error('Editor service has not been initialized.');
-    }
-
-    return this.editorService;
-  }
-
-  private requireDictationController(): DictationController {
+  private requireDictationController(): DictationSessionController {
     if (this.dictationController === null) {
       throw new Error('Dictation controller has not been initialized.');
     }
@@ -193,12 +215,12 @@ export default class LocalSttPlugin extends Plugin {
     return this.dictationController;
   }
 
-  private requireSidecarClient(): SidecarClient {
-    if (this.sidecarClient === null) {
-      throw new Error('Sidecar client has not been initialized.');
+  private requireSidecarConnection(): SidecarConnection {
+    if (this.sidecarConnection === null) {
+      throw new Error('Sidecar connection has not been initialized.');
     }
 
-    return this.sidecarClient;
+    return this.sidecarConnection;
   }
 
   private async resolveSidecarLaunchSpec(): Promise<SidecarLaunchSpec> {
@@ -218,10 +240,9 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     const pluginDirectory = await this.resolvePluginDirectoryPath();
+    const sidecarProjectDirectory = join(pluginDirectory, 'native', 'sidecar');
     const executablePath = join(
-      pluginDirectory,
-      'native',
-      'sidecar',
+      sidecarProjectDirectory,
       'target',
       'debug',
       getSidecarExecutableName(),
@@ -237,6 +258,8 @@ export default class LocalSttPlugin extends Plugin {
     if (pathKind !== 'file') {
       throw new Error(`Sidecar executable path must point to a file: ${executablePath}`);
     }
+
+    await assertSidecarExecutableIsFresh(executablePath, sidecarProjectDirectory);
 
     return executablePath;
   }
@@ -258,51 +281,24 @@ export default class LocalSttPlugin extends Plugin {
   private async resolveRecorderWorkletModulePath(): Promise<string> {
     return join(await this.resolvePluginDirectoryPath(), PCM_RECORDER_WORKLET_OUTPUT_PATH);
   }
-
-  private handleError(message: string, error: unknown, showNotice: boolean): void {
-    const detail = error instanceof Error ? error.message : String(error);
-
-    console.error(`[Local STT] ${message}`, error);
-    this.statusBar?.setState('error', detail);
-
-    if (showNotice) {
-      new Notice(`${message}: ${detail}`);
-    }
-  }
-}
-
-type PluginLogLevel = SidecarLogEntry['level'] | 'error' | 'info';
-
-interface PluginLogEntry {
-  level: PluginLogLevel;
-  message: string;
-  error?: unknown;
-}
-
-function writePluginLog(prefix: string, entry: PluginLogEntry): void {
-  const logMethod = resolveConsoleMethod(entry.level);
-
-  if (entry.error === undefined) {
-    logMethod(prefix, entry.message);
-    return;
-  }
-
-  logMethod(prefix, entry.message, entry.error);
-}
-
-function resolveConsoleMethod(level: PluginLogLevel): typeof console.debug {
-  switch (level) {
-    case 'debug':
-      return console.debug;
-    case 'info':
-      return console.info;
-    case 'warn':
-      return console.warn;
-    case 'error':
-      return console.error;
-  }
 }
 
 function getSidecarExecutableName(): string {
   return Platform.isWin ? `${SIDECAR_BINARY_BASENAME}.exe` : SIDECAR_BINARY_BASENAME;
+}
+
+function writePluginLog(prefix: string, entry: SidecarLogEntry): void {
+  const logArguments: unknown[] = [`${prefix} ${entry.message}`];
+
+  if (entry.error !== undefined) {
+    logArguments.push(entry.error);
+  }
+
+  switch (entry.level) {
+    case 'warn':
+      console.warn(...logArguments);
+      return;
+    default:
+      console.debug(...logArguments);
+  }
 }

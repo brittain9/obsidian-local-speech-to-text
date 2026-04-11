@@ -1,47 +1,33 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 
+import { PCM_BYTES_PER_FRAME, PCM_CHANNEL_COUNT } from '../shared/pcm-format';
 import { PCM_RECORDER_WORKLET_NAME } from './pcm-recorder-worklet-shared';
-import {
-  downsampleBuffer,
-  encodePcm16WaveFile,
-  float32ToInt16Pcm,
-  mergeSampleChunks,
-  TARGET_WAV_CHANNEL_COUNT,
-  TARGET_WAV_SAMPLE_RATE,
-} from './wav-encoder';
 
-type RecorderLogger = (message: string, error?: unknown) => void;
+type AudioCaptureLogger = (message: string, error?: unknown) => void;
+type AudioFrameListener = (frameBytes: Uint8Array) => void;
 
-export interface RecordedAudioFile {
-  audioFilePath: string;
-  durationMs: number;
-  sampleRate: number;
-}
-
-interface MicrophoneRecorderOptions {
-  logger?: RecorderLogger;
+interface AudioCaptureStreamOptions {
+  logger?: AudioCaptureLogger;
   resolveWorkletModulePath: () => Promise<string>;
-  targetSampleRate?: number;
 }
 
-export class MicrophoneRecorder {
+export class AudioCaptureStream {
   private audioContext: AudioContext | null = null;
+  private frameListener: AudioFrameListener | null = null;
   private mediaStream: MediaStream | null = null;
   private muteNode: GainNode | null = null;
   private recorderNode: AudioWorkletNode | null = null;
-  private sampleChunks: Float32Array[] = [];
   private sourceNode: MediaStreamAudioSourceNode | null = null;
-  private sourceSampleRate = 0;
 
-  constructor(private readonly options: MicrophoneRecorderOptions) {}
+  constructor(private readonly options: AudioCaptureStreamOptions) {}
 
-  isRecording(): boolean {
+  isCapturing(): boolean {
     return this.mediaStream !== null;
   }
 
-  async start(): Promise<void> {
-    if (this.isRecording()) {
-      throw new Error('Dictation is already recording.');
+  async start(frameListener: AudioFrameListener): Promise<void> {
+    if (this.isCapturing()) {
+      throw new Error('Audio capture is already active.');
     }
 
     const mediaDevices = globalThis.navigator?.mediaDevices;
@@ -53,7 +39,7 @@ export class MicrophoneRecorder {
     const mediaStream = await mediaDevices.getUserMedia({
       audio: {
         autoGainControl: false,
-        channelCount: TARGET_WAV_CHANNEL_COUNT,
+        channelCount: PCM_CHANNEL_COUNT,
         echoCancellation: false,
         noiseSuppression: false,
       },
@@ -74,22 +60,26 @@ export class MicrophoneRecorder {
 
       const sourceNode = audioContext.createMediaStreamSource(mediaStream);
       const recorderNode = new AudioWorkletNode(audioContext, PCM_RECORDER_WORKLET_NAME, {
-        channelCount: TARGET_WAV_CHANNEL_COUNT,
+        channelCount: PCM_CHANNEL_COUNT,
         channelCountMode: 'explicit',
         numberOfInputs: 1,
         numberOfOutputs: 1,
-        outputChannelCount: [TARGET_WAV_CHANNEL_COUNT],
+        outputChannelCount: [PCM_CHANNEL_COUNT],
       });
       const muteNode = audioContext.createGain();
       muteNode.gain.value = 0;
 
-      this.sampleChunks = [];
-      recorderNode.port.onmessage = (event) => {
-        const sampleChunk = toFloat32Array(event.data);
+      recorderNode.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+        const frameBytes = new Uint8Array(event.data);
 
-        if (sampleChunk.length > 0) {
-          this.sampleChunks.push(sampleChunk);
+        if (frameBytes.byteLength !== PCM_BYTES_PER_FRAME) {
+          this.log(
+            `ignored a mis-sized audio frame from the recorder worklet (${frameBytes.byteLength} bytes)`,
+          );
+          return;
         }
+
+        this.frameListener?.(frameBytes);
       };
 
       sourceNode.connect(recorderNode);
@@ -97,55 +87,25 @@ export class MicrophoneRecorder {
       muteNode.connect(audioContext.destination);
 
       this.audioContext = audioContext;
+      this.frameListener = frameListener;
       this.mediaStream = mediaStream;
       this.muteNode = muteNode;
       this.recorderNode = recorderNode;
       this.sourceNode = sourceNode;
-      this.sourceSampleRate = audioContext.sampleRate;
     } catch (error) {
-      this.log('failed to initialize microphone recorder', error);
+      this.log('failed to initialize streaming audio capture', error);
       await stopMediaStream(mediaStream);
 
       if (audioContext !== null) {
         await closeAudioContext(audioContext);
       }
 
-      throw asError(error, 'Failed to initialize microphone recording.');
+      throw asError(error, 'Failed to initialize microphone capture.');
     }
   }
 
-  async stop(outputFilePath: string): Promise<RecordedAudioFile> {
-    if (!this.isRecording()) {
-      throw new Error('Dictation is not currently recording.');
-    }
-
-    const sourceSampleRate = this.sourceSampleRate;
-    const capturedChunks = await this.releaseCapture();
-    const mergedSamples = mergeSampleChunks(capturedChunks);
-
-    if (mergedSamples.length === 0) {
-      throw new Error('No audio was captured from the microphone.');
-    }
-
-    const targetSampleRate = this.options.targetSampleRate ?? TARGET_WAV_SAMPLE_RATE;
-    const outputSamples =
-      sourceSampleRate === targetSampleRate
-        ? mergedSamples
-        : downsampleBuffer(mergedSamples, sourceSampleRate, targetSampleRate);
-    const pcmSamples = float32ToInt16Pcm(outputSamples);
-    const wavBytes = encodePcm16WaveFile(pcmSamples, targetSampleRate, TARGET_WAV_CHANNEL_COUNT);
-
-    await writeFile(outputFilePath, wavBytes);
-
-    return {
-      audioFilePath: outputFilePath,
-      durationMs: Math.round((outputSamples.length / targetSampleRate) * 1_000),
-      sampleRate: targetSampleRate,
-    };
-  }
-
-  async cancel(): Promise<void> {
-    if (!this.isRecording()) {
+  async stop(): Promise<void> {
+    if (!this.isCapturing()) {
       return;
     }
 
@@ -153,31 +113,29 @@ export class MicrophoneRecorder {
   }
 
   async dispose(): Promise<void> {
-    await this.cancel();
+    await this.stop();
   }
 
-  private async releaseCapture(): Promise<Float32Array[]> {
+  private async releaseCapture(): Promise<void> {
     const audioContext = this.audioContext;
     const mediaStream = this.mediaStream;
     const muteNode = this.muteNode;
     const recorderNode = this.recorderNode;
     const sourceNode = this.sourceNode;
-    const capturedChunks = this.sampleChunks;
 
     this.audioContext = null;
+    this.frameListener = null;
     this.mediaStream = null;
     this.muteNode = null;
     this.recorderNode = null;
-    this.sampleChunks = [];
     this.sourceNode = null;
-    this.sourceSampleRate = 0;
 
     try {
       recorderNode?.disconnect();
       sourceNode?.disconnect();
       muteNode?.disconnect();
     } catch (error) {
-      this.log('failed to disconnect microphone recorder nodes cleanly', error);
+      this.log('failed to disconnect the audio capture graph cleanly', error);
     }
 
     if (recorderNode !== null) {
@@ -191,8 +149,6 @@ export class MicrophoneRecorder {
     if (audioContext !== null) {
       await closeAudioContext(audioContext);
     }
-
-    return capturedChunks;
   }
 
   private log(message: string, error?: unknown): void {
@@ -231,7 +187,7 @@ async function closeAudioContext(audioContext: AudioContext): Promise<void> {
 async function installRecorderWorklet(
   audioContext: AudioContext,
   workletModulePath: string,
-  logger?: RecorderLogger,
+  logger?: AudioCaptureLogger,
 ): Promise<void> {
   if (audioContext.audioWorklet === undefined) {
     throw new Error('AudioWorklet is not available in this Obsidian runtime.');
@@ -258,18 +214,6 @@ async function installRecorderWorklet(
   } finally {
     URL.revokeObjectURL(workletModuleUrl);
   }
-}
-
-function toFloat32Array(value: unknown): Float32Array {
-  if (value instanceof Float32Array) {
-    return value;
-  }
-
-  if (ArrayBuffer.isView(value) && value.buffer instanceof ArrayBuffer) {
-    return new Float32Array(value.buffer.slice(0));
-  }
-
-  throw new Error('Recorder worklet emitted an invalid audio sample payload.');
 }
 
 function asError(value: unknown, fallbackMessage: string): Error {

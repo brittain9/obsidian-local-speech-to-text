@@ -11,19 +11,21 @@ describe('resolvePluginSettings', () => {
     expect(
       resolvePluginSettings({
         insertionMode: 'insert_at_cursor',
+        listeningMode: 'press_and_hold',
         modelFilePath: ' /tmp/models/ggml-large-v3-turbo.bin ',
+        pauseWhileProcessing: false,
         sidecarPathOverride: ' /tmp/sidecar ',
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
-        tempAudioDirectoryOverride: ' /tmp/local-stt-audio ',
       }),
     ).toEqual({
       insertionMode: 'insert_at_cursor',
+      listeningMode: 'press_and_hold',
       modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
+      pauseWhileProcessing: false,
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
-      tempAudioDirectoryOverride: '/tmp/local-stt-audio',
     });
   });
 
@@ -31,16 +33,18 @@ describe('resolvePluginSettings', () => {
     expect(
       resolvePluginSettings({
         insertionMode: 'append_to_end',
+        listeningMode: 'unsupported',
         modelFilePath: 42,
+        pauseWhileProcessing: 'sometimes',
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,
         sidecarStartupTimeoutMs: 'fast',
-        tempAudioDirectoryOverride: false,
       }),
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);
   });
 
-  it('uses the new CPU-realistic request timeout by default', () => {
-    expect(DEFAULT_PLUGIN_SETTINGS.sidecarRequestTimeoutMs).toBe(300_000);
+  it('uses the new one-sentence default mode with pause-while-processing enabled', () => {
+    expect(DEFAULT_PLUGIN_SETTINGS.listeningMode).toBe('one_sentence');
+    expect(DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing).toBe(true);
   });
 });

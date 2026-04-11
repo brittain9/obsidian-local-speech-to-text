@@ -1,15 +1,11 @@
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use crate::protocol::{TranscribeFileResponsePayload, TranscriptSegment};
+use crate::protocol::TranscriptSegment;
 
 const SUPPORTED_LANGUAGE: &str = "en";
-const SUPPORTED_CHANNEL_COUNT: u16 = 1;
-const SUPPORTED_SAMPLE_RATE: u32 = 16_000;
-const SUPPORTED_BITS_PER_SAMPLE: u16 = 16;
 
 #[derive(Debug, Default)]
 pub struct TranscriptionEngine {
@@ -22,11 +18,17 @@ struct LoadedModel {
     model_path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionRequest {
-    pub audio_file_path: PathBuf,
+    pub audio_samples: Vec<f32>,
     pub language: String,
     pub model_file_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transcript {
+    pub segments: Vec<TranscriptSegment>,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,10 +54,10 @@ impl TranscriptionEngine {
     pub fn transcribe(
         &mut self,
         request: &TranscriptionRequest,
-    ) -> Result<TranscribeFileResponsePayload, TranscriptionError> {
+    ) -> Result<Transcript, TranscriptionError> {
         validate_language(&request.language)?;
+        validate_audio_samples(&request.audio_samples)?;
 
-        let audio = load_audio_file(&request.audio_file_path)?;
         let context = self.load_or_reuse_model(&request.model_file_path)?;
         let mut state = context.create_state().map_err(|error| {
             TranscriptionError::transcription_failure("failed to create whisper state", error)
@@ -70,9 +72,11 @@ impl TranscriptionEngine {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
-        state.full(params, &audio).map_err(|error| {
-            TranscriptionError::transcription_failure("failed to run whisper model", error)
-        })?;
+        state
+            .full(params, &request.audio_samples)
+            .map_err(|error| {
+                TranscriptionError::transcription_failure("failed to run whisper model", error)
+            })?;
 
         let mut text = String::new();
         let mut segments = Vec::new();
@@ -87,10 +91,14 @@ impl TranscriptionEngine {
             });
         }
 
-        Ok(TranscribeFileResponsePayload {
+        Ok(Transcript {
             segments,
             text: text.trim().to_string(),
         })
+    }
+
+    pub fn reset_model(&mut self) {
+        self.loaded_model = None;
     }
 
     fn load_or_reuse_model(
@@ -129,89 +137,32 @@ impl TranscriptionEngine {
     }
 }
 
-fn load_audio_file(audio_file_path: &Path) -> Result<Vec<f32>, TranscriptionError> {
-    validate_audio_path(audio_file_path)?;
-
-    let reader = hound::WavReader::open(audio_file_path).map_err(|error| {
-        TranscriptionError::invalid_audio_with_details(format!("failed to open WAV file: {error}"))
-    })?;
-    let spec = reader.spec();
-
-    if spec.channels != SUPPORTED_CHANNEL_COUNT {
-        return Err(TranscriptionError::invalid_audio_with_details(format!(
-            "expected mono WAV input, received {} channels",
-            spec.channels
-        )));
-    }
-
-    if spec.sample_rate != SUPPORTED_SAMPLE_RATE {
-        return Err(TranscriptionError::invalid_audio_with_details(format!(
-            "expected {} Hz WAV input, received {} Hz",
-            SUPPORTED_SAMPLE_RATE, spec.sample_rate
-        )));
-    }
-
-    if spec.bits_per_sample != SUPPORTED_BITS_PER_SAMPLE
-        || spec.sample_format != hound::SampleFormat::Int
-    {
-        return Err(TranscriptionError::invalid_audio_with_details(
-            "expected 16-bit PCM WAV input".to_string(),
-        ));
-    }
-
-    let samples: Vec<i16> = reader
-        .into_samples::<i16>()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            TranscriptionError::invalid_audio_with_details(format!(
-                "failed to decode PCM samples: {error}"
-            ))
-        })?;
-    let mut audio = vec![0.0_f32; samples.len()];
-
-    whisper_rs::convert_integer_to_float_audio(&samples, &mut audio).map_err(|error| {
-        TranscriptionError::invalid_audio_with_details(format!(
-            "failed to convert PCM audio to floats: {error}"
-        ))
-    })?;
-
-    Ok(audio)
-}
-
-fn validate_audio_path(audio_file_path: &Path) -> Result<(), TranscriptionError> {
-    validate_file_exists(audio_file_path, "audio file", "missing_audio_file")
-}
-
-fn validate_model_path(model_file_path: &Path) -> Result<(), TranscriptionError> {
-    validate_file_exists(model_file_path, "model file", "missing_model_file")
-}
-
-fn validate_file_exists(
-    path: &Path,
-    label: &'static str,
-    code: &'static str,
-) -> Result<(), TranscriptionError> {
-    if !path.is_file() {
+fn validate_audio_samples(audio_samples: &[f32]) -> Result<(), TranscriptionError> {
+    if audio_samples.is_empty() {
         return Err(TranscriptionError {
-            code,
-            message: if label == "audio file" {
-                "Audio file does not exist or is not a regular file."
-            } else {
-                "Model file does not exist or is not a regular file."
-            },
-            details: Some(path.display().to_string()),
+            code: "invalid_audio_buffer",
+            message: "Audio buffer was empty when transcription started.",
+            details: None,
         });
     }
 
-    std::fs::File::open(path)
-        .with_context(|| format!("failed to open {label}: {}", path.display()))
-        .map_err(|error| {
-            if label == "audio file" {
-                TranscriptionError::invalid_audio_with_details(error.to_string())
-            } else {
-                TranscriptionError::invalid_model_with_details(error.to_string())
-            }
-        })?;
+    Ok(())
+}
+
+fn validate_model_path(model_file_path: &Path) -> Result<(), TranscriptionError> {
+    if !model_file_path.is_file() {
+        return Err(TranscriptionError {
+            code: "missing_model_file",
+            message: "Model file does not exist or is not a regular file.",
+            details: Some(model_file_path.display().to_string()),
+        });
+    }
+
+    std::fs::File::open(model_file_path).map_err(|error| TranscriptionError {
+        code: "invalid_model_file",
+        message: "Model file is missing, unreadable, or unsupported.",
+        details: Some(error.to_string()),
+    })?;
 
     Ok(())
 }
@@ -240,14 +191,6 @@ fn whisper_timestamp_to_millis(timestamp: i64) -> u64 {
 }
 
 impl TranscriptionError {
-    fn invalid_audio_with_details(details: String) -> Self {
-        Self {
-            code: "invalid_audio_file",
-            message: "Audio file is missing, unreadable, or not in the required WAV format.",
-            details: Some(details),
-        }
-    }
-
     fn invalid_model(details: &'static str) -> Self {
         Self {
             code: "invalid_model_file",
@@ -264,11 +207,11 @@ impl TranscriptionError {
         }
     }
 
-    fn transcription_failure(message: &'static str, error: impl Display) -> Self {
+    fn transcription_failure(details: &'static str, error: impl Display) -> Self {
         Self {
-            code: "transcription_failed",
-            message: "Whisper transcription failed.",
-            details: Some(format!("{message}: {error}")),
+            code: "transcription_failure",
+            message: "Local transcription failed.",
+            details: Some(format!("{details}: {error}")),
         }
     }
 }
@@ -277,25 +220,33 @@ impl TranscriptionError {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{TranscriptionEngine, TranscriptionRequest, whisper_timestamp_to_millis};
+    use super::{TranscriptionEngine, TranscriptionRequest};
 
     #[test]
-    fn missing_model_file_returns_structured_error() {
+    fn transcribe_rejects_unsupported_language() {
         let mut engine = TranscriptionEngine::default();
         let error = engine
             .transcribe(&TranscriptionRequest {
-                audio_file_path: PathBuf::from("/tmp/does-not-exist.wav"),
-                language: "en".to_string(),
-                model_file_path: PathBuf::from("/tmp/does-not-exist.bin"),
+                audio_samples: vec![0.0, 0.1],
+                language: "fr".to_string(),
+                model_file_path: PathBuf::from("/tmp/missing-model.bin"),
             })
-            .expect_err("transcription should fail");
+            .expect_err("request should fail");
 
-        assert_eq!(error.code, "missing_audio_file");
+        assert_eq!(error.code, "unsupported_language");
     }
 
     #[test]
-    fn whisper_timestamp_converts_to_milliseconds() {
-        assert_eq!(whisper_timestamp_to_millis(123), 1_230);
-        assert_eq!(whisper_timestamp_to_millis(-1), 0);
+    fn transcribe_rejects_empty_audio() {
+        let mut engine = TranscriptionEngine::default();
+        let error = engine
+            .transcribe(&TranscriptionRequest {
+                audio_samples: Vec::new(),
+                language: "en".to_string(),
+                model_file_path: PathBuf::from("/tmp/missing-model.bin"),
+            })
+            .expect_err("request should fail");
+
+        assert_eq!(error.code, "invalid_audio_buffer");
     }
 }

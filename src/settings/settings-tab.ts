@@ -24,7 +24,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Local STT' });
     containerEl.createEl('p', {
-      text: 'Configure the local Whisper model, temp audio directory, and native sidecar.',
+      text: 'Configure the local Whisper model, listening mode, and native sidecar.',
     });
 
     new Setting(containerEl)
@@ -44,6 +44,42 @@ export class LocalSttSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName('Listening mode')
+      .setDesc(
+        'Choose whether dictation keeps listening continuously, waits for a held gate, or captures one utterance and stops.',
+      )
+      .addDropdown((dropdown) => {
+        dropdown.addOption('always_on', 'Always on');
+        dropdown.addOption('press_and_hold', 'Press and hold');
+        dropdown.addOption('one_sentence', 'One sentence');
+        dropdown.setValue(settings.listeningMode);
+        dropdown.onChange(async (value) => {
+          await this.dependencies.saveSettings({
+            ...this.dependencies.getSettings(),
+            listeningMode:
+              value === 'always_on' || value === 'press_and_hold' || value === 'one_sentence'
+                ? value
+                : 'one_sentence',
+          });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Pause while processing')
+      .setDesc(
+        'When enabled, incoming audio is discarded while the previous utterance is being transcribed. Disable this only if you want bounded queueing and overload warnings instead.',
+      )
+      .addToggle((toggle) => {
+        toggle.setValue(settings.pauseWhileProcessing);
+        toggle.onChange(async (value) => {
+          await this.dependencies.saveSettings({
+            ...this.dependencies.getSettings(),
+            pauseWhileProcessing: value,
+          });
+        });
+      });
+
+    new Setting(containerEl)
       .setName('Insertion mode')
       .setDesc('Current implementation supports insertion at the cursor only.')
       .addDropdown((dropdown) => {
@@ -53,22 +89,6 @@ export class LocalSttSettingTab extends PluginSettingTab {
           await this.dependencies.saveSettings({
             ...this.dependencies.getSettings(),
             insertionMode: value === 'insert_at_cursor' ? value : 'insert_at_cursor',
-          });
-        });
-      });
-
-    new Setting(containerEl)
-      .setName('Temp audio directory override')
-      .setDesc(
-        'Optional absolute directory for temporary WAV files. This must be a directory path, not a file path. Defaults to the system temp directory.',
-      )
-      .addText((text) => {
-        text.setPlaceholder('System temp directory / obsidian-local-stt');
-        text.setValue(settings.tempAudioDirectoryOverride);
-        text.onChange(async (value) => {
-          await this.dependencies.saveSettings({
-            ...this.dependencies.getSettings(),
-            tempAudioDirectoryOverride: value.trim(),
           });
         });
       });
@@ -100,6 +120,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
         text.setValue(String(settings.sidecarStartupTimeoutMs));
         text.onChange(async (value) => {
           const parsedValue = Number.parseInt(value, 10);
+
           if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
             return;
           }
@@ -114,13 +135,14 @@ export class LocalSttSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Request timeout (ms)')
       .setDesc(
-        'Maximum time allowed for a transcription request before failing it. Increase this for slower CPUs or larger models.',
+        'Maximum time allowed for start, stop, cancel, and health requests before failing them. Increase this only if the sidecar regularly stalls during startup or shutdown.',
       )
       .addText((text) => {
         text.inputEl.type = 'number';
         text.setValue(String(settings.sidecarRequestTimeoutMs));
         text.onChange(async (value) => {
           const parsedValue = Number.parseInt(value, 10);
+
           if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
             return;
           }
@@ -131,5 +153,9 @@ export class LocalSttSettingTab extends PluginSettingTab {
           });
         });
       });
+
+    containerEl.createEl('p', {
+      text: 'Assign a hotkey to “Local STT: Press-And-Hold Gate” in Obsidian Hotkeys if you want keyboard press-and-hold input.',
+    });
   }
 }

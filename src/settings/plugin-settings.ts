@@ -1,21 +1,25 @@
+import type { ListeningMode } from '../sidecar/protocol';
+
 export type InsertionMode = 'insert_at_cursor';
 
 export interface PluginSettings {
   insertionMode: InsertionMode;
+  listeningMode: ListeningMode;
   modelFilePath: string;
+  pauseWhileProcessing: boolean;
   sidecarPathOverride: string;
-  sidecarStartupTimeoutMs: number;
   sidecarRequestTimeoutMs: number;
-  tempAudioDirectoryOverride: string;
+  sidecarStartupTimeoutMs: number;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   insertionMode: 'insert_at_cursor',
+  listeningMode: 'one_sentence',
   modelFilePath: '',
+  pauseWhileProcessing: true,
   sidecarPathOverride: '',
-  sidecarStartupTimeoutMs: 4_000,
   sidecarRequestTimeoutMs: 300_000,
-  tempAudioDirectoryOverride: '',
+  sidecarStartupTimeoutMs: 4_000,
 };
 
 export function resolvePluginSettings(data: unknown): PluginSettings {
@@ -23,28 +27,33 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
 
   return {
     insertionMode: readInsertionMode(raw.insertionMode),
+    listeningMode: readListeningMode(raw.listeningMode),
     modelFilePath: readString(raw.modelFilePath, DEFAULT_PLUGIN_SETTINGS.modelFilePath),
+    pauseWhileProcessing: readBoolean(
+      raw.pauseWhileProcessing,
+      DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing,
+    ),
     sidecarPathOverride: readString(
       raw.sidecarPathOverride,
       DEFAULT_PLUGIN_SETTINGS.sidecarPathOverride,
-    ),
-    sidecarStartupTimeoutMs: readPositiveInteger(
-      raw.sidecarStartupTimeoutMs,
-      DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
     sidecarRequestTimeoutMs: readPositiveInteger(
       raw.sidecarRequestTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarRequestTimeoutMs,
     ),
-    tempAudioDirectoryOverride: readString(
-      raw.tempAudioDirectoryOverride,
-      DEFAULT_PLUGIN_SETTINGS.tempAudioDirectoryOverride,
+    sidecarStartupTimeoutMs: readPositiveInteger(
+      raw.sidecarStartupTimeoutMs,
+      DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
   };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function readString(value: unknown, fallback: string): string {
@@ -57,4 +66,10 @@ function readPositiveInteger(value: unknown, fallback: number): number {
 
 function readInsertionMode(value: unknown): InsertionMode {
   return value === 'insert_at_cursor' ? value : DEFAULT_PLUGIN_SETTINGS.insertionMode;
+}
+
+function readListeningMode(value: unknown): ListeningMode {
+  return value === 'always_on' || value === 'press_and_hold' || value === 'one_sentence'
+    ? value
+    : DEFAULT_PLUGIN_SETTINGS.listeningMode;
 }

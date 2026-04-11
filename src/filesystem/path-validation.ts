@@ -25,33 +25,6 @@ export async function getExistingPathKind(path: string): Promise<ExistingPathKin
   }
 }
 
-export async function assertAbsoluteDirectoryPath(
-  path: string,
-  settingLabel: string,
-): Promise<string> {
-  const normalizedPath = path.trim();
-
-  if (normalizedPath.length === 0) {
-    throw new Error(`${settingLabel} is not configured.`);
-  }
-
-  if (!isAbsolute(normalizedPath)) {
-    throw new Error(`${settingLabel} must be an absolute path.`);
-  }
-
-  const pathKind = await getExistingPathKind(normalizedPath);
-
-  if (pathKind === 'file') {
-    throw new Error(`${settingLabel} must be a directory, not a file: ${normalizedPath}`);
-  }
-
-  if (pathKind === 'other') {
-    throw new Error(`${settingLabel} must point to a directory path: ${normalizedPath}`);
-  }
-
-  return normalizedPath;
-}
-
 export async function assertAbsoluteExistingFilePath(
   path: string,
   settingLabel: string,

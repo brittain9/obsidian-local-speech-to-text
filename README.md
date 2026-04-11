@@ -6,8 +6,10 @@ Current working path:
 
 - an Obsidian plugin at the repository root
 - a native sidecar under `native/sidecar`
-- versioned stdio JSON IPC between them
+- versioned framed stdio IPC between them
 - microphone capture in the plugin
+- streaming `16 kHz` mono `PCM16` audio from the plugin to the sidecar
+- session-based dictation with always-on, press-and-hold, and one-sentence modes
 - local CPU Whisper transcription in the sidecar
 - transcript insertion at the active cursor position
 
@@ -15,15 +17,15 @@ Current working path:
 
 ```text
 Obsidian plugin (TypeScript)
-  -> manages settings, commands, ribbon/state UX, microphone capture, temp WAV files
-  -> speaks line-delimited JSON over stdio
+  -> manages settings, commands, ribbon/state UX, microphone capture, and editor insertion
+  -> streams framed JSON control messages and binary PCM audio over stdio
 
 Rust sidecar
-  -> validates protocol messages
+  -> validates framed protocol messages
+  -> owns listening-session state, VAD, utterance segmentation, and queueing
   -> loads a whisper.cpp-compatible model file
-  -> validates WAV input
-  -> runs CPU transcription with whisper-rs
-  -> returns structured responses to the plugin
+  -> transcribes finalized in-memory utterances with whisper-rs
+  -> emits asynchronous session and transcript events back to the plugin
 ```
 
 ## Toolchain
@@ -66,6 +68,7 @@ Recommended dev-vault workflow:
 - enable the plugin from Obsidian's community plugin screen
 - use the settings tab to override the sidecar path if your debug binary is not at the default location
 - reload or restart Obsidian after rebuilding the plugin bundle so it picks up the current `main.js`
+- rebuild the sidecar executable with `cargo build --manifest-path native/sidecar/Cargo.toml` after Rust changes if you are only running `npm run dev`
 
 Local note:
 
@@ -92,17 +95,24 @@ Minimal verification flow:
 1. Open a Markdown note in the dev vault.
 2. Open `Settings -> Local STT`.
 3. Set `Whisper model file path` to your local `ggml-small.en-q5_1.bin`.
-4. Optionally set `Sidecar path override` if the debug sidecar is not at `native/sidecar/target/debug`.
-5. Run `Local STT: Check Sidecar Health`.
-6. Click the microphone ribbon button or run `Local STT: Start Dictation`.
-7. Speak for 5 to 10 seconds.
-8. Click the ribbon button again or run `Local STT: Stop And Transcribe`.
-9. Confirm the transcript text is inserted at the cursor.
-10. Only after that passes, switch to `ggml-large-v3-turbo-*` and allow a much longer CPU transcription time.
+4. Set `Listening mode` to `One sentence` for the simplest first pass.
+5. Leave `Pause while processing` enabled for the first CPU smoke test.
+6. Optionally set `Sidecar path override` if the debug sidecar is not at `native/sidecar/target/debug`.
+7. Run `Local STT: Check Sidecar Health`.
+8. Click the microphone ribbon button or run `Local STT: Start Dictation Session`.
+9. Speak one short sentence.
+10. Confirm the transcript text is inserted at the cursor and the session returns to idle automatically.
+
+For press-and-hold verification:
+
+1. Set `Listening mode` to `Press and hold`.
+2. Assign a hotkey to `Local STT: Press-And-Hold Gate` in Obsidian Hotkeys if you want keyboard gating.
+3. Hold the ribbon button or the configured hotkey while speaking.
+4. Release it and confirm the buffered utterance is transcribed and inserted.
 
 ## Commands
 
-- `npm run build` bundles the plugin to `main.js`
+- `npm run build` builds the debug sidecar executable and bundles the plugin to `main.js`
 - `npm run dev` watches and rebuilds the plugin
 - `npm run test` runs TypeScript unit tests
 - `npm run check` runs TypeScript and Rust quality gates
@@ -110,9 +120,10 @@ Minimal verification flow:
 
 Available plugin commands:
 
-- `Local STT: Start Dictation`
-- `Local STT: Stop And Transcribe`
+- `Local STT: Start Dictation Session`
+- `Local STT: Stop Dictation Session`
 - `Local STT: Cancel Dictation`
+- `Local STT: Press-And-Hold Gate`
 - `Local STT: Check Sidecar Health`
 - `Local STT: Restart Sidecar`
 

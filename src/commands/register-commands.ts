@@ -1,37 +1,48 @@
 import type { Plugin } from 'obsidian';
 
+export const START_DICTATION_COMMAND_ID = 'start-dictation-session';
+export const STOP_DICTATION_COMMAND_ID = 'stop-dictation-session';
+export const CANCEL_DICTATION_COMMAND_ID = 'cancel-dictation-session';
+export const PRESS_AND_HOLD_GATE_COMMAND_ID = 'press-and-hold-gate';
+
 interface CommandDependencies {
-  checkSidecarHealth: () => Promise<void>;
   cancelDictation: () => Promise<void>;
+  checkSidecarHealth: () => Promise<void>;
   plugin: Plugin;
   restartSidecar: () => Promise<void>;
   startDictation: () => Promise<void>;
-  stopAndTranscribe: () => Promise<void>;
+  stopDictation: () => Promise<void>;
 }
 
 export function registerCommands(dependencies: CommandDependencies): void {
   dependencies.plugin.addCommand({
-    id: 'start-dictation',
-    name: 'Local STT: Start Dictation',
+    id: START_DICTATION_COMMAND_ID,
+    name: 'Local STT: Start Dictation Session',
     callback: async () => {
       await dependencies.startDictation();
     },
   });
 
   dependencies.plugin.addCommand({
-    id: 'stop-and-transcribe',
-    name: 'Local STT: Stop And Transcribe',
+    id: STOP_DICTATION_COMMAND_ID,
+    name: 'Local STT: Stop Dictation Session',
     callback: async () => {
-      await dependencies.stopAndTranscribe();
+      await dependencies.stopDictation();
     },
   });
 
   dependencies.plugin.addCommand({
-    id: 'cancel-dictation',
-    name: 'Local STT: Cancel Dictation',
+    id: CANCEL_DICTATION_COMMAND_ID,
+    name: 'Local STT: Cancel Dictation Session',
     callback: async () => {
       await dependencies.cancelDictation();
     },
+  });
+
+  dependencies.plugin.addCommand({
+    id: PRESS_AND_HOLD_GATE_COMMAND_ID,
+    name: 'Local STT: Press-And-Hold Gate',
+    callback: () => {},
   });
 
   dependencies.plugin.addCommand({
