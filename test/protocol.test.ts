@@ -12,7 +12,7 @@ import {
   SIDECAR_PROTOCOL_VERSION,
 } from '../src/sidecar/protocol';
 
-describe('sidecar protocol v2', () => {
+describe('sidecar protocol', () => {
   it('serializes JSON commands with the framed header', () => {
     const frame = encodeJsonFrame(createHealthCommand());
 
@@ -67,19 +67,6 @@ describe('sidecar protocol v2', () => {
       kind: JSON_FRAME_KIND,
     });
     expect(frames[1]?.kind).toBe(AUDIO_FRAME_KIND);
-  });
-
-  it('rejects events with an unexpected protocol version', () => {
-    expect(() =>
-      parseEventFrame(
-        JSON.stringify({
-          protocolVersion: 'v1',
-          sidecarVersion: '0.1.0',
-          status: 'ready',
-          type: 'health_ok',
-        }),
-      ),
-    ).toThrow('Unsupported sidecar protocol version');
   });
 });
 

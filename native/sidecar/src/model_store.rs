@@ -6,6 +6,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::ModelCatalog;
+use crate::protocol::EngineId;
 
 const INSTALL_METADATA_FILENAME: &str = "install.json";
 
@@ -22,7 +23,7 @@ pub struct InstallMetadata {
     #[serde(rename = "catalogVersion")]
     pub catalog_version: u32,
     #[serde(rename = "engineId")]
-    pub engine_id: String,
+    pub engine_id: EngineId,
     #[serde(rename = "installedAtUnixMs")]
     pub installed_at_unix_ms: u64,
     #[serde(rename = "modelId")]
@@ -42,7 +43,7 @@ pub struct InstalledModelRecord {
     #[serde(rename = "catalogVersion")]
     pub catalog_version: u32,
     #[serde(rename = "engineId")]
-    pub engine_id: String,
+    pub engine_id: EngineId,
     #[serde(rename = "installPath")]
     pub install_path: String,
     #[serde(rename = "installedAtUnixMs")]
@@ -57,12 +58,12 @@ pub struct InstalledModelRecord {
 
 pub fn create_install_metadata(
     catalog: &ModelCatalog,
-    engine_id: &str,
+    engine_id: EngineId,
     model_id: &str,
 ) -> Result<InstallMetadata> {
     let model = catalog
         .find_model(engine_id, model_id)
-        .ok_or_else(|| anyhow!("unknown model {engine_id}:{model_id}"))?;
+        .ok_or_else(|| anyhow!("unknown model {}:{model_id}", engine_id.as_str()))?;
 
     Ok(InstallMetadata {
         artifacts: model
@@ -76,7 +77,7 @@ pub fn create_install_metadata(
             })
             .collect(),
         catalog_version: catalog.catalog_version,
-        engine_id: engine_id.to_string(),
+        engine_id,
         installed_at_unix_ms: current_unix_ms()?,
         model_id: model_id.to_string(),
     })
@@ -93,14 +94,15 @@ pub fn read_install_metadata(install_dir: &Path) -> Result<InstallMetadata> {
 pub fn resolve_catalog_model_runtime_path(
     catalog: &ModelCatalog,
     model_store_root: &Path,
-    engine_id: &str,
+    engine_id: EngineId,
     model_id: &str,
 ) -> Result<PathBuf> {
     let install_dir = resolve_model_install_dir(model_store_root, engine_id, model_id);
     let metadata = read_install_metadata(&install_dir)?;
     ensure!(
         metadata.engine_id == engine_id && metadata.model_id == model_id,
-        "install metadata does not match {engine_id}:{model_id}"
+        "install metadata does not match {}:{model_id}",
+        engine_id.as_str()
     );
 
     for artifact in &metadata.artifacts {
@@ -114,9 +116,12 @@ pub fn resolve_catalog_model_runtime_path(
 
     let model = catalog
         .find_model(engine_id, model_id)
-        .ok_or_else(|| anyhow!("unknown model {engine_id}:{model_id}"))?;
+        .ok_or_else(|| anyhow!("unknown model {}:{model_id}", engine_id.as_str()))?;
     let primary_artifact = model.primary_artifact().ok_or_else(|| {
-        anyhow!("model {engine_id}:{model_id} is missing a transcription artifact")
+        anyhow!(
+            "model {}:{model_id} is missing a transcription artifact",
+            engine_id.as_str()
+        )
     })?;
     let runtime_path = install_dir.join(&primary_artifact.filename);
 
@@ -131,10 +136,10 @@ pub fn resolve_catalog_model_runtime_path(
 
 pub fn resolve_model_install_dir(
     model_store_root: &Path,
-    engine_id: &str,
+    engine_id: EngineId,
     model_id: &str,
 ) -> PathBuf {
-    model_store_root.join(engine_id).join(model_id)
+    model_store_root.join(engine_id.as_str()).join(model_id)
 }
 
 pub fn resolve_model_store_info(model_store_path_override: Option<&str>) -> Result<ModelStoreInfo> {
@@ -171,7 +176,7 @@ pub fn resolve_model_store_info(model_store_path_override: Option<&str>) -> Resu
 
 pub fn remove_installed_model(
     model_store_root: &Path,
-    engine_id: &str,
+    engine_id: EngineId,
     model_id: &str,
 ) -> Result<bool> {
     let install_dir = resolve_model_install_dir(model_store_root, engine_id, model_id);
@@ -229,7 +234,7 @@ pub fn scan_installed_models(
             }
 
             let runtime_path = catalog
-                .find_model(&metadata.engine_id, &metadata.model_id)
+                .find_model(metadata.engine_id, &metadata.model_id)
                 .and_then(|model| model.primary_artifact())
                 .map(|artifact| install_dir.join(&artifact.filename))
                 .filter(|path| path.is_file());
@@ -283,6 +288,7 @@ mod tests {
     use crate::catalog::{
         ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
     };
+    use crate::protocol::EngineId;
 
     #[test]
     fn resolve_model_store_info_uses_absolute_override() {
@@ -306,7 +312,7 @@ mod tests {
                 size_bytes: 42,
             }],
             catalog_version: 1,
-            engine_id: "whisper_cpp".to_string(),
+            engine_id: EngineId::WhisperCpp,
             installed_at_unix_ms: 99,
             model_id: "small".to_string(),
         };
@@ -331,7 +337,7 @@ mod tests {
                     size_bytes: 10,
                 }],
                 catalog_version: 1,
-                engine_id: "whisper_cpp".to_string(),
+                engine_id: EngineId::WhisperCpp,
                 installed_at_unix_ms: 10,
                 model_id: "small".to_string(),
             },
@@ -354,7 +360,7 @@ mod tests {
             }],
             engines: vec![ModelEngine {
                 display_name: "Whisper.cpp".to_string(),
-                engine_id: "whisper_cpp".to_string(),
+                engine_id: EngineId::WhisperCpp,
                 summary: "summary".to_string(),
             }],
             models: vec![CatalogModel {
@@ -371,7 +377,7 @@ mod tests {
                 capability_flags: vec![],
                 collection_id: "english".to_string(),
                 display_name: "Model".to_string(),
-                engine_id: "whisper_cpp".to_string(),
+                engine_id: EngineId::WhisperCpp,
                 language_tags: vec!["en".to_string()],
                 license_label: "MIT".to_string(),
                 license_url: "https://example.com/license".to_string(),

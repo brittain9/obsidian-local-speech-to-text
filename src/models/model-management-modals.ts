@@ -157,9 +157,7 @@ export class ModelExplorerModal extends Modal {
       });
     } else if (row.installedModel !== null) {
       actionSetting.addButton((button) => {
-        button
-          .setButtonText(row.isSelected ? 'Selected' : 'Use')
-          .setDisabled(row.isSelected);
+        button.setButtonText(row.isSelected ? 'Selected' : 'Use').setDisabled(row.isSelected);
         if (!row.isSelected) {
           button.setCta();
         }

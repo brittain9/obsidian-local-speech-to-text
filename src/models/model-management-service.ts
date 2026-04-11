@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 
 import type { PluginSettings } from '../settings/plugin-settings';
+import type { PluginLogger } from '../shared/plugin-logger';
 import type {
   InstalledModelsEvent,
   ModelCatalogEvent,
@@ -26,6 +27,7 @@ type InstallUpdateListener = (event: ModelInstallUpdateEvent) => void;
 
 interface ModelManagementServiceDependencies {
   getSettings: () => PluginSettings;
+  logger?: PluginLogger;
   saveSettings: (settings: PluginSettings) => Promise<void>;
   sidecarConnection: Pick<
     SidecarConnection,
@@ -71,6 +73,7 @@ export interface ModelManagementSnapshot {
 export class ModelManagementService {
   private activeInstall: ModelInstallUpdateRecord | null = null;
   private readonly installUpdateListeners = new Set<InstallUpdateListener>();
+  private lastLoggedDownloadPercent = -1;
   private readonly releaseSidecarSubscription: () => void;
 
   constructor(private readonly dependencies: ModelManagementServiceDependencies) {
@@ -83,6 +86,24 @@ export class ModelManagementService {
         event.state === 'cancelled' || event.state === 'completed' || event.state === 'failed'
           ? null
           : event;
+
+      if (event.state === 'downloading' && event.totalBytes) {
+        const pct = Math.round(((event.downloadedBytes ?? 0) / event.totalBytes) * 100);
+        if (pct !== this.lastLoggedDownloadPercent) {
+          this.lastLoggedDownloadPercent = pct;
+          this.dependencies.logger?.debug(
+            'model',
+            `install ${event.installId}: ${pct}% downloaded`,
+          );
+        }
+      } else {
+        this.lastLoggedDownloadPercent = -1;
+        this.dependencies.logger?.debug(
+          'model',
+          `install ${event.installId}: ${event.state}`,
+          event.message,
+        );
+      }
 
       for (const listener of this.installUpdateListeners) {
         listener(event);
@@ -104,6 +125,7 @@ export class ModelManagementService {
   }
 
   async getSnapshot(): Promise<ModelManagementSnapshot> {
+    this.dependencies.logger?.debug('model', 'loading model management snapshot');
     const settings = this.dependencies.getSettings();
     const modelStorePathOverride =
       settings.modelStorePathOverride.length > 0 ? settings.modelStorePathOverride : undefined;
@@ -125,6 +147,10 @@ export class ModelManagementService {
   }
 
   async installCatalogModel(selection: CatalogModelSelection): Promise<ModelInstallUpdateEvent> {
+    this.dependencies.logger?.debug(
+      'model',
+      `initiating install for ${selection.engineId}:${selection.modelId}`,
+    );
     const update = await this.dependencies.sidecarConnection.installModel({
       engineId: selection.engineId,
       installId: createInstallId(),
@@ -150,6 +176,7 @@ export class ModelManagementService {
   }
 
   async removeCatalogModel(selection: CatalogModelSelection): Promise<void> {
+    this.dependencies.logger?.debug('model', `removing ${selection.engineId}:${selection.modelId}`);
     const event = await this.dependencies.sidecarConnection.removeModel({
       engineId: selection.engineId,
       modelId: selection.modelId,
@@ -177,6 +204,7 @@ export class ModelManagementService {
       throw new Error(createProbeFailureMessage(probeResult));
     }
 
+    this.dependencies.logger?.debug('model', `selected ${selection.engineId}:${selection.modelId}`);
     await this.updateSettings({ selectedModel: selection });
     return probeResult;
   }
@@ -201,6 +229,7 @@ export class ModelManagementService {
   }
 
   async clearSelectedModel(): Promise<void> {
+    this.dependencies.logger?.debug('model', 'cleared selected model');
     await this.updateSettings({ selectedModel: null });
   }
 

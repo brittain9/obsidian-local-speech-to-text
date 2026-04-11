@@ -3,6 +3,7 @@ import type { App, Hotkey } from 'obsidian';
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
 import type { EditorService } from '../editor/editor-service';
 import type { PluginSettings } from '../settings/plugin-settings';
+import type { PluginLogger } from '../shared/plugin-logger';
 import type { SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import type { PluginRuntimeState } from '../ui/status-bar';
@@ -14,14 +15,12 @@ import {
 
 export type DictationControllerState = PluginRuntimeState;
 
-type DictationLogger = (message: string, error?: unknown) => void;
-
 interface DictationSessionControllerDependencies {
   app: App;
   captureStream: Pick<AudioCaptureStream, 'dispose' | 'isCapturing' | 'start' | 'stop'>;
   editorService: Pick<EditorService, 'assertActiveEditorAvailable' | 'insertTranscript'>;
   getSettings: () => PluginSettings;
-  logger?: DictationLogger;
+  logger?: PluginLogger;
   notice: (message: string) => void;
   pressAndHoldGateCommandId: string;
   pressAndHoldGateDefaultHotkeys?: Hotkey[];
@@ -173,6 +172,7 @@ export class DictationSessionController {
     this.sessionId = sessionId;
     this.gateOpen = false;
     this.applyUiState('starting', 'opening session');
+    this.dependencies.logger?.debug('session', `starting dictation session ${sessionId}`);
 
     try {
       await this.dependencies.captureStream.start((frameBytes) => {
@@ -183,7 +183,7 @@ export class DictationSessionController {
         try {
           this.dependencies.sidecarConnection.sendAudioFrame(frameBytes);
         } catch (error) {
-          this.dependencies.logger?.('failed to forward an audio frame to the sidecar', error);
+          this.dependencies.logger?.warn('session', 'failed to forward an audio frame', error);
         }
       });
       await this.dependencies.sidecarConnection.startSession({
@@ -253,6 +253,7 @@ export class DictationSessionController {
     }
 
     this.gateOpen = false;
+    this.dependencies.logger?.debug('session', 'gate closed');
 
     try {
       await this.dependencies.sidecarConnection.setGate(false);
@@ -286,6 +287,10 @@ export class DictationSessionController {
       return;
     }
 
+    this.dependencies.logger?.debug(
+      'session',
+      `session ${event.sessionId} stopped (reason: ${event.reason})`,
+    );
     await this.cleanupLocalSession();
     this.applyUiState('idle');
 
@@ -332,6 +337,11 @@ export class DictationSessionController {
       return;
     }
 
+    this.dependencies.logger?.debug(
+      'session',
+      `transcript received (${event.text.length} chars, ${event.processingDurationMs}ms processing)`,
+    );
+
     try {
       this.dependencies.editorService.insertTranscript(
         normalizeTranscriptText(event),
@@ -346,7 +356,7 @@ export class DictationSessionController {
   private handleError(message: string, error: unknown): void {
     const detail = error instanceof Error ? error.message : String(error);
 
-    this.dependencies.logger?.(message, error);
+    this.dependencies.logger?.error('session', message, error);
     this.applyUiState('error', detail);
     this.dependencies.notice(`${message}: ${detail}`);
   }
@@ -370,6 +380,7 @@ export class DictationSessionController {
     }
 
     this.gateOpen = true;
+    this.dependencies.logger?.debug('session', 'gate opened');
 
     try {
       await this.dependencies.sidecarConnection.setGate(true);
@@ -388,7 +399,11 @@ export class DictationSessionController {
     try {
       await this.dependencies.sidecarConnection.cancelSession();
     } catch (error) {
-      this.dependencies.logger?.('failed to cancel an errored session cleanly', error);
+      this.dependencies.logger?.warn(
+        'session',
+        'failed to cancel an errored session cleanly',
+        error,
+      );
 
       if (this.sessionId === sessionId) {
         await this.cleanupLocalSession();

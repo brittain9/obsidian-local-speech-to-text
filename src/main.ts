@@ -15,9 +15,9 @@ import {
   resolvePluginSettings,
 } from './settings/plugin-settings';
 import { LocalSttSettingTab } from './settings/settings-tab';
+import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
-import type { SidecarLogEntry } from './sidecar/sidecar-logging';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
 import { StatusBarController } from './ui/status-bar';
@@ -28,6 +28,7 @@ export default class LocalSttPlugin extends Plugin {
   private audioCaptureStream: AudioCaptureStream | null = null;
   private dictationController: DictationSessionController | null = null;
   private editorService: EditorService | null = null;
+  private logger: PluginLogger = createPluginLogger(() => this.settings.developerMode);
   private modelManagementService: ModelManagementService | null = null;
   private ribbonController: DictationRibbonController | null = null;
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
@@ -41,23 +42,16 @@ export default class LocalSttPlugin extends Plugin {
     this.statusBar = new StatusBarController(this.addStatusBarItem());
     this.sidecarConnection = new SidecarConnection({
       getRequestTimeoutMs: () => this.settings.sidecarRequestTimeoutMs,
-      logger: (entry) => {
-        writePluginLog('[Local STT]', entry);
-      },
+      logger: this.logger,
       resolveLaunchSpec: async () => this.resolveSidecarLaunchSpec(),
     });
     this.audioCaptureStream = new AudioCaptureStream({
-      logger: (message, error) => {
-        writePluginLog('[Local STT] audio capture', {
-          error,
-          level: 'warn',
-          message,
-        });
-      },
+      logger: this.logger,
       resolveWorkletModulePath: async () => this.resolveRecorderWorkletModulePath(),
     });
     this.modelManagementService = new ModelManagementService({
       getSettings: () => this.settings,
+      logger: this.logger,
       saveSettings: async (nextSettings) => {
         await this.updateSettings(nextSettings);
       },
@@ -73,13 +67,7 @@ export default class LocalSttPlugin extends Plugin {
       captureStream: this.audioCaptureStream,
       editorService: this.editorService,
       getSettings: () => this.settings,
-      logger: (message, error) => {
-        writePluginLog('[Local STT]', {
-          error,
-          level: 'warn',
-          message,
-        });
-      },
+      logger: this.logger,
       notice: (message) => {
         new Notice(message);
       },
@@ -130,7 +118,7 @@ export default class LocalSttPlugin extends Plugin {
     });
 
     await this.checkSidecarHealth({ showNotice: false }).catch((error: unknown) => {
-      console.error('[Local STT] initial sidecar health check failed', error);
+      this.logger.error('sidecar', 'initial health check failed', error);
     });
   }
 
@@ -138,19 +126,19 @@ export default class LocalSttPlugin extends Plugin {
     try {
       this.modelManagementService?.dispose();
     } catch (error) {
-      console.error('[Local STT] failed to dispose model management service cleanly', error);
+      this.logger.error('model', 'failed to dispose model management service cleanly', error);
     }
 
     try {
       await this.dictationController?.dispose();
     } catch (error) {
-      console.error('[Local STT] failed to dispose dictation controller cleanly', error);
+      this.logger.error('session', 'failed to dispose dictation controller cleanly', error);
     }
 
     try {
       await this.sidecarConnection?.shutdown(this.settings.sidecarStartupTimeoutMs);
     } catch (error) {
-      console.error('[Local STT] failed to shut down sidecar cleanly', error);
+      this.logger.error('sidecar', 'failed to shut down sidecar cleanly', error);
     }
 
     this.ribbonController?.dispose();
@@ -306,20 +294,4 @@ export default class LocalSttPlugin extends Plugin {
 
 function getSidecarExecutableName(): string {
   return Platform.isWin ? `${SIDECAR_BINARY_BASENAME}.exe` : SIDECAR_BINARY_BASENAME;
-}
-
-function writePluginLog(prefix: string, entry: SidecarLogEntry): void {
-  const logArguments: unknown[] = [`${prefix} ${entry.message}`];
-
-  if (entry.error !== undefined) {
-    logArguments.push(entry.error);
-  }
-
-  switch (entry.level) {
-    case 'warn':
-      console.warn(...logArguments);
-      return;
-    default:
-      console.debug(...logArguments);
-  }
 }

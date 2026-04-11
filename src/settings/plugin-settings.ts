@@ -3,6 +3,7 @@ import {
   normalizeSelectedModel,
   type SelectedModel,
 } from '../models/model-management-types';
+import { isRecord } from '../shared/type-guards';
 import type { ListeningMode } from '../sidecar/protocol';
 
 export const INSERTION_MODES = [
@@ -14,6 +15,7 @@ export const INSERTION_MODES = [
 export type InsertionMode = (typeof INSERTION_MODES)[number];
 
 export interface PluginSettings {
+  developerMode: boolean;
   insertionMode: InsertionMode;
   listeningMode: ListeningMode;
   modelStorePathOverride: string;
@@ -25,6 +27,7 @@ export interface PluginSettings {
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
+  developerMode: false,
   insertionMode: 'insert_at_cursor',
   listeningMode: 'one_sentence',
   modelStorePathOverride: '',
@@ -39,6 +42,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
   const raw = isRecord(data) ? data : {};
 
   return {
+    developerMode: readBoolean(raw.developerMode, DEFAULT_PLUGIN_SETTINGS.developerMode),
     insertionMode: readInsertionMode(raw.insertionMode),
     listeningMode: readListeningMode(raw.listeningMode),
     modelStorePathOverride: readString(
@@ -49,7 +53,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.pauseWhileProcessing,
       DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing,
     ),
-    selectedModel: readSelectedModel(raw.selectedModel, raw.modelFilePath),
+    selectedModel: readSelectedModel(raw.selectedModel),
     sidecarPathOverride: readString(
       raw.sidecarPathOverride,
       DEFAULT_PLUGIN_SETTINGS.sidecarPathOverride,
@@ -63,10 +67,6 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function readBoolean(value: unknown, fallback: boolean): boolean {
@@ -85,25 +85,12 @@ function readInsertionMode(value: unknown): InsertionMode {
   return isInsertionMode(value) ? value : DEFAULT_PLUGIN_SETTINGS.insertionMode;
 }
 
-function readSelectedModel(
-  selectedModel: unknown,
-  legacyModelFilePath: unknown,
-): SelectedModel | null {
+function readSelectedModel(selectedModel: unknown): SelectedModel | null {
   if (isSelectedModel(selectedModel)) {
     return normalizeSelectedModel(selectedModel);
   }
 
-  const migratedFilePath = readString(legacyModelFilePath, '');
-
-  if (migratedFilePath.length === 0) {
-    return DEFAULT_PLUGIN_SETTINGS.selectedModel;
-  }
-
-  return {
-    engineId: 'whisper_cpp',
-    filePath: migratedFilePath,
-    kind: 'external_file',
-  };
+  return DEFAULT_PLUGIN_SETTINGS.selectedModel;
 }
 
 function isInsertionMode(value: unknown): value is InsertionMode {

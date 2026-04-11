@@ -4,6 +4,8 @@ use std::path::{Component, Path};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::EngineId;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCatalog {
     #[serde(rename = "catalogVersion")]
@@ -18,7 +20,7 @@ pub struct ModelEngine {
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(rename = "engineId")]
-    pub engine_id: String,
+    pub engine_id: EngineId,
     pub summary: String,
 }
 
@@ -41,7 +43,7 @@ pub struct CatalogModel {
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(rename = "engineId")]
-    pub engine_id: String,
+    pub engine_id: EngineId,
     #[serde(rename = "languageTags")]
     pub language_tags: Vec<String>,
     #[serde(rename = "licenseLabel")]
@@ -92,7 +94,7 @@ impl ModelCatalog {
         Ok(catalog)
     }
 
-    pub fn find_model(&self, engine_id: &str, model_id: &str) -> Option<&CatalogModel> {
+    pub fn find_model(&self, engine_id: EngineId, model_id: &str) -> Option<&CatalogModel> {
         self.models
             .iter()
             .find(|model| model.engine_id == engine_id && model.model_id == model_id)
@@ -108,9 +110,9 @@ impl ModelCatalog {
 
         for engine in &self.engines {
             ensure!(
-                engine_ids.insert(engine.engine_id.clone()),
+                engine_ids.insert(engine.engine_id),
                 "duplicate engineId {}",
-                engine.engine_id
+                engine.engine_id.as_str()
             );
             ensure!(
                 !engine.display_name.trim().is_empty(),
@@ -139,7 +141,7 @@ impl ModelCatalog {
                 engine_ids.contains(&model.engine_id),
                 "model {} references unknown engineId {}",
                 model.model_id,
-                model.engine_id
+                model.engine_id.as_str()
             );
             ensure!(
                 collection_ids.contains(&model.collection_id),
@@ -148,10 +150,10 @@ impl ModelCatalog {
                 model.collection_id
             );
             ensure!(
-                model_keys.insert((model.engine_id.clone(), model.model_id.clone())),
+                model_keys.insert((model.engine_id, model.model_id.clone())),
                 "duplicate modelId {} for engine {}",
                 model.model_id,
-                model.engine_id
+                model.engine_id.as_str()
             );
 
             let mut artifact_ids = HashSet::new();
@@ -206,6 +208,14 @@ impl ModelCatalog {
 }
 
 impl CatalogModel {
+    pub fn required_download_bytes(&self) -> u64 {
+        self.artifacts
+            .iter()
+            .filter(|artifact| artifact.required)
+            .map(|artifact| artifact.size_bytes)
+            .sum()
+    }
+
     pub fn primary_artifact(&self) -> Option<&ModelArtifact> {
         self.artifacts
             .iter()
@@ -242,6 +252,7 @@ mod tests {
     use super::{
         ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
     };
+    use crate::protocol::EngineId;
 
     #[test]
     fn validate_rejects_duplicate_engine_ids() {
@@ -281,7 +292,7 @@ mod tests {
     fn sample_engine() -> ModelEngine {
         ModelEngine {
             display_name: "Whisper.cpp".to_string(),
-            engine_id: "whisper_cpp".to_string(),
+            engine_id: EngineId::WhisperCpp,
             summary: "summary".to_string(),
         }
     }
@@ -309,7 +320,7 @@ mod tests {
             capability_flags: vec!["dictation".to_string()],
             collection_id: "english".to_string(),
             display_name: "Model".to_string(),
-            engine_id: "whisper_cpp".to_string(),
+            engine_id: EngineId::WhisperCpp,
             language_tags: vec!["en".to_string()],
             license_label: "MIT".to_string(),
             license_url: "https://example.com/license".to_string(),

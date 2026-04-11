@@ -184,6 +184,21 @@ export class LocalSttSettingTab extends PluginSettingTab {
         });
       });
 
+    new Setting(advancedDetails)
+      .setName('Developer mode')
+      .setDesc(
+        'Log verbose diagnostic output to the developer console (Ctrl+Shift+I). Useful for debugging or reporting issues.',
+      )
+      .addToggle((toggle) => {
+        toggle.setValue(settings.developerMode);
+        toggle.onChange(async (value) => {
+          await this.persistSettings({
+            ...this.dependencies.getSettings(),
+            developerMode: value,
+          });
+        });
+      });
+
     containerEl.createEl('p', {
       text: 'Assign a hotkey to "Local STT: Press-And-Hold Gate" in Obsidian Hotkeys for keyboard press-and-hold input. This hotkey target does not appear in the command palette.',
     });
@@ -220,7 +235,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     const descFragment = document.createDocumentFragment();
     if (currentModel.engineLabel.length > 0) {
-      descFragment.createSpan({ text: currentModel.engineLabel + ' \u00b7 ' });
+      descFragment.createSpan({ text: `${currentModel.engineLabel} \u00b7 ` });
     }
     const badge = getBadgeInfo(currentModel.installedLabel);
     descFragment.createSpan({
@@ -234,9 +249,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     this.addModelActions(
       cardSetting,
-      currentSelection !== null
-        ? { currentModel, storePath: modelStore.path }
-        : null,
+      currentSelection !== null ? { currentModel, storePath: modelStore.path } : null,
     );
 
     if (snapshot.activeInstall !== null) {

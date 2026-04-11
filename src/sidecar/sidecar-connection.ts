@@ -1,3 +1,5 @@
+import { asError } from '../shared/error-utils';
+import type { PluginLogger } from '../shared/plugin-logger';
 import {
   createCancelModelInstallCommand,
   createCancelSessionCommand,
@@ -31,11 +33,10 @@ import {
   type SidecarEvent,
   type StartSessionCommand,
 } from './protocol';
-import { createSidecarStderrLogEntry, type SidecarLogEntry } from './sidecar-logging';
+import { createSidecarStderrLogEntry } from './sidecar-logging';
 import { type ResolveSidecarLaunchSpec, SidecarProcess } from './sidecar-process';
 
 type SidecarEventListener = (event: SidecarEvent) => void;
-type SidecarLogger = (entry: SidecarLogEntry) => void;
 
 interface PendingEventWaiter {
   description: string;
@@ -59,7 +60,7 @@ interface SidecarConnectionOptions {
     handlers: ConstructorParameters<typeof SidecarProcess>[1],
   ) => SidecarProcessLike;
   getRequestTimeoutMs: () => number;
-  logger?: SidecarLogger;
+  logger?: PluginLogger;
   resolveLaunchSpec: ResolveSidecarLaunchSpec;
 }
 
@@ -82,7 +83,11 @@ export class SidecarConnection {
         const entry = createSidecarStderrLogEntry(line);
 
         if (entry !== null) {
-          this.log(entry);
+          if (entry.level === 'warn') {
+            this.options.logger?.warn('sidecar', entry.message);
+          } else {
+            this.options.logger?.debug('sidecar', entry.message);
+          }
         }
       },
       onStdoutChunk: (chunk: Uint8Array) => {
@@ -326,20 +331,16 @@ export class SidecarConnection {
     try {
       parsedFrames = this.frameParser.pushChunk(chunk);
     } catch (error) {
-      this.log({
-        level: 'warn',
-        message: 'failed to parse sidecar stdout chunk',
-        error,
-      });
+      this.options.logger?.warn('protocol', 'failed to parse sidecar stdout chunk', error);
       return;
     }
 
     for (const frame of parsedFrames) {
       if (frame.kind !== JSON_FRAME_KIND) {
-        this.log({
-          level: 'warn',
-          message: 'received an unexpected audio frame from the sidecar',
-        });
+        this.options.logger?.warn(
+          'protocol',
+          'received an unexpected audio frame from the sidecar',
+        );
         continue;
       }
 
@@ -348,6 +349,14 @@ export class SidecarConnection {
   }
 
   private dispatchEvent(event: SidecarEvent): void {
+    if (event.type !== 'model_install_update' || event.state !== 'downloading') {
+      this.options.logger?.debug('protocol', `event: ${event.type}`, event);
+    }
+
+    if (event.type === 'model_install_update' && event.state === 'failed') {
+      this.options.logger?.warn('model', 'install failed:', event.message, event.details);
+    }
+
     for (const listener of this.eventListeners) {
       listener(event);
     }
@@ -375,12 +384,4 @@ export class SidecarConnection {
       waiter.reject(error);
     }
   }
-
-  private log(entry: SidecarLogEntry): void {
-    this.options.logger?.(entry);
-  }
-}
-
-function asError(error: unknown, fallbackMessage: string): Error {
-  return error instanceof Error ? error : new Error(fallbackMessage);
 }

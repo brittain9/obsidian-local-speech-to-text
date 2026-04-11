@@ -1,9 +1,8 @@
-export type SidecarLogLevel = 'debug' | 'warn';
+type SidecarLogLevel = 'debug' | 'warn';
 
-export interface SidecarLogEntry {
+interface SidecarLogEntry {
   level: SidecarLogLevel;
   message: string;
-  error?: unknown;
 }
 
 const SIDECAR_ERROR_PATTERNS = [/panic/i, /\berror:/i, /\bfailed\b/i, /\bexception\b/i];

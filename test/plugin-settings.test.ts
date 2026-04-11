@@ -24,6 +24,7 @@ describe('resolvePluginSettings', () => {
         sidecarStartupTimeoutMs: 6_000,
       }),
     ).toEqual({
+      developerMode: false,
       insertionMode: 'append_as_new_paragraph',
       listeningMode: 'press_and_hold',
       modelStorePathOverride: '/tmp/models',
@@ -39,18 +40,6 @@ describe('resolvePluginSettings', () => {
     });
   });
 
-  it('migrates the legacy model file path into an external selection', () => {
-    expect(
-      resolvePluginSettings({
-        modelFilePath: ' /tmp/models/ggml-large-v3-turbo.bin ',
-      }).selectedModel,
-    ).toEqual({
-      engineId: 'whisper_cpp',
-      filePath: '/tmp/models/ggml-large-v3-turbo.bin',
-      kind: 'external_file',
-    });
-  });
-
   it.each(['insert_at_cursor', 'append_on_new_line', 'append_as_new_paragraph'] as const)(
     'accepts the supported insertion mode %s',
     (insertionMode) => {
@@ -63,7 +52,6 @@ describe('resolvePluginSettings', () => {
       resolvePluginSettings({
         insertionMode: 'append_to_end',
         listeningMode: 'unsupported',
-        modelFilePath: 42,
         modelStorePathOverride: 42,
         pauseWhileProcessing: 'sometimes',
         sidecarPathOverride: 12,

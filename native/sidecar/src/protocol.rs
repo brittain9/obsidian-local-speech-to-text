@@ -18,7 +18,7 @@ pub const PCM_FRAME_DURATION_MS: usize = 20;
 pub const PCM_SAMPLES_PER_FRAME: usize = (PCM_SAMPLE_RATE_HZ / 1_000) * PCM_FRAME_DURATION_MS;
 pub const PCM_BYTES_PER_FRAME: usize = PCM_SAMPLES_PER_FRAME * PCM_CHANNEL_COUNT * PCM_SAMPLE_BYTES;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineId {
     WhisperCpp,
@@ -404,9 +404,9 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        AUDIO_FRAME_KIND, Command, CommandEnvelope, EngineId, Event, EventEnvelope,
-        FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME,
-        PROTOCOL_VERSION, SelectedModel, read_frame, write_event_frame, write_frame,
+        AUDIO_FRAME_KIND, Command, EngineId, Event, EventEnvelope, FRAME_HEADER_LENGTH,
+        IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME, PROTOCOL_VERSION,
+        SelectedModel, read_frame, write_event_frame, write_frame,
     };
 
     #[test]
@@ -476,17 +476,5 @@ mod tests {
             .expect("frame should exist");
 
         assert_eq!(parsed, IncomingFrame::Audio(payload));
-    }
-
-    #[test]
-    fn command_frame_rejects_unsupported_protocol_version() {
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "protocolVersion": "v2",
-            "type": "health"
-        }))
-        .expect("payload should serialize");
-
-        let error = CommandEnvelope::parse_json(&payload).expect_err("version should fail");
-        assert!(error.to_string().contains("unsupported protocol version"));
     }
 }

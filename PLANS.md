@@ -1,169 +1,190 @@
-# Settings Page & Model Selection UI Redesign
+# GPU Acceleration for whisper.cpp
 
 ## Objective
 
-Replace the current settings page and model browser modal UI with a clean, scannable layout that applies progressive disclosure. The current implementation dumps 7-9 lines of raw metadata as plain `<p>` elements, spreads four action buttons across four full-width rows, and adds verbose model-store prose paragraphs — all with zero custom CSS.
+Enable GPU-accelerated transcription via Metal (macOS Apple Silicon) and CUDA (Linux/Windows NVIDIA). Ship three platform-specific sidecar binaries. CPU remains the development default and the runtime fallback when no GPU is detected.
 
 ## Current State
 
-Three files own the entire settings UI:
+- `whisper-rs = "0.16.0"` in Cargo.toml with no features enabled — CPU only
+- `transcription.rs:176` uses `WhisperContextParameters::default()` — no GPU settings
+- `worker.rs` `SessionMetadata` carries `language`, `model_file_path`, `session_id` — no GPU config
+- `protocol.rs` `StartSession` has no GPU fields, no system info command
+- `plugin-settings.ts` has no `useGpu` setting
+- `settings-tab.ts` has no GPU UI
+- `main.ts:295` `getSidecarExecutableName()` returns basename only — no platform-specific binary selection
+- `npm run build:sidecar` runs bare `cargo build` with no features
 
-- `src/settings/settings-tab.ts` (344 lines) — `LocalSttSettingTab` renders the settings page
-- `src/models/model-management-modals.ts` (442 lines) — `ModelExplorerModal`, `InstalledModelPickerModal`, `ExternalModelFileModal`, `ModelDetailsModal`
-- No `styles.css` exists
+### whisper-rs GPU API Surface
 
-Problems:
-1. `renderCurrentModelCard()` creates 7-9 `createEl('p')` calls showing engine, source, status, detail, size, install path, resolved path — all with equal visual weight
-2. `renderModelActions()` creates four separate `new Setting()` rows each containing one button
-3. `renderModelStoreSection()` adds three more `<p>` elements for store path, default/override status, and override path
-4. `ModelExplorerModal.renderRow()` uses `h3` + three `<p>` elements (summary, status text, tags text) + separate `Setting` rows per button
-5. `ModelDetailsModal.onOpen()` is a flat list of `createEl('p')` calls
-6. Sidecar settings occupy screen space that most users never need
+`WhisperContextParameters` has three GPU-relevant fields (set at model load time):
+- `use_gpu: bool` — default `cfg!(feature = "_gpu")`, i.e., auto-true when any GPU feature is compiled in
+- `flash_attn: bool` — default false, improves GPU performance, incompatible with DTW (we don't use DTW)
+- `gpu_device: c_int` — default 0
 
-The service layer (`model-management-service.ts`, `model-management-types.ts`) and settings schema (`plugin-settings.ts`) already provide all needed data — this is purely a rendering change.
+Available whisper-rs compile-time features: `metal` (→ `_gpu`), `cuda` (→ `_gpu`), `vulkan` (→ `_gpu`), `hipblas`, `coreml`, `openblas`.
+
+`whisper-rs-sys` build script handles CMake flags, library linking, and Metal shader embedding automatically based on features.
+
+`whisper_rs::print_system_info()` returns a string like `"AVX = 1 | AVX2 = 1 | ... | METAL = 1"` — useful for capability reporting.
 
 ## Constraints
 
-- Use only Obsidian's `Setting`, `Modal`, `createEl`/`createDiv` APIs — no external UI frameworks
-- All colors via Obsidian CSS variables (theme-safe for light, dark, and community themes)
-- No service layer or type changes — the `ModelManagementSnapshot` shape is already correct
-- No new settings fields
-- Progressive enhancement: if CSS fails to load, the UI degrades to standard Obsidian Setting rows
+- D-001: Plugin owns UX/settings, sidecar owns inference and native concerns
+- D-003: CPU-first is the development default. GPU is an acceleration layer, not a requirement.
+- D-008: GPU config is per-session (carried in `StartSession`), not a sidecar-global setting
+- D-013: Sidecar owns inference capability detection; plugin displays what the sidecar reports
+- Metal embeds shaders via `GGML_METAL_EMBED_LIBRARY=ON` — single binary, no external `.metallib`
+- CUDA requires CUDA toolkit at compile time. At runtime, whisper.cpp falls back to CPU automatically if no NVIDIA driver/GPU is present.
+- Protocol stays at v3. All changes are additive with serde defaults. No shipped versions exist.
+- Lesson: run clippy with `WHISPER_DONT_GENERATE_BINDINGS=1` to avoid extra bindgen/CMake pass
 
 ## Approach
 
-### 1. Create `styles.css` at project root
+Thread a single `useGpu: bool` from plugin settings through the protocol to `WhisperContextParameters`. The sidecar derives `flash_attn = use_gpu` internally (safe without DTW) and uses `gpu_device = 0`. This keeps the protocol and settings surface minimal while enabling the full GPU path.
 
-Obsidian auto-loads `styles.css` from the plugin directory. All selectors prefixed with `.local-stt-` to avoid collisions.
+Add `GetSystemInfo` command so the plugin can discover what the sidecar was compiled with. The sidecar reports `compiled_backends` (compile-time cfg) and `system_info` (whisper.cpp's runtime string).
 
-**CSS sections:**
-
-| Section | Classes | Purpose |
-|---------|---------|---------|
-| Current model | `.local-stt-current-model` | Slightly larger name for the primary model display |
-| Status badges | `.local-stt-badge`, `--ready`, `--missing`, `--external`, `--none` | Inline pill indicators using `--background-modifier-success`, `--background-modifier-error`, `--background-modifier-border` |
-| Tag pills | `.local-stt-tags`, `.local-stt-tag`, `.local-stt-tag--recommended` | Flex-wrap row of small rounded chips |
-| Model rows | `.local-stt-model-row`, `.local-stt-row-header`, `.local-stt-row-summary` | Card-like divs with bottom borders, flexbox header (name left, size right) |
-| Details grid | `.local-stt-details-grid` | Two-column CSS grid for `<dl>` in details modal |
-| Advanced | `.local-stt-advanced` | Styled `<details>/<summary>` for collapsible sidecar section |
-| Explorer modal | `.local-stt-explorer` | Width constraint (~600px / 90vw) |
-
-Use fallback values for CSS variables that may be absent in community themes (e.g., `var(--background-modifier-success, rgba(0, 200, 0, 0.15))`).
-
-### 2. Redesign settings tab (`settings-tab.ts`)
-
-**2a. Restructure `display()` layout:**
-
-Replace raw `h2`/`h3`/`p` section markers with `Setting.setHeading()` calls:
-
-1. Keep `h2` "Local STT" + intro paragraph
-2. `new Setting().setName('Model').setHeading()` → async model section div
-3. `new Setting().setName('Transcription').setHeading()` → listening mode, pause toggle, transcript placement (these three Settings are already clean — untouched)
-4. Wrap sidecar settings in `<details class="local-stt-advanced"><summary>Advanced: Sidecar</summary>` instead of `h3` + `p`. Render path override, startup timeout, request timeout inside the `<details>` element
-5. Keep hotkey hint paragraph at bottom
-
-**2b. Rewrite `renderCurrentModelCard()`:**
-
-Replace 7-9 `createEl('p')` calls with one `Setting` row:
-
-- **Name:** `snapshot.currentModel.displayName`
-- **Description:** `DocumentFragment` with engine label + ` · ` + badge `<span>` (CSS class mapped from `installedLabel`)
-- **Info button:** `addExtraButton` with `info` icon → opens a details modal showing source, detail message, size, install path, resolved path, store path. Only rendered when `currentSelection !== null`.
-- **Active install:** If `snapshot.activeInstall !== null`, render a second `Setting` row with model ID and state/progress.
-
-Badge class mapping:
-
-| `installedLabel` | CSS modifier |
-|---|---|
-| `Installed`, `Validated external file` | `--ready` |
-| `Not installed`, `Unavailable` | `--missing` |
-| `External file` | `--external` |
-| `Not selected` | `--none` |
-
-**2c. Consolidate `renderModelActions()`:**
-
-Collapse four `Setting` rows into one:
-
-1. `addButton("Browse models").setCta()` — primary
-2. `addButton("Choose installed")` — secondary
-3. `addExtraButton` icon `file-input`, tooltip "Use external file" — tertiary
-4. `addExtraButton` icon `x-circle`, tooltip "Clear selection" — danger
-
-**2d. Delete `renderModelStoreSection()`:**
-
-The verbose store-path prose is removed. The "Model store folder override" text input `Setting` (already at line 189) is self-explanatory and stays. Store path info is accessible via the info button.
-
-**2e. Add `CurrentModelInfoModal`:**
-
-A small `Modal` subclass (private to `settings-tab.ts` or co-located in modals) that renders a grid layout showing the full technical details removed from the card: source label, detail message, formatted size, install path, resolved path, model store path. Uses the `.local-stt-details-grid` CSS class.
-
-### 3. Redesign model browser modal (`model-management-modals.ts`)
-
-**3a. `ModelExplorerModal.onOpen()`:**
-
-Add `this.modalEl.addClass('local-stt-explorer')` for width constraint.
-
-**3b. Rewrite `ModelExplorerModal.renderRow()`:**
-
-Replace `h3` + three `<p>` + multiple `Setting` rows with a structured card:
-
-1. **Header** (`.local-stt-row-header`): `<strong>` name (left) + `<span>` formatted size from `getPrimaryArtifact()` (right, muted)
-2. **Summary** (`.local-stt-row-summary`): `<p>` with `row.model.summary`
-3. **Tags** (`.local-stt-tags`): `<span>` pills per `uxTags` entry. `"recommended"` tag gets `.local-stt-tag--recommended`
-4. **Actions** — single `Setting` row:
-   - Installing → "Cancel" (CTA)
-   - Installed + selected → "Selected" (disabled) + "Remove" (warning)
-   - Installed + not selected → "Use" (CTA) + "Remove" (warning)
-   - Not installed → "Install" (CTA)
-   - All states → `addExtraButton` `info` icon for details modal
-
-**3c. Rewrite `ModelDetailsModal.onOpen()`:**
-
-Replace flat `createEl('p')` list with a `<dl class="local-stt-details-grid">`:
-
-- Engine, Source URL, License (label + URL), Artifact (filename + size), SHA-256 (monospace), Download URL (monospace), Install path (conditional), Notes (conditional)
-
-Each field is a `<dt>`/`<dd>` pair. SHA-256 and URLs get monospace font via `.local-stt-mono`.
-
-**3d. Slim down `InstalledModelPickerModal`:**
-
-Remove install path `<p>`. Each row: `<strong>` name → `<p>` summary → single "Use" CTA button in one `Setting`.
-
-**3e. Delete `describeRowStatus()`:**
-
-The plain-text status function ("Status: installed and currently selected.") is replaced by the badge approach. Delete the function.
-
-**3f. `ExternalModelFileModal` — no changes.**
+Gate GPU features in Cargo.toml behind opt-in features (`gpu-metal`, `gpu-cuda`). The build matrix selects features per target platform. Local dev builds remain CPU-only by default.
 
 ## Execution Steps
 
-- [ ] Create `styles.css` at project root with all CSS sections
-- [ ] Rewrite `settings-tab.ts`: restructure `display()`, rewrite `renderCurrentModelCard()`, consolidate `renderModelActions()`, delete `renderModelStoreSection()`, add `CurrentModelInfoModal`
-- [ ] Rewrite `model-management-modals.ts`: restructure `ModelExplorerModal.renderRow()`, rewrite `ModelDetailsModal.onOpen()`, slim `InstalledModelPickerModal`, delete `describeRowStatus()`
-- [ ] Build and type-check: `npm run build`
-- [ ] Run tests: `npm run test`
-- [ ] Manual verification in Obsidian (both dark and light themes)
+### Phase 1: Sidecar Rust — GPU Plumbing
 
-## Verification
+#### Step 1.1: Cargo.toml Features
+- [ ] Add `gpu-metal` and `gpu-cuda` features that forward to `whisper-rs/metal` and `whisper-rs/cuda`
+- [ ] Keep `default = []` so bare `cargo build` remains CPU-only
 
-1. `npm run build` — TypeScript compiles, bundle succeeds
-2. `npm run test` — no test regressions
-3. Manual in Obsidian:
-   - Settings tab: no model selected → "No model selected" with muted badge, no info button
-   - Settings tab: installed model → name, engine, green badge, info button reveals details grid
-   - Settings tab: not-installed model → red badge
-   - Settings tab: external file → neutral badge
-   - Settings tab: all four actions work from the consolidated button row
-   - Settings tab: sidecar section collapsed by default
-   - Browse modal: cards show name, size, summary, tag pills
-   - Browse modal: install/use/remove/cancel work
-   - Browse modal: details modal renders as grid
-   - Browse modal: search filtering works
-   - Light and dark theme badge/tag readability
+```toml
+[features]
+default = []
+gpu-metal = ["whisper-rs/metal"]
+gpu-cuda = ["whisper-rs/cuda"]
+```
+
+#### Step 1.2: GpuConfig in transcription.rs
+- [ ] Add `GpuConfig { use_gpu: bool }` struct
+- [ ] Add `gpu_config` field to `TranscriptionRequest`
+- [ ] Add `gpu_config` field to `LoadedModel` (tracks config used at load time)
+- [ ] `load_or_reuse_model` accepts `GpuConfig`, reloads if config changed (not just path)
+- [ ] `load_model_context` accepts `GpuConfig`, sets `use_gpu` and `flash_attn` on `WhisperContextParameters`
+- [ ] `probe_model_path` stays with default params (validation doesn't need specific GPU settings)
+
+Key change in `load_model_context`:
+```rust
+fn load_model_context(path: &Path, gpu: &GpuConfig) -> Result<WhisperContext, TranscriptionError> {
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(gpu.use_gpu);
+    params.flash_attn(gpu.use_gpu); // safe: we don't use DTW
+    WhisperContext::new_with_params(model_path, params)...
+}
+```
+
+Reload check in `load_or_reuse_model`:
+```rust
+let should_reload = self.loaded_model.as_ref()
+    .map(|m| m.model_path != model_file_path || m.gpu_config != gpu_config)
+    .unwrap_or(true);
+```
+
+#### Step 1.3: GpuConfig in worker.rs
+- [ ] Add `gpu_config: GpuConfig` to `SessionMetadata`
+- [ ] Track `loaded_gpu_config: Option<GpuConfig>` alongside `loaded_model_path` in `worker_main`
+- [ ] Extend the reload check in `BeginSession` to compare both path and GPU config
+- [ ] Pass `gpu_config` from active session metadata into `TranscriptionRequest`
+
+#### Step 1.4: Protocol Changes
+- [ ] Add `use_gpu: bool` to `Command::StartSession` with `#[serde(rename = "useGpu", default = "default_use_gpu")]` where `default_use_gpu` returns `true`
+- [ ] Add `Command::GetSystemInfo` variant (no fields)
+- [ ] Add `Event::SystemInfo { compiled_backends: Vec<String>, system_info: String }`
+- [ ] Add `compiled_backends()` helper using `cfg!(feature = "...")` to report compiled GPU backends
+
+```rust
+pub fn compiled_backends() -> Vec<String> {
+    let mut backends = vec!["cpu".to_string()];
+    #[cfg(feature = "gpu-metal")]
+    backends.push("metal".to_string());
+    #[cfg(feature = "gpu-cuda")]
+    backends.push("cuda".to_string());
+    backends
+}
+```
+
+#### Step 1.5: app.rs Wiring
+- [ ] `handle_command` for `GetSystemInfo`: emit `Event::SystemInfo` with `compiled_backends()` and `whisper_rs::print_system_info()`
+- [ ] `handle_command` for `StartSession`: read `use_gpu` field, pass `GpuConfig { use_gpu }` into `SessionMetadata`
+
+### Phase 2: Plugin TypeScript — Settings and Protocol
+
+#### Step 2.1: Plugin Settings
+- [ ] Add `useGpu: boolean` to `PluginSettings` (default `true`)
+- [ ] Add `readBoolean` call in `resolvePluginSettings`
+- [ ] Update `plugin-settings.test.ts` if it has coverage for settings resolution
+
+#### Step 2.2: TypeScript Protocol Types
+- [ ] Add `useGpu?: boolean` to `StartSessionCommand` interface
+- [ ] Add `GetSystemInfoCommand` interface
+- [ ] Add `SystemInfoEvent` interface with `compiledBackends: string[]`, `systemInfo: string`
+- [ ] Add `GetSystemInfoCommand` to `SidecarCommand` union
+- [ ] Add `SystemInfoEvent` to `SidecarEvent` union
+- [ ] Add `createGetSystemInfoCommand()` factory
+- [ ] Add `system_info` case to `parseEventFrame` switch
+- [ ] Update `createStartSessionCommand` to pass through `useGpu`
+
+#### Step 2.3: SidecarConnection
+- [ ] Add `getSystemInfo()` method — sends `GetSystemInfoCommand`, waits for `SystemInfoEvent`
+- [ ] `startSession` already passes through the full payload; `useGpu` flows automatically once it's in the command type
+
+#### Step 2.4: Dictation Session Controller
+- [ ] Pass `useGpu` from settings when building the `startSession` payload
+
+#### Step 2.5: Settings Tab — GPU Display
+- [ ] Add GPU toggle (`useGpu`) in settings under a new "Acceleration" heading or within the existing "Transcription" section
+- [ ] On settings display, call `getSystemInfo()` and show compiled backends (e.g., "GPU: Metal" or "GPU: CUDA" or "CPU only")
+- [ ] Toggle description explains that GPU is used automatically when available and this setting disables it
+
+### Phase 3: Build System
+
+#### Step 3.1: Build Matrix Design
+- [ ] Document the three initial targets:
+
+| Target         | `--target`                  | `--features`  | Notes                          |
+|----------------|-----------------------------|---------------|--------------------------------|
+| darwin-arm64   | `aarch64-apple-darwin`      | `gpu-metal`   | Metal always available on AS   |
+| linux-x64      | `x86_64-unknown-linux-gnu`  | `gpu-cuda`    | Requires CUDA toolkit in CI    |
+| win32-x64      | `x86_64-pc-windows-msvc`    | `gpu-cuda`    | Requires CUDA toolkit in CI    |
+
+- [ ] Add `build:sidecar:release` npm script: `cargo build --manifest-path native/sidecar/Cargo.toml --release`
+- [ ] Local dev continues to use `npm run build:sidecar` (CPU-only debug, no features)
+- [ ] Document CUDA toolkit requirement for CI Linux/Windows builds
+- [ ] The CI build command pattern is: `cargo build --manifest-path native/sidecar/Cargo.toml --release --target <TARGET> --features <FEATURES>`
+
+#### Step 3.2: Binary Naming and Distribution
+- [ ] Binary name stays `obsidian-local-stt-sidecar` (+ `.exe` on Windows) — unchanged
+- [ ] Platform distinction is in the release artifact directory structure, not the binary name
+- [ ] Plugin binary selection at runtime uses `process.platform` + `process.arch` to locate the correct binary (deferred to the distribution plan in backlog)
+
+### Phase 4: Verification
+
+- [ ] `cargo build --features gpu-metal` compiles on macOS (or cross-compile check)
+- [ ] `cargo build --features gpu-cuda` compiles on Linux with CUDA toolkit (or document CI requirement)
+- [ ] `cargo build` (no features) still compiles and works — CPU-only path unchanged
+- [ ] `cargo test` passes with no features (existing tests, no GPU hardware needed)
+- [ ] `npm run check:rust` passes (build, fmt, clippy, test)
+- [ ] `npm run check:js` passes (typecheck, lint, test, build)
+- [ ] Protocol round-trip test for `StartSession` with `useGpu` field
+- [ ] Protocol round-trip test for `GetSystemInfo` → `SystemInfo`
+- [ ] Settings persistence test for `useGpu`
+- [ ] Manual verification: start a dictation session with `useGpu: true` on a CPU-only build — confirm it works (CPU fallback)
 
 ## Risks and Open Questions
 
-1. **`DocumentFragment` in `setDesc()`** — Obsidian's `Setting.setDesc()` accepts `string | DocumentFragment`. Building fragments with inline badge spans should work but needs runtime verification.
-2. **Button density in one row** — Two buttons + two extra buttons on a single `Setting` row may overflow on narrow settings panes. If it does, the `addExtraButton` icons take minimal space so this is unlikely.
-3. **Community theme CSS variables** — Variables like `--background-modifier-success` may not exist in all community themes. CSS fallback values handle this.
-4. **`<details>` element in settings** — Standard HTML, works in Electron/Chromium. Verify that `Setting` components render correctly inside a `<details>` element.
+1. **CUDA toolkit in CI**: Linux and Windows CUDA builds require the CUDA toolkit installed in the CI environment. This is a CI infrastructure requirement, not a code change. Document the version requirement (CUDA 12.x).
+
+2. **CUDA binary size**: CUDA-linked binaries are significantly larger than CPU-only. This affects download size for the plugin. Acceptable tradeoff for GPU acceleration.
+
+3. **Model reload on GPU toggle**: Changing `useGpu` between sessions triggers a full model reload (WhisperContext recreation). This is the correct behavior but adds ~1-3s latency on the first transcription of the new session. The alternative (keeping two contexts) is wasteful.
+
+4. **No runtime GPU detection API**: whisper.cpp does not expose "which backend was actually used for this inference." The sidecar reports what was compiled in and what was requested. The plugin displays reality based on compiled backends, not assumptions about runtime behavior.
+
+5. **Deferred**: darwin-x64 (Intel Mac) binary, Vulkan backend (AMD/Intel GPUs), per-session `gpuDevice` selection, `flash_attn` as a user-visible setting.

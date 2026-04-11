@@ -229,6 +229,7 @@ function createKeyboardEvent(
 
 function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
   return {
+    developerMode: false,
     insertionMode: 'insert_at_cursor',
     listeningMode: 'one_sentence',
     modelStorePathOverride: '',

@@ -217,9 +217,9 @@ impl AppState {
                 model_id,
                 model_store_path_override,
             } => {
-                match resolve_model_store_info(model_store_path_override.as_deref()).and_then(
-                    |info| remove_installed_model(&info.path, engine_id.as_str(), &model_id),
-                ) {
+                match resolve_model_store_info(model_store_path_override.as_deref())
+                    .and_then(|info| remove_installed_model(&info.path, engine_id, &model_id))
+                {
                     Ok(removed) => events.push(Event::ModelRemoved {
                         engine_id,
                         model_id,
@@ -240,11 +240,7 @@ impl AppState {
                 model_id,
                 model_store_path_override,
             } => {
-                match self
-                    .catalog
-                    .find_model(engine_id.as_str(), &model_id)
-                    .cloned()
-                {
+                match self.catalog.find_model(engine_id, &model_id).cloned() {
                     None => events.push(Event::ModelInstallUpdate {
                         details: None,
                         downloaded_bytes: None,
@@ -674,7 +670,7 @@ impl AppState {
             } => {
                 let model = self
                     .catalog
-                    .find_model(engine_id.as_str(), model_id)
+                    .find_model(*engine_id, model_id)
                     .cloned()
                     .ok_or_else(|| {
                         Box::new(Event::ModelProbeResult {
@@ -712,7 +708,7 @@ impl AppState {
                 let resolved_path = resolve_catalog_model_runtime_path(
                     &self.catalog,
                     &store_info.path,
-                    engine_id.as_str(),
+                    *engine_id,
                     model_id,
                 )
                 .map_err(|error| {
@@ -1103,7 +1099,7 @@ mod tests {
             }],
             engines: vec![ModelEngine {
                 display_name: "Whisper.cpp".to_string(),
-                engine_id: "whisper_cpp".to_string(),
+                engine_id: EngineId::WhisperCpp,
                 summary: "summary".to_string(),
             }],
             models: vec![CatalogModel {
@@ -1120,7 +1116,7 @@ mod tests {
                 capability_flags: vec![],
                 collection_id: "english".to_string(),
                 display_name: "Model".to_string(),
-                engine_id: "whisper_cpp".to_string(),
+                engine_id: EngineId::WhisperCpp,
                 language_tags: vec!["en".to_string()],
                 license_label: "MIT".to_string(),
                 license_url: "https://example.com/license".to_string(),

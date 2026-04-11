@@ -1,13 +1,14 @@
 import { readFile } from 'node:fs/promises';
 
+import { asError } from '../shared/error-utils';
 import { PCM_BYTES_PER_FRAME, PCM_CHANNEL_COUNT } from '../shared/pcm-format';
+import type { PluginLogger } from '../shared/plugin-logger';
 import { PCM_RECORDER_WORKLET_NAME } from './pcm-recorder-worklet-shared';
 
-type AudioCaptureLogger = (message: string, error?: unknown) => void;
 type AudioFrameListener = (frameBytes: Uint8Array) => void;
 
 interface AudioCaptureStreamOptions {
-  logger?: AudioCaptureLogger;
+  logger?: PluginLogger;
   resolveWorkletModulePath: () => Promise<string>;
 }
 
@@ -73,7 +74,8 @@ export class AudioCaptureStream {
         const frameBytes = new Uint8Array(event.data);
 
         if (frameBytes.byteLength !== PCM_BYTES_PER_FRAME) {
-          this.log(
+          this.options.logger?.warn(
+            'audio',
             `ignored a mis-sized audio frame from the recorder worklet (${frameBytes.byteLength} bytes)`,
           );
           return;
@@ -92,8 +94,9 @@ export class AudioCaptureStream {
       this.muteNode = muteNode;
       this.recorderNode = recorderNode;
       this.sourceNode = sourceNode;
+      this.options.logger?.debug('audio', 'capture started');
     } catch (error) {
-      this.log('failed to initialize streaming audio capture', error);
+      this.options.logger?.error('audio', 'failed to initialize streaming audio capture', error);
       await stopMediaStream(mediaStream);
 
       if (audioContext !== null) {
@@ -110,6 +113,7 @@ export class AudioCaptureStream {
     }
 
     await this.releaseCapture();
+    this.options.logger?.debug('audio', 'capture stopped');
   }
 
   async dispose(): Promise<void> {
@@ -135,7 +139,11 @@ export class AudioCaptureStream {
       sourceNode?.disconnect();
       muteNode?.disconnect();
     } catch (error) {
-      this.log('failed to disconnect the audio capture graph cleanly', error);
+      this.options.logger?.warn(
+        'audio',
+        'failed to disconnect the audio capture graph cleanly',
+        error,
+      );
     }
 
     if (recorderNode !== null) {
@@ -149,10 +157,6 @@ export class AudioCaptureStream {
     if (audioContext !== null) {
       await closeAudioContext(audioContext);
     }
-  }
-
-  private log(message: string, error?: unknown): void {
-    this.options.logger?.(message, error);
   }
 }
 
@@ -187,7 +191,7 @@ async function closeAudioContext(audioContext: AudioContext): Promise<void> {
 async function installRecorderWorklet(
   audioContext: AudioContext,
   workletModulePath: string,
-  logger?: AudioCaptureLogger,
+  logger?: PluginLogger,
 ): Promise<void> {
   if (audioContext.audioWorklet === undefined) {
     throw new Error('AudioWorklet is not available in this Obsidian runtime.');
@@ -198,10 +202,11 @@ async function installRecorderWorklet(
   try {
     workletModuleSource = await readFile(workletModulePath, 'utf8');
   } catch (error) {
-    logger?.('failed to read recorder worklet module', error);
+    logger?.error('audio', 'failed to read recorder worklet module', error);
     throw asError(error, `Failed to read recorder worklet module: ${workletModulePath}`);
   }
 
+  logger?.debug('audio', 'installing recorder worklet');
   const workletModuleUrl = URL.createObjectURL(
     new Blob([workletModuleSource], { type: 'text/javascript' }),
   );
@@ -209,13 +214,9 @@ async function installRecorderWorklet(
   try {
     await audioContext.audioWorklet.addModule(workletModuleUrl);
   } catch (error) {
-    logger?.('failed to load recorder worklet module', error);
+    logger?.error('audio', 'failed to load recorder worklet module', error);
     throw asError(error, `Failed to load recorder worklet module: ${workletModulePath}`);
   } finally {
     URL.revokeObjectURL(workletModuleUrl);
   }
-}
-
-function asError(value: unknown, fallbackMessage: string): Error {
-  return value instanceof Error ? value : new Error(fallbackMessage);
 }
