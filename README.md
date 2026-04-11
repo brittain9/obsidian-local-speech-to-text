@@ -11,7 +11,7 @@ Current working path:
 - streaming `16 kHz` mono `PCM16` audio from the plugin to the sidecar
 - session-based dictation with always-on, press-and-hold, and one-sentence modes
 - local CPU Whisper transcription in the sidecar
-- transcript insertion at the active cursor position
+- configurable transcript placement at the cursor or the end of the note
 
 ## Architecture
 
@@ -23,7 +23,7 @@ Obsidian plugin (TypeScript)
 Rust sidecar
   -> validates framed protocol messages
   -> owns listening-session state, VAD, utterance segmentation, and queueing
-  -> loads a whisper.cpp-compatible model file
+  -> resolves managed catalog installs or explicit external files into a runtime model path
   -> transcribes finalized in-memory utterances with whisper-rs
   -> emits asynchronous session and transcript events back to the plugin
 ```
@@ -74,39 +74,58 @@ Local note:
 
 - `data.json` in the plugin directory is Obsidian runtime state, not checked-in source configuration
 
-## Real Smoke Test
+## Manual Verification
 
-This implementation expects a `whisper.cpp`-compatible model file, not the raw Hugging Face `safetensors` checkpoint.
+Managed models are now the primary path. The plugin ships a bundled model catalog, verifies downloads with `SHA-256`, and stores managed installs in a shared sidecar-owned model store. External `whisper.cpp`-compatible model files remain available as an explicit advanced fallback.
 
-For the first real smoke test in this repository, use a smaller English model first, then move up to `large-v3-turbo` after the end-to-end path works. Recommended first-pass model:
+For the first end-to-end verification in this repository, use the bundled smaller English model first, then move up to the larger Turbo model after the full flow works. Bundled first-pass model:
 
-- Linux: `~/.local/share/obsidian-local-stt-dev/models/ggml-small.en-q5_1.bin`
-- macOS: `~/Library/Application Support/obsidian-local-stt-dev/models/ggml-small.en-q5_1.bin`
-- Windows: `%APPDATA%\obsidian-local-stt-dev\models\ggml-small.en-q5_1.bin`
+- `Whisper Small English Q5_1`
 
-You can switch to a converted `large-v3-turbo` model file afterward, such as:
+Bundled follow-up model:
 
-- Linux: `~/.local/share/obsidian-local-stt-dev/models/ggml-large-v3-turbo.bin`
-- macOS: `~/Library/Application Support/obsidian-local-stt-dev/models/ggml-large-v3-turbo.bin`
-- Windows: `%APPDATA%\obsidian-local-stt-dev\models\ggml-large-v3-turbo.bin`
+- `Whisper Large V3 Turbo Q8_0`
 
-Minimal verification flow:
+Managed-model verification flow:
 
 1. Open a Markdown note in the dev vault.
 2. Open `Settings -> Local STT`.
-3. Set `Whisper model file path` to your local `ggml-small.en-q5_1.bin`.
-4. Set `Listening mode` to `One sentence` for the simplest first pass.
-5. Leave `Pause while processing` enabled for the first CPU smoke test.
-6. Optionally set `Sidecar path override` if the debug sidecar is not at `native/sidecar/target/debug`.
-7. Run `Local STT: Check Sidecar Health`.
-8. Click the microphone ribbon button or run `Local STT: Start Dictation Session`.
-9. Speak one short sentence.
-10. Confirm the transcript text is inserted at the cursor and the session returns to idle automatically.
+3. Confirm the `Current model` card shows `No model selected`.
+4. Click `Browse models`.
+5. Start an install for `Whisper Small English Q5_1`.
+6. Wait for the install to complete, then select it.
+7. Set `Listening mode` to `One sentence` for the simplest first pass.
+8. Leave `Pause while processing` enabled for the first CPU verification pass.
+9. Optionally set `Sidecar path override` if the debug sidecar is not at `native/sidecar/target/debug`.
+10. Run `Local STT: Check Sidecar Health`.
+11. Set `Transcript placement` to `Insert at cursor`.
+12. Click the microphone ribbon button or run `Local STT: Start Dictation Session`.
+13. Speak one short sentence.
+14. Confirm the transcript replaces the current selection or inserts at the caret and the session returns to idle automatically.
+
+External-file fallback verification:
+
+1. Open `Settings -> Local STT`.
+2. Click `Use external file`.
+3. Enter an absolute `whisper.cpp`-compatible model file path.
+4. Click `Validate and use`.
+5. Confirm the `Current model` card shows `External file` as the source and resolves the configured path.
+
+Append placement verification:
+
+1. Set `Transcript placement` to `Append on a new line`.
+2. Put the caret somewhere in the middle of an existing note and select some text.
+3. Run another one-sentence dictation.
+4. Confirm the transcript is appended at the note end, not at the selection, with exactly one newline before it.
+5. Set `Transcript placement` to `Append as a new paragraph`.
+6. Run another one-sentence dictation.
+7. Confirm the transcript is appended at the note end with exactly one blank line before it.
+8. Confirm placement changes do not add punctuation or capitalization beyond the raw transcript text.
 
 For press-and-hold verification:
 
 1. Set `Listening mode` to `Press and hold`.
-2. Assign a hotkey to `Local STT: Press-And-Hold Gate` in Obsidian Hotkeys if you want keyboard gating.
+2. Assign a hotkey to `Local STT: Press-And-Hold Gate` in Obsidian Hotkeys if you want keyboard gating. This hotkey target does not appear in the command palette.
 3. Hold the ribbon button or the configured hotkey while speaking.
 4. Release it and confirm the buffered utterance is transcribed and inserted.
 
@@ -118,14 +137,17 @@ For press-and-hold verification:
 - `npm run check` runs TypeScript and Rust quality gates
 - `cargo run --manifest-path native/sidecar/Cargo.toml` runs the sidecar directly
 
-Available plugin commands:
+Available command palette actions:
 
 - `Local STT: Start Dictation Session`
 - `Local STT: Stop Dictation Session`
-- `Local STT: Cancel Dictation`
-- `Local STT: Press-And-Hold Gate`
+- `Local STT: Cancel Dictation Session`
 - `Local STT: Check Sidecar Health`
 - `Local STT: Restart Sidecar`
+
+Hotkey-only command target:
+
+- `Local STT: Press-And-Hold Gate`
 
 ## License
 

@@ -1,0 +1,79 @@
+{
+  "catalogVersion": 1,
+  "engines": [
+    {
+      "engineId": "whisper_cpp",
+      "displayName": "Whisper.cpp",
+      "summary": "Local CPU speech-to-text with whisper.cpp-compatible GGML model files."
+    }
+  ],
+  "collections": [
+    {
+      "collectionId": "english_cpu_first",
+      "displayName": "English CPU First",
+      "summary": "Recommended English-first CPU models for the current desktop dictation scope."
+    }
+  ],
+  "models": [
+    {
+      "engineId": "whisper_cpp",
+      "modelId": "whisper_small_en_q5_1",
+      "collectionId": "english_cpu_first",
+      "displayName": "Whisper Small English Q5_1",
+      "summary": "Recommended first-run English model with lower CPU and disk cost.",
+      "languageTags": ["en"],
+      "uxTags": ["recommended", "starter", "cpu"],
+      "capabilityFlags": ["dictation"],
+      "recommended": true,
+      "licenseLabel": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/f281eb45af861ab5e5297d23694b7d46e090c02c",
+      "modelCardUrl": "https://github.com/ggml-org/whisper.cpp",
+      "notes": [
+        "Start here for the first CPU verification pass.",
+        "English-only runtime remains the current supported dictation path."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "transcription",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "ggml-small.en-q5_1.bin",
+          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/f281eb45af861ab5e5297d23694b7d46e090c02c/ggml-small.en-q5_1.bin?download=true",
+          "sha256": "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
+          "sizeBytes": 190098681
+        }
+      ]
+    },
+    {
+      "engineId": "whisper_cpp",
+      "modelId": "whisper_large_v3_turbo_q8_0",
+      "collectionId": "english_cpu_first",
+      "displayName": "Whisper Large V3 Turbo Q8_0",
+      "summary": "Higher-accuracy English dictation model with a heavier CPU and disk footprint.",
+      "languageTags": ["en"],
+      "uxTags": ["accuracy", "cpu"],
+      "capabilityFlags": ["dictation"],
+      "recommended": false,
+      "licenseLabel": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/f281eb45af861ab5e5297d23694b7d46e090c02c",
+      "modelCardUrl": "https://github.com/ggml-org/whisper.cpp",
+      "notes": [
+        "Use after the smaller English model path is proven in your local environment.",
+        "This package is intentionally optional because CPU decode is materially slower."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "transcription",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "ggml-large-v3-turbo-q8_0.bin",
+          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/f281eb45af861ab5e5297d23694b7d46e090c02c/ggml-large-v3-turbo-q8_0.bin?download=true",
+          "sha256": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+          "sizeBytes": 874188075
+        }
+      ]
+    }
+  ]
+}

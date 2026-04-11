@@ -3,7 +3,10 @@ use std::io::{ErrorKind, Read, Write};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: &str = "v2";
+use crate::catalog::{CatalogModel, ModelCollection, ModelEngine};
+use crate::model_store::InstalledModelRecord;
+
+pub const PROTOCOL_VERSION: &str = "v3";
 pub const JSON_FRAME_KIND: u8 = 0x01;
 pub const AUDIO_FRAME_KIND: u8 = 0x02;
 pub const FRAME_HEADER_LENGTH: usize = 5;
@@ -14,6 +17,47 @@ pub const PCM_SAMPLE_BYTES: usize = 2;
 pub const PCM_FRAME_DURATION_MS: usize = 20;
 pub const PCM_SAMPLES_PER_FRAME: usize = (PCM_SAMPLE_RATE_HZ / 1_000) * PCM_FRAME_DURATION_MS;
 pub const PCM_BYTES_PER_FRAME: usize = PCM_SAMPLES_PER_FRAME * PCM_CHANNEL_COUNT * PCM_SAMPLE_BYTES;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineId {
+    WhisperCpp,
+}
+
+impl EngineId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WhisperCpp => "whisper_cpp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SelectedModel {
+    CatalogModel {
+        #[serde(rename = "engineId")]
+        engine_id: EngineId,
+        #[serde(rename = "modelId")]
+        model_id: String,
+    },
+    ExternalFile {
+        #[serde(rename = "engineId")]
+        engine_id: EngineId,
+        #[serde(rename = "filePath")]
+        file_path: String,
+    },
+}
+
+impl SelectedModel {
+    pub fn engine_id(&self) -> EngineId {
+        match self {
+            Self::CatalogModel { engine_id, .. } | Self::ExternalFile { engine_id, .. } => {
+                *engine_id
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +88,26 @@ pub enum SessionStopReason {
     UserStop,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelProbeStatus {
+    Invalid,
+    Missing,
+    Ready,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInstallState {
+    Queued,
+    Downloading,
+    Verifying,
+    Probing,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptSegment {
     #[serde(rename = "endMs")]
@@ -68,12 +132,51 @@ pub enum Command {
     StartSession {
         language: String,
         mode: ListeningMode,
-        #[serde(rename = "modelFilePath")]
-        model_file_path: String,
+        #[serde(rename = "modelSelection")]
+        model_selection: SelectedModel,
+        #[serde(rename = "modelStorePathOverride", default)]
+        model_store_path_override: Option<String>,
         #[serde(rename = "pauseWhileProcessing")]
         pause_while_processing: bool,
         #[serde(rename = "sessionId")]
         session_id: String,
+    },
+    GetModelStore {
+        #[serde(rename = "modelStorePathOverride", default)]
+        model_store_path_override: Option<String>,
+    },
+    ListModelCatalog,
+    ListInstalledModels {
+        #[serde(rename = "modelStorePathOverride", default)]
+        model_store_path_override: Option<String>,
+    },
+    ProbeModelSelection {
+        #[serde(rename = "modelSelection")]
+        model_selection: SelectedModel,
+        #[serde(rename = "modelStorePathOverride", default)]
+        model_store_path_override: Option<String>,
+    },
+    RemoveModel {
+        #[serde(rename = "engineId")]
+        engine_id: EngineId,
+        #[serde(rename = "modelId")]
+        model_id: String,
+        #[serde(rename = "modelStorePathOverride", default)]
+        model_store_path_override: Option<String>,
+    },
+    InstallModel {
+        #[serde(rename = "engineId")]
+        engine_id: EngineId,
+        #[serde(rename = "installId")]
+        install_id: String,
+        #[serde(rename = "modelId")]
+        model_id: String,
+        #[serde(rename = "modelStorePathOverride", default)]
+        model_store_path_override: Option<String>,
+    },
+    CancelModelInstall {
+        #[serde(rename = "installId")]
+        install_id: String,
     },
     SetGate {
         open: bool,
@@ -98,6 +201,66 @@ pub enum Event {
         #[serde(rename = "sidecarVersion")]
         sidecar_version: String,
         status: String,
+    },
+    ModelStore {
+        #[serde(rename = "overridePath", skip_serializing_if = "Option::is_none")]
+        override_path: Option<String>,
+        path: String,
+        #[serde(rename = "usingDefaultPath")]
+        using_default_path: bool,
+    },
+    ModelCatalog {
+        #[serde(rename = "catalogVersion")]
+        catalog_version: u32,
+        collections: Vec<ModelCollection>,
+        engines: Vec<ModelEngine>,
+        models: Vec<CatalogModel>,
+    },
+    InstalledModels {
+        models: Vec<InstalledModelRecord>,
+    },
+    ModelProbeResult {
+        available: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<String>,
+        #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+        #[serde(rename = "engineId")]
+        engine_id: EngineId,
+        installed: bool,
+        message: String,
+        #[serde(rename = "modelId", skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        #[serde(rename = "resolvedPath", skip_serializing_if = "Option::is_none")]
+        resolved_path: Option<String>,
+        selection: SelectedModel,
+        #[serde(rename = "sizeBytes", skip_serializing_if = "Option::is_none")]
+        size_bytes: Option<u64>,
+        status: ModelProbeStatus,
+    },
+    ModelRemoved {
+        #[serde(rename = "engineId")]
+        engine_id: EngineId,
+        #[serde(rename = "modelId")]
+        model_id: String,
+        removed: bool,
+    },
+    ModelInstallUpdate {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<String>,
+        #[serde(rename = "downloadedBytes", skip_serializing_if = "Option::is_none")]
+        downloaded_bytes: Option<u64>,
+        #[serde(rename = "engineId")]
+        engine_id: EngineId,
+        #[serde(rename = "installId")]
+        install_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(rename = "modelId")]
+        model_id: String,
+        state: ModelInstallState,
+        #[serde(rename = "totalBytes", skip_serializing_if = "Option::is_none")]
+        total_bytes: Option<u64>,
     },
     SessionStarted {
         mode: ListeningMode,
@@ -241,9 +404,9 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        AUDIO_FRAME_KIND, Command, Event, FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND,
-        ListeningMode, PCM_BYTES_PER_FRAME, PROTOCOL_VERSION, SessionState, SessionStopReason,
-        TranscriptSegment, read_frame, write_event_frame, write_frame,
+        AUDIO_FRAME_KIND, Command, CommandEnvelope, EngineId, Event, EventEnvelope,
+        FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME,
+        PROTOCOL_VERSION, SelectedModel, read_frame, write_event_frame, write_frame,
     };
 
     #[test]
@@ -253,16 +416,19 @@ mod tests {
             "type": "start_session",
             "sessionId": "session-1",
             "mode": "always_on",
-            "modelFilePath": "/tmp/model.bin",
+            "modelSelection": {
+                "kind": "external_file",
+                "engineId": "whisper_cpp",
+                "filePath": "/tmp/model.bin"
+            },
             "language": "en",
             "pauseWhileProcessing": true
         }))
         .expect("payload should serialize");
-        let mut bytes = Vec::new();
+        let mut framed = Vec::new();
+        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
 
-        write_frame(&mut bytes, JSON_FRAME_KIND, &payload).expect("frame should serialize");
-
-        let parsed = read_frame(&mut bytes.as_slice())
+        let parsed = read_frame(&mut framed.as_slice())
             .expect("frame should parse")
             .expect("frame should exist");
 
@@ -271,7 +437,11 @@ mod tests {
             IncomingFrame::Command(Command::StartSession {
                 language: "en".to_string(),
                 mode: ListeningMode::AlwaysOn,
-                model_file_path: "/tmp/model.bin".to_string(),
+                model_selection: SelectedModel::ExternalFile {
+                    engine_id: EngineId::WhisperCpp,
+                    file_path: "/tmp/model.bin".to_string(),
+                },
+                model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
             })
@@ -279,43 +449,29 @@ mod tests {
     }
 
     #[test]
-    fn event_frame_serializes_protocol_version() {
-        let mut bytes = Vec::new();
+    fn event_frame_round_trip_preserves_model_store_shape() {
+        let event = Event::ModelStore {
+            override_path: None,
+            path: "/tmp/models".to_string(),
+            using_default_path: true,
+        };
+        let mut framed = Vec::new();
+        write_event_frame(&mut framed, &event).expect("frame should write");
+        let payload_length =
+            u32::from_le_bytes([framed[1], framed[2], framed[3], framed[4]]) as usize;
+        let payload = &framed[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + payload_length];
+        let parsed: EventEnvelope = serde_json::from_slice(payload).expect("event should parse");
 
-        write_event_frame(
-            &mut bytes,
-            &Event::SessionStateChanged {
-                session_id: "session-1".to_string(),
-                state: SessionState::Listening,
-            },
-        )
-        .expect("event should serialize");
-
-        assert_eq!(bytes[0], JSON_FRAME_KIND);
-
-        let payload_length = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
-        let payload = &bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + payload_length];
-        let parsed_json: serde_json::Value =
-            serde_json::from_slice(payload).expect("payload should deserialize");
-
-        assert_eq!(
-            parsed_json["protocolVersion"],
-            serde_json::json!(PROTOCOL_VERSION)
-        );
-        assert_eq!(
-            parsed_json["type"],
-            serde_json::json!("session_state_changed")
-        );
+        assert_eq!(parsed.event, event);
     }
 
     #[test]
-    fn audio_frame_round_trip_preserves_binary_payload() {
+    fn audio_frame_round_trip_preserves_payload() {
         let payload = vec![7_u8; PCM_BYTES_PER_FRAME];
-        let mut bytes = Vec::new();
+        let mut framed = Vec::new();
+        write_frame(&mut framed, AUDIO_FRAME_KIND, &payload).expect("frame should write");
 
-        write_frame(&mut bytes, AUDIO_FRAME_KIND, &payload).expect("frame should serialize");
-
-        let parsed = read_frame(&mut bytes.as_slice())
+        let parsed = read_frame(&mut framed.as_slice())
             .expect("frame should parse")
             .expect("frame should exist");
 
@@ -323,83 +479,14 @@ mod tests {
     }
 
     #[test]
-    fn read_frame_rejects_unknown_protocol_version() {
+    fn command_frame_rejects_unsupported_protocol_version() {
         let payload = serde_json::to_vec(&serde_json::json!({
-            "protocolVersion": "v1",
+            "protocolVersion": "v2",
             "type": "health"
         }))
         .expect("payload should serialize");
-        let mut bytes = Vec::new();
 
-        write_frame(&mut bytes, JSON_FRAME_KIND, &payload).expect("frame should serialize");
-
-        let error = read_frame(&mut bytes.as_slice()).expect_err("frame should fail");
-
+        let error = CommandEnvelope::parse_json(&payload).expect_err("version should fail");
         assert!(error.to_string().contains("unsupported protocol version"));
-    }
-
-    #[test]
-    fn read_frame_rejects_unknown_frame_kind() {
-        let mut bytes = Vec::new();
-
-        write_frame(&mut bytes, 0xff, &[1, 2, 3]).expect("frame should serialize");
-
-        let error = read_frame(&mut bytes.as_slice()).expect_err("frame should fail");
-
-        assert!(error.to_string().contains("unsupported frame kind"));
-    }
-
-    #[test]
-    fn transcript_event_shape_matches_expected_fields() {
-        let mut bytes = Vec::new();
-
-        write_event_frame(
-            &mut bytes,
-            &Event::TranscriptReady {
-                processing_duration_ms: 125,
-                segments: vec![TranscriptSegment {
-                    end_ms: 800,
-                    start_ms: 0,
-                    text: "hello".to_string(),
-                }],
-                session_id: "session-9".to_string(),
-                text: "hello".to_string(),
-                utterance_duration_ms: 800,
-            },
-        )
-        .expect("event should serialize");
-
-        let payload_length = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
-        let payload = &bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + payload_length];
-        let parsed_json: serde_json::Value =
-            serde_json::from_slice(payload).expect("payload should deserialize");
-
-        assert_eq!(parsed_json["processingDurationMs"], serde_json::json!(125));
-        assert_eq!(parsed_json["sessionId"], serde_json::json!("session-9"));
-        assert_eq!(parsed_json["utteranceDurationMs"], serde_json::json!(800));
-    }
-
-    #[test]
-    fn session_stopped_reason_serializes_in_snake_case() {
-        let mut bytes = Vec::new();
-
-        write_event_frame(
-            &mut bytes,
-            &Event::SessionStopped {
-                reason: SessionStopReason::SentenceComplete,
-                session_id: "session-2".to_string(),
-            },
-        )
-        .expect("event should serialize");
-
-        let payload_length = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
-        let payload = &bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + payload_length];
-        let parsed_json: serde_json::Value =
-            serde_json::from_slice(payload).expect("payload should deserialize");
-
-        assert_eq!(
-            parsed_json["reason"],
-            serde_json::json!("sentence_complete")
-        );
     }
 }

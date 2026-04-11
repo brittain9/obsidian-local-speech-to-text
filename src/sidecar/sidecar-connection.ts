@@ -1,6 +1,13 @@
 import {
+  createCancelModelInstallCommand,
   createCancelSessionCommand,
+  createGetModelStoreCommand,
   createHealthCommand,
+  createInstallModelCommand,
+  createListInstalledModelsCommand,
+  createListModelCatalogCommand,
+  createProbeModelSelectionCommand,
+  createRemoveModelCommand,
   createSetGateCommand,
   createShutdownCommand,
   createStartSessionCommand,
@@ -10,7 +17,13 @@ import {
   encodeJsonFrame,
   FramedMessageParser,
   type HealthOkEvent,
+  type InstalledModelsEvent,
   JSON_FRAME_KIND,
+  type ModelCatalogEvent,
+  type ModelInstallUpdateEvent,
+  type ModelProbeResultEvent,
+  type ModelRemovedEvent,
+  type ModelStoreEvent,
   parseEventFrame,
   type SessionStartedEvent,
   type SessionStoppedEvent,
@@ -33,7 +46,18 @@ interface PendingEventWaiter {
   timeoutHandle: ReturnType<typeof globalThis.setTimeout>;
 }
 
+interface SidecarProcessLike {
+  isRunning(): boolean;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  write(frameBytes: Uint8Array): void;
+}
+
 interface SidecarConnectionOptions {
+  createProcess?: (
+    resolveLaunchSpec: ResolveSidecarLaunchSpec,
+    handlers: ConstructorParameters<typeof SidecarProcess>[1],
+  ) => SidecarProcessLike;
   getRequestTimeoutMs: () => number;
   logger?: SidecarLogger;
   resolveLaunchSpec: ResolveSidecarLaunchSpec;
@@ -43,28 +67,32 @@ export class SidecarConnection {
   private readonly eventListeners = new Set<SidecarEventListener>();
   private readonly frameParser = new FramedMessageParser(parseEventFrame);
   private readonly pendingWaiters = new Set<PendingEventWaiter>();
-  private readonly process: SidecarProcess;
+  private readonly process: SidecarProcessLike;
 
   constructor(private readonly options: SidecarConnectionOptions) {
-    this.process = new SidecarProcess(options.resolveLaunchSpec, {
-      onExit: (code, signal) => {
+    const handlers = {
+      onExit: (code: number | null, signal: NodeJS.Signals | null) => {
         this.rejectPendingWaiters(
           new Error(
             `Sidecar exited unexpectedly (code: ${String(code)}, signal: ${String(signal)}).`,
           ),
         );
       },
-      onStderrLine: (line) => {
+      onStderrLine: (line: string) => {
         const entry = createSidecarStderrLogEntry(line);
 
         if (entry !== null) {
           this.log(entry);
         }
       },
-      onStdoutChunk: (chunk) => {
+      onStdoutChunk: (chunk: Uint8Array) => {
         this.handleStdoutChunk(chunk);
       },
-    });
+    };
+
+    this.process =
+      options.createProcess?.(options.resolveLaunchSpec, handlers) ??
+      new SidecarProcess(options.resolveLaunchSpec, handlers);
   }
 
   async ensureStarted(): Promise<void> {
@@ -76,6 +104,98 @@ export class SidecarConnection {
       createHealthCommand(),
       (event): event is HealthOkEvent => event.type === 'health_ok',
       'health_ok',
+      timeoutMs,
+    );
+  }
+
+  async getModelStore(
+    modelStorePathOverride?: string,
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<ModelStoreEvent> {
+    return this.sendCommandAndWait(
+      createGetModelStoreCommand(modelStorePathOverride),
+      (event): event is ModelStoreEvent => event.type === 'model_store',
+      'model_store',
+      timeoutMs,
+    );
+  }
+
+  async listModelCatalog(
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<ModelCatalogEvent> {
+    return this.sendCommandAndWait(
+      createListModelCatalogCommand(),
+      (event): event is ModelCatalogEvent => event.type === 'model_catalog',
+      'model_catalog',
+      timeoutMs,
+    );
+  }
+
+  async listInstalledModels(
+    modelStorePathOverride?: string,
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<InstalledModelsEvent> {
+    return this.sendCommandAndWait(
+      createListInstalledModelsCommand(modelStorePathOverride),
+      (event): event is InstalledModelsEvent => event.type === 'installed_models',
+      'installed_models',
+      timeoutMs,
+    );
+  }
+
+  async probeModelSelection(
+    payload: Parameters<typeof createProbeModelSelectionCommand>[0],
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<ModelProbeResultEvent> {
+    return this.sendCommandAndWait(
+      createProbeModelSelectionCommand(payload),
+      (event): event is ModelProbeResultEvent => event.type === 'model_probe_result',
+      'model_probe_result',
+      timeoutMs,
+    );
+  }
+
+  async removeModel(
+    payload: Parameters<typeof createRemoveModelCommand>[0],
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<ModelRemovedEvent> {
+    return this.sendCommandAndWait(
+      createRemoveModelCommand(payload),
+      (event): event is ModelRemovedEvent =>
+        event.type === 'model_removed' &&
+        event.engineId === payload.engineId &&
+        event.modelId === payload.modelId,
+      `model_removed:${payload.engineId}:${payload.modelId}`,
+      timeoutMs,
+    );
+  }
+
+  async installModel(
+    payload: Parameters<typeof createInstallModelCommand>[0],
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<ModelInstallUpdateEvent> {
+    return this.sendCommandAndWait(
+      createInstallModelCommand(payload),
+      (event): event is ModelInstallUpdateEvent =>
+        event.type === 'model_install_update' &&
+        event.installId === payload.installId &&
+        (event.state === 'failed' || event.state === 'queued'),
+      `model_install_update:${payload.installId}`,
+      timeoutMs,
+    );
+  }
+
+  async cancelModelInstall(
+    installId: string,
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<ModelInstallUpdateEvent> {
+    return this.sendCommandAndWait(
+      createCancelModelInstallCommand(installId),
+      (event): event is ModelInstallUpdateEvent =>
+        event.type === 'model_install_update' &&
+        event.installId === installId &&
+        (event.state === 'cancelled' || event.state === 'failed'),
+      `model_install_update:${installId}`,
       timeoutMs,
     );
   }
@@ -249,10 +369,10 @@ export class SidecarConnection {
   }
 
   private rejectPendingWaiters(error: Error): void {
-    for (const waiter of this.pendingWaiters) {
+    for (const waiter of [...this.pendingWaiters]) {
       globalThis.clearTimeout(waiter.timeoutHandle);
-      waiter.reject(error);
       this.pendingWaiters.delete(waiter);
+      waiter.reject(error);
     }
   }
 
@@ -261,6 +381,6 @@ export class SidecarConnection {
   }
 }
 
-function asError(value: unknown, fallbackMessage: string): Error {
-  return value instanceof Error ? value : new Error(fallbackMessage);
+function asError(error: unknown, fallbackMessage: string): Error {
+  return error instanceof Error ? error : new Error(fallbackMessage);
 }

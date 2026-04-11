@@ -1,12 +1,23 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::protocol::{Command, Event, ListeningMode, SessionState, SessionStopReason};
+use crate::catalog::ModelCatalog;
+use crate::installer::{InstallRequest, ModelInstallManager};
+use crate::model_store::{
+    remove_installed_model, resolve_catalog_model_runtime_path, resolve_model_store_info,
+    scan_installed_models,
+};
+use crate::protocol::{
+    Command, EngineId, Event, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
+    SessionState, SessionStopReason,
+};
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
 };
+use crate::transcription::{TranscriptionError, probe_model_path};
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
+type ModelPathProbe = fn(&Path) -> Result<u64, TranscriptionError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {
@@ -16,6 +27,9 @@ pub enum ControlFlow {
 
 pub struct AppState {
     active_session: Option<ActiveSession>,
+    catalog: ModelCatalog,
+    install_manager: ModelInstallManager,
+    model_path_probe: ModelPathProbe,
     sidecar_version: String,
     transcription_worker: TranscriptionWorker,
 }
@@ -27,10 +41,31 @@ struct ActiveSession {
     transcription_active: bool,
 }
 
+struct ResolvedModelSelection {
+    display_name: String,
+    engine_id: EngineId,
+    installed: bool,
+    model_id: Option<String>,
+    resolved_path: PathBuf,
+    selection: SelectedModel,
+    size_bytes: u64,
+}
+
 impl AppState {
-    pub fn new(sidecar_version: impl Into<String>) -> Self {
+    pub fn new(sidecar_version: impl Into<String>, catalog: ModelCatalog) -> Self {
+        Self::with_model_path_probe(sidecar_version, catalog, probe_model_path)
+    }
+
+    fn with_model_path_probe(
+        sidecar_version: impl Into<String>,
+        catalog: ModelCatalog,
+        model_path_probe: ModelPathProbe,
+    ) -> Self {
         Self {
             active_session: None,
+            catalog,
+            install_manager: ModelInstallManager::new(),
+            model_path_probe,
             sidecar_version: sidecar_version.into(),
             transcription_worker: TranscriptionWorker::spawn(),
         }
@@ -41,6 +76,10 @@ impl AppState {
 
         while let Some(worker_event) = self.transcription_worker.poll_event() {
             self.handle_worker_event(worker_event, &mut events);
+        }
+
+        while let Some(install_event) = self.install_manager.poll_event() {
+            events.push(install_event);
         }
 
         events
@@ -120,10 +159,145 @@ impl AppState {
 
                 (ControlFlow::Continue, events)
             }
+            Command::GetModelStore {
+                model_store_path_override,
+            } => {
+                match resolve_model_store_info(model_store_path_override.as_deref()) {
+                    Ok(info) => events.push(Event::ModelStore {
+                        override_path: info.override_path.map(|path| path.display().to_string()),
+                        path: info.path.display().to_string(),
+                        using_default_path: info.using_default_path,
+                    }),
+                    Err(error) => events.push(internal_error_event(
+                        "invalid_model_store",
+                        "Failed to resolve the configured model store path.",
+                        Some(format!("{error:#}")),
+                    )),
+                }
+
+                (ControlFlow::Continue, events)
+            }
+            Command::ListModelCatalog => {
+                events.push(Event::ModelCatalog {
+                    catalog_version: self.catalog.catalog_version,
+                    collections: self.catalog.collections.clone(),
+                    engines: self.catalog.engines.clone(),
+                    models: self.catalog.models.clone(),
+                });
+
+                (ControlFlow::Continue, events)
+            }
+            Command::ListInstalledModels {
+                model_store_path_override,
+            } => {
+                match resolve_model_store_info(model_store_path_override.as_deref())
+                    .and_then(|info| scan_installed_models(&self.catalog, &info.path))
+                {
+                    Ok(models) => events.push(Event::InstalledModels { models }),
+                    Err(error) => events.push(internal_error_event(
+                        "invalid_model_store",
+                        "Failed to scan installed models.",
+                        Some(format!("{error:#}")),
+                    )),
+                }
+
+                (ControlFlow::Continue, events)
+            }
+            Command::ProbeModelSelection {
+                model_selection,
+                model_store_path_override,
+            } => {
+                events.push(
+                    self.build_probe_event(model_selection, model_store_path_override.as_deref()),
+                );
+                (ControlFlow::Continue, events)
+            }
+            Command::RemoveModel {
+                engine_id,
+                model_id,
+                model_store_path_override,
+            } => {
+                match resolve_model_store_info(model_store_path_override.as_deref()).and_then(
+                    |info| remove_installed_model(&info.path, engine_id.as_str(), &model_id),
+                ) {
+                    Ok(removed) => events.push(Event::ModelRemoved {
+                        engine_id,
+                        model_id,
+                        removed,
+                    }),
+                    Err(_error) => events.push(Event::ModelRemoved {
+                        engine_id,
+                        model_id,
+                        removed: false,
+                    }),
+                }
+
+                (ControlFlow::Continue, events)
+            }
+            Command::InstallModel {
+                engine_id,
+                install_id,
+                model_id,
+                model_store_path_override,
+            } => {
+                match self
+                    .catalog
+                    .find_model(engine_id.as_str(), &model_id)
+                    .cloned()
+                {
+                    None => events.push(Event::ModelInstallUpdate {
+                        details: None,
+                        downloaded_bytes: None,
+                        engine_id,
+                        install_id,
+                        message: Some(
+                            "The requested model does not exist in the bundled catalog."
+                                .to_string(),
+                        ),
+                        model_id,
+                        state: ModelInstallState::Failed,
+                        total_bytes: None,
+                    }),
+                    Some(model) => {
+                        match resolve_model_store_info(model_store_path_override.as_deref()) {
+                            Ok(info) => {
+                                events.push(self.install_manager.start_install(InstallRequest {
+                                    catalog: self.catalog.clone(),
+                                    engine_id,
+                                    install_id,
+                                    model,
+                                    model_id,
+                                    store_root: info.path,
+                                }))
+                            }
+                            Err(error) => events.push(Event::ModelInstallUpdate {
+                                details: Some(format!("{error:#}")),
+                                downloaded_bytes: None,
+                                engine_id,
+                                install_id,
+                                message: Some("The model store path is invalid.".to_string()),
+                                model_id,
+                                state: ModelInstallState::Failed,
+                                total_bytes: None,
+                            }),
+                        }
+                    }
+                }
+
+                (ControlFlow::Continue, events)
+            }
+            Command::CancelModelInstall { install_id } => {
+                if let Some(event) = self.install_manager.cancel_install(&install_id) {
+                    events.push(event);
+                }
+
+                (ControlFlow::Continue, events)
+            }
             Command::StartSession {
                 language,
                 mode,
-                model_file_path,
+                model_selection,
+                model_store_path_override,
                 pause_while_processing,
                 session_id,
             } => {
@@ -133,12 +307,16 @@ impl AppState {
                     events.extend(replaced_events);
                 }
 
-                match validate_start_session(&language, &model_file_path) {
-                    Ok(()) => {
+                match self.resolve_runtime_model_path(
+                    &language,
+                    &model_selection,
+                    model_store_path_override.as_deref(),
+                ) {
+                    Ok(resolved_model) => {
                         let config = SessionConfig {
                             language: language.clone(),
                             mode,
-                            model_file_path: model_file_path.clone().into(),
+                            model_file_path: resolved_model.resolved_path.clone(),
                             pause_while_processing,
                             session_id: session_id.clone(),
                         };
@@ -147,18 +325,16 @@ impl AppState {
                             .transcription_worker
                             .send(WorkerCommand::BeginSession(SessionMetadata {
                                 language,
-                                model_file_path: model_file_path.into(),
+                                model_file_path: resolved_model.resolved_path.clone(),
                                 session_id: session_id.clone(),
                             }))
                             .is_err()
                         {
-                            events.push(Event::Error {
-                                code: "internal_error".to_string(),
-                                details: None,
-                                message: "Failed to start the transcription worker session."
-                                    .to_string(),
-                                session_id: Some(session_id),
-                            });
+                            events.push(internal_error_event(
+                                "internal_error",
+                                "Failed to start the transcription worker session.",
+                                None,
+                            ));
 
                             return (ControlFlow::Continue, events);
                         }
@@ -175,7 +351,7 @@ impl AppState {
                         events.push(Event::SessionStarted { mode, session_id });
                         self.emit_state_if_changed(&mut events);
                     }
-                    Err(error_event) => events.push(error_event),
+                    Err(error_event) => events.push(*error_event),
                 }
 
                 (ControlFlow::Continue, events)
@@ -260,6 +436,29 @@ impl AppState {
 
                 (ControlFlow::Shutdown, events)
             }
+        }
+    }
+
+    fn build_probe_event(
+        &self,
+        selection: SelectedModel,
+        model_store_path_override: Option<&str>,
+    ) -> Event {
+        match self.resolve_selected_model(&selection, model_store_path_override) {
+            Ok(resolved_model) => Event::ModelProbeResult {
+                available: true,
+                details: None,
+                display_name: Some(resolved_model.display_name),
+                engine_id: resolved_model.engine_id,
+                installed: resolved_model.installed,
+                message: "Model selection is ready.".to_string(),
+                model_id: resolved_model.model_id,
+                resolved_path: Some(resolved_model.resolved_path.display().to_string()),
+                selection: resolved_model.selection,
+                size_bytes: Some(resolved_model.size_bytes),
+                status: ModelProbeStatus::Ready,
+            },
+            Err(event) => *event,
         }
     }
 
@@ -422,6 +621,214 @@ impl AppState {
             }
         }
     }
+
+    fn resolve_runtime_model_path(
+        &self,
+        language: &str,
+        selection: &SelectedModel,
+        model_store_path_override: Option<&str>,
+    ) -> Result<ResolvedModelSelection, Box<Event>> {
+        if language != "en" {
+            return Err(Box::new(Event::Error {
+                code: "unsupported_language".to_string(),
+                details: Some(language.to_string()),
+                message: "Only English dictation is supported in this build.".to_string(),
+                session_id: None,
+            }));
+        }
+
+        self.resolve_selected_model(selection, model_store_path_override)
+            .map_err(|event| match *event {
+                Event::ModelProbeResult {
+                    details,
+                    message,
+                    status,
+                    ..
+                } => Box::new(Event::Error {
+                    code: match status {
+                        ModelProbeStatus::Missing => "missing_model_file".to_string(),
+                        ModelProbeStatus::Invalid => "invalid_model_file".to_string(),
+                        ModelProbeStatus::Ready => "invalid_model_file".to_string(),
+                    },
+                    details,
+                    message,
+                    session_id: None,
+                }),
+                _ => Box::new(internal_error_event(
+                    "internal_error",
+                    "Failed to resolve the selected model.",
+                    None,
+                )),
+            })
+    }
+
+    fn resolve_selected_model(
+        &self,
+        selection: &SelectedModel,
+        model_store_path_override: Option<&str>,
+    ) -> Result<ResolvedModelSelection, Box<Event>> {
+        match selection {
+            SelectedModel::CatalogModel {
+                engine_id,
+                model_id,
+            } => {
+                let model = self
+                    .catalog
+                    .find_model(engine_id.as_str(), model_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Box::new(Event::ModelProbeResult {
+                            available: false,
+                            details: None,
+                            display_name: None,
+                            engine_id: *engine_id,
+                            installed: false,
+                            message:
+                                "The selected managed model does not exist in the bundled catalog."
+                                    .to_string(),
+                            model_id: Some(model_id.clone()),
+                            resolved_path: None,
+                            selection: selection.clone(),
+                            size_bytes: None,
+                            status: ModelProbeStatus::Invalid,
+                        })
+                    })?;
+                let store_info =
+                    resolve_model_store_info(model_store_path_override).map_err(|error| {
+                        Box::new(Event::ModelProbeResult {
+                            available: false,
+                            details: Some(format!("{error:#}")),
+                            display_name: Some(model.display_name.clone()),
+                            engine_id: *engine_id,
+                            installed: false,
+                            message: "The model store path is invalid.".to_string(),
+                            model_id: Some(model_id.clone()),
+                            resolved_path: None,
+                            selection: selection.clone(),
+                            size_bytes: None,
+                            status: ModelProbeStatus::Invalid,
+                        })
+                    })?;
+                let resolved_path = resolve_catalog_model_runtime_path(
+                    &self.catalog,
+                    &store_info.path,
+                    engine_id.as_str(),
+                    model_id,
+                )
+                .map_err(|error| {
+                    Box::new(Event::ModelProbeResult {
+                        available: false,
+                        details: Some(format!("{error:#}")),
+                        display_name: Some(model.display_name.clone()),
+                        engine_id: *engine_id,
+                        installed: false,
+                        message: "The selected managed model is not installed or is incomplete."
+                            .to_string(),
+                        model_id: Some(model_id.clone()),
+                        resolved_path: None,
+                        selection: selection.clone(),
+                        size_bytes: None,
+                        status: ModelProbeStatus::Missing,
+                    })
+                })?;
+                let size_bytes = (self.model_path_probe)(&resolved_path).map_err(|error| {
+                    Box::new(Event::ModelProbeResult {
+                        available: false,
+                        details: error.details,
+                        display_name: Some(model.display_name.clone()),
+                        engine_id: *engine_id,
+                        installed: true,
+                        message: error.message.to_string(),
+                        model_id: Some(model_id.clone()),
+                        resolved_path: Some(resolved_path.display().to_string()),
+                        selection: selection.clone(),
+                        size_bytes: None,
+                        status: ModelProbeStatus::Invalid,
+                    })
+                })?;
+
+                Ok(ResolvedModelSelection {
+                    display_name: model.display_name,
+                    engine_id: *engine_id,
+                    installed: true,
+                    model_id: Some(model_id.clone()),
+                    resolved_path,
+                    selection: selection.clone(),
+                    size_bytes,
+                })
+            }
+            SelectedModel::ExternalFile {
+                engine_id,
+                file_path,
+            } => {
+                let trimmed_path = file_path.trim();
+
+                if trimmed_path.is_empty() {
+                    return Err(Box::new(Event::ModelProbeResult {
+                        available: false,
+                        details: None,
+                        display_name: None,
+                        engine_id: *engine_id,
+                        installed: false,
+                        message: "External model file path is not configured.".to_string(),
+                        model_id: None,
+                        resolved_path: None,
+                        selection: selection.clone(),
+                        size_bytes: None,
+                        status: ModelProbeStatus::Invalid,
+                    }));
+                }
+
+                let model_path = Path::new(trimmed_path);
+
+                if !model_path.is_absolute() {
+                    return Err(Box::new(Event::ModelProbeResult {
+                        available: false,
+                        details: Some(trimmed_path.to_string()),
+                        display_name: Some(file_name_or_path(model_path)),
+                        engine_id: *engine_id,
+                        installed: false,
+                        message: "External model file path must be absolute.".to_string(),
+                        model_id: None,
+                        resolved_path: None,
+                        selection: selection.clone(),
+                        size_bytes: None,
+                        status: ModelProbeStatus::Invalid,
+                    }));
+                }
+
+                let size_bytes = (self.model_path_probe)(model_path).map_err(|error| {
+                    Box::new(Event::ModelProbeResult {
+                        available: false,
+                        details: error.details,
+                        display_name: Some(file_name_or_path(model_path)),
+                        engine_id: *engine_id,
+                        installed: false,
+                        message: error.message.to_string(),
+                        model_id: None,
+                        resolved_path: Some(model_path.display().to_string()),
+                        selection: selection.clone(),
+                        size_bytes: None,
+                        status: if error.code == "missing_model_file" {
+                            ModelProbeStatus::Missing
+                        } else {
+                            ModelProbeStatus::Invalid
+                        },
+                    })
+                })?;
+
+                Ok(ResolvedModelSelection {
+                    display_name: file_name_or_path(model_path),
+                    engine_id: *engine_id,
+                    installed: false,
+                    model_id: None,
+                    resolved_path: model_path.to_path_buf(),
+                    selection: selection.clone(),
+                    size_bytes,
+                })
+            }
+        }
+    }
 }
 
 fn advance_transcription_queue(active_session: &mut ActiveSession) {
@@ -463,6 +870,22 @@ fn derive_session_state(
     }
 }
 
+fn file_name_or_path(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn internal_error_event(code: &str, message: &str, details: Option<String>) -> Event {
+    Event::Error {
+        code: code.to_string(),
+        details,
+        message: message.to_string(),
+        session_id: None,
+    }
+}
+
 fn invalid_gate_warning(session_id: Option<String>, message: &'static str) -> Event {
     Event::Warning {
         code: "invalid_gate_transition".to_string(),
@@ -472,62 +895,27 @@ fn invalid_gate_warning(session_id: Option<String>, message: &'static str) -> Ev
     }
 }
 
-fn validate_start_session(language: &str, model_file_path: &str) -> Result<(), Event> {
-    if language != "en" {
-        return Err(Event::Error {
-            code: "unsupported_language".to_string(),
-            details: Some(language.to_string()),
-            message: "Only English dictation is supported in this build.".to_string(),
-            session_id: None,
-        });
-    }
-
-    if model_file_path.trim().is_empty() {
-        return Err(Event::Error {
-            code: "invalid_start_session".to_string(),
-            details: None,
-            message: "Start session requires a model file path.".to_string(),
-            session_id: None,
-        });
-    }
-
-    let model_path = Path::new(model_file_path);
-
-    if !model_path.is_file() {
-        return Err(Event::Error {
-            code: "missing_model_file".to_string(),
-            details: Some(model_file_path.to_string()),
-            message: "Model file does not exist or is not a regular file.".to_string(),
-            session_id: None,
-        });
-    }
-
-    if let Err(error) = std::fs::File::open(model_path) {
-        return Err(Event::Error {
-            code: "invalid_model_file".to_string(),
-            details: Some(error.to_string()),
-            message: "Model file is missing, unreadable, or unsupported.".to_string(),
-            session_id: None,
-        });
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::env::temp_dir;
-    use std::fs::create_dir_all;
-    use std::fs::write;
-    use std::path::PathBuf;
+    use std::fs::{create_dir_all, write};
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{AppState, ControlFlow};
-    use crate::protocol::{Command, Event, ListeningMode, SessionState, SessionStopReason};
+    use crate::catalog::{
+        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
+    };
+    use crate::protocol::{
+        Command, EngineId, Event, ListeningMode, ModelProbeStatus, SelectedModel, SessionState,
+        SessionStopReason,
+    };
+    use crate::transcription::TranscriptionError;
 
     #[test]
     fn health_returns_ready_event() {
-        let (control_flow, events) = AppState::new("0.1.0").handle_command(Command::Health);
+        let (control_flow, events) =
+            AppState::new("0.1.0", sample_catalog()).handle_command(Command::Health);
 
         assert_eq!(control_flow, ControlFlow::Continue);
         assert_eq!(
@@ -542,10 +930,14 @@ mod tests {
     #[test]
     fn start_session_returns_started_and_state_events() {
         let model_file_path = create_model_file();
-        let (_, events) = AppState::new("0.1.0").handle_command(Command::StartSession {
+        let (_, events) = test_app().handle_command(Command::StartSession {
             language: "en".to_string(),
             mode: ListeningMode::AlwaysOn,
-            model_file_path: model_file_path.display().to_string(),
+            model_selection: SelectedModel::ExternalFile {
+                engine_id: EngineId::WhisperCpp,
+                file_path: model_file_path.display().to_string(),
+            },
+            model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-1".to_string(),
         });
@@ -567,13 +959,18 @@ mod tests {
 
     #[test]
     fn start_session_rejects_missing_model() {
-        let (_, events) = AppState::new("0.1.0").handle_command(Command::StartSession {
-            language: "en".to_string(),
-            mode: ListeningMode::AlwaysOn,
-            model_file_path: "/tmp/definitely-missing-model.bin".to_string(),
-            pause_while_processing: true,
-            session_id: "session-1".to_string(),
-        });
+        let (_, events) =
+            AppState::new("0.1.0", sample_catalog()).handle_command(Command::StartSession {
+                language: "en".to_string(),
+                mode: ListeningMode::AlwaysOn,
+                model_selection: SelectedModel::ExternalFile {
+                    engine_id: EngineId::WhisperCpp,
+                    file_path: "/tmp/definitely-missing-model.bin".to_string(),
+                },
+                model_store_path_override: None,
+                pause_while_processing: true,
+                session_id: "session-1".to_string(),
+            });
 
         assert!(
             matches!(events.first(), Some(Event::Error { code, .. }) if code == "missing_model_file")
@@ -581,13 +978,36 @@ mod tests {
     }
 
     #[test]
+    fn probe_model_selection_reports_missing_managed_model() {
+        let (_, events) =
+            AppState::new("0.1.0", sample_catalog()).handle_command(Command::ProbeModelSelection {
+                model_selection: SelectedModel::CatalogModel {
+                    engine_id: EngineId::WhisperCpp,
+                    model_id: "small".to_string(),
+                },
+                model_store_path_override: Some(
+                    temp_dir().join("missing-model-store").display().to_string(),
+                ),
+            });
+
+        assert!(matches!(
+            events.first(),
+            Some(Event::ModelProbeResult { status, .. }) if *status == ModelProbeStatus::Missing
+        ));
+    }
+
+    #[test]
     fn replacing_a_session_emits_session_replaced_stop() {
         let model_file_path = create_model_file();
-        let mut app = AppState::new("0.1.0");
+        let mut app = test_app();
         let _ = app.handle_command(Command::StartSession {
             language: "en".to_string(),
             mode: ListeningMode::AlwaysOn,
-            model_file_path: model_file_path.display().to_string(),
+            model_selection: SelectedModel::ExternalFile {
+                engine_id: EngineId::WhisperCpp,
+                file_path: model_file_path.display().to_string(),
+            },
+            model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-1".to_string(),
         });
@@ -595,7 +1015,11 @@ mod tests {
         let (_, events) = app.handle_command(Command::StartSession {
             language: "en".to_string(),
             mode: ListeningMode::OneSentence,
-            model_file_path: model_file_path.display().to_string(),
+            model_selection: SelectedModel::ExternalFile {
+                engine_id: EngineId::WhisperCpp,
+                file_path: model_file_path.display().to_string(),
+            },
+            model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-2".to_string(),
         });
@@ -609,11 +1033,15 @@ mod tests {
     #[test]
     fn stop_session_emits_stopped_event() {
         let model_file_path = create_model_file();
-        let mut app = AppState::new("0.1.0");
+        let mut app = test_app();
         let _ = app.handle_command(Command::StartSession {
             language: "en".to_string(),
             mode: ListeningMode::AlwaysOn,
-            model_file_path: model_file_path.display().to_string(),
+            model_selection: SelectedModel::ExternalFile {
+                engine_id: EngineId::WhisperCpp,
+                file_path: model_file_path.display().to_string(),
+            },
+            model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-1".to_string(),
         });
@@ -639,5 +1067,71 @@ mod tests {
         let path = directory.join("model.bin");
         write(&path, b"model").expect("model file should write");
         path
+    }
+
+    fn test_app() -> AppState {
+        AppState::with_model_path_probe("0.1.0", sample_catalog(), probe_test_model_path)
+    }
+
+    fn probe_test_model_path(model_file_path: &Path) -> Result<u64, TranscriptionError> {
+        if !model_file_path.is_file() {
+            return Err(TranscriptionError {
+                code: "missing_model_file",
+                message: "Model file does not exist or is not a regular file.",
+                details: Some(model_file_path.display().to_string()),
+            });
+        }
+
+        let size_bytes = std::fs::metadata(model_file_path)
+            .map_err(|error| TranscriptionError {
+                code: "invalid_model_file",
+                message: "Model file is missing, unreadable, or unsupported.",
+                details: Some(error.to_string()),
+            })?
+            .len();
+
+        Ok(size_bytes)
+    }
+
+    fn sample_catalog() -> ModelCatalog {
+        ModelCatalog {
+            catalog_version: 1,
+            collections: vec![ModelCollection {
+                collection_id: "english".to_string(),
+                display_name: "English".to_string(),
+                summary: "summary".to_string(),
+            }],
+            engines: vec![ModelEngine {
+                display_name: "Whisper.cpp".to_string(),
+                engine_id: "whisper_cpp".to_string(),
+                summary: "summary".to_string(),
+            }],
+            models: vec![CatalogModel {
+                artifacts: vec![ModelArtifact {
+                    artifact_id: "transcription".to_string(),
+                    download_url: "https://example.com/model.bin".to_string(),
+                    filename: "model.bin".to_string(),
+                    required: true,
+                    role: ArtifactRole::TranscriptionModel,
+                    sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                        .to_string(),
+                    size_bytes: 10,
+                }],
+                capability_flags: vec![],
+                collection_id: "english".to_string(),
+                display_name: "Model".to_string(),
+                engine_id: "whisper_cpp".to_string(),
+                language_tags: vec!["en".to_string()],
+                license_label: "MIT".to_string(),
+                license_url: "https://example.com/license".to_string(),
+                model_card_url: None,
+                model_id: "small".to_string(),
+                notes: vec![],
+                recommended: true,
+                source_url: "https://example.com".to_string(),
+                summary: "summary".to_string(),
+                ux_tags: vec![],
+            }],
+        }
     }
 }

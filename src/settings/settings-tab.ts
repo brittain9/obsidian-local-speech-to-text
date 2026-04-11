@@ -1,12 +1,30 @@
 import type { App, Plugin } from 'obsidian';
 import { PluginSettingTab, Setting } from 'obsidian';
 
-import type { PluginSettings } from './plugin-settings';
+import {
+  CurrentModelInfoModal,
+  ExternalModelFileModal,
+  ModelExplorerModal,
+} from '../models/model-management-modals';
+import type {
+  CurrentModelCardState,
+  ModelManagementService,
+  ModelManagementSnapshot,
+} from '../models/model-management-service';
+import { formatErrorMessage, formatInstallProgress } from '../shared/format-utils';
+import type { InsertionMode, PluginSettings } from './plugin-settings';
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
+  modelManagementService: ModelManagementService;
   saveSettings: (settings: PluginSettings) => Promise<void>;
 }
+
+const INSERTION_MODE_OPTIONS: Array<{ label: string; value: InsertionMode }> = [
+  { label: 'Insert at cursor', value: 'insert_at_cursor' },
+  { label: 'Append on a new line', value: 'append_on_new_line' },
+  { label: 'Append as a new paragraph', value: 'append_as_new_paragraph' },
+];
 
 export class LocalSttSettingTab extends PluginSettingTab {
   constructor(
@@ -24,24 +42,16 @@ export class LocalSttSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Local STT' });
     containerEl.createEl('p', {
-      text: 'Configure the local Whisper model, listening mode, and native sidecar.',
+      text: 'Configure transcript placement, managed local models, listening mode, and the native sidecar.',
     });
 
-    new Setting(containerEl)
-      .setName('Whisper model file path')
-      .setDesc(
-        'Absolute path to a local whisper.cpp-compatible model file, such as ggml-small.en-q5_1.bin or ggml-large-v3-turbo-q8_0.bin.',
-      )
-      .addText((text) => {
-        text.setPlaceholder('/absolute/path/to/ggml-large-v3-turbo.bin');
-        text.setValue(settings.modelFilePath);
-        text.onChange(async (value) => {
-          await this.dependencies.saveSettings({
-            ...this.dependencies.getSettings(),
-            modelFilePath: value.trim(),
-          });
-        });
-      });
+    // --- Model ---
+    new Setting(containerEl).setName('Model').setHeading();
+    const modelSection = containerEl.createDiv();
+    void this.renderModelSection(modelSection);
+
+    // --- Transcription ---
+    new Setting(containerEl).setName('Transcription').setHeading();
 
     new Setting(containerEl)
       .setName('Listening mode')
@@ -54,7 +64,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
         dropdown.addOption('one_sentence', 'One sentence');
         dropdown.setValue(settings.listeningMode);
         dropdown.onChange(async (value) => {
-          await this.dependencies.saveSettings({
+          await this.persistSettings({
             ...this.dependencies.getSettings(),
             listeningMode:
               value === 'always_on' || value === 'press_and_hold' || value === 'one_sentence'
@@ -72,7 +82,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(settings.pauseWhileProcessing);
         toggle.onChange(async (value) => {
-          await this.dependencies.saveSettings({
+          await this.persistSettings({
             ...this.dependencies.getSettings(),
             pauseWhileProcessing: value,
           });
@@ -80,39 +90,43 @@ export class LocalSttSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Insertion mode')
-      .setDesc('Current implementation supports insertion at the cursor only.')
+      .setName('Transcript placement')
+      .setDesc(
+        'Choose whether each transcript lands at the cursor or is appended to the end of the note with optional line separation.',
+      )
       .addDropdown((dropdown) => {
-        dropdown.addOption('insert_at_cursor', 'Insert at cursor');
+        for (const option of INSERTION_MODE_OPTIONS) {
+          dropdown.addOption(option.value, option.label);
+        }
+
         dropdown.setValue(settings.insertionMode);
         dropdown.onChange(async (value) => {
-          await this.dependencies.saveSettings({
+          await this.persistSettings({
             ...this.dependencies.getSettings(),
-            insertionMode: value === 'insert_at_cursor' ? value : 'insert_at_cursor',
+            insertionMode: value as InsertionMode,
           });
         });
       });
 
-    containerEl.createEl('h3', { text: 'Sidecar' });
-    containerEl.createEl('p', {
-      text: 'Use these settings only if you need to point Obsidian at a non-default debug or manually installed sidecar.',
-    });
+    // --- Advanced: Sidecar (collapsible) ---
+    const advancedDetails = containerEl.createEl('details', { cls: 'local-stt-advanced' });
+    advancedDetails.createEl('summary', { text: 'Advanced: Sidecar' });
 
-    new Setting(containerEl)
+    new Setting(advancedDetails)
       .setName('Sidecar path override')
       .setDesc('Optional absolute path to a debug or manually installed sidecar executable file.')
       .addText((text) => {
         text.setPlaceholder('Auto-detect from native/sidecar/target/debug');
         text.setValue(settings.sidecarPathOverride);
         text.onChange(async (value) => {
-          await this.dependencies.saveSettings({
+          await this.persistSettings({
             ...this.dependencies.getSettings(),
             sidecarPathOverride: value.trim(),
           });
         });
       });
 
-    new Setting(containerEl)
+    new Setting(advancedDetails)
       .setName('Startup timeout (ms)')
       .setDesc('Maximum time allowed for the startup health handshake.')
       .addText((text) => {
@@ -125,17 +139,17 @@ export class LocalSttSettingTab extends PluginSettingTab {
             return;
           }
 
-          await this.dependencies.saveSettings({
+          await this.persistSettings({
             ...this.dependencies.getSettings(),
             sidecarStartupTimeoutMs: parsedValue,
           });
         });
       });
 
-    new Setting(containerEl)
+    new Setting(advancedDetails)
       .setName('Request timeout (ms)')
       .setDesc(
-        'Maximum time allowed for start, stop, cancel, and health requests before failing them. Increase this only if the sidecar regularly stalls during startup or shutdown.',
+        'Maximum time allowed for start, stop, cancel, health, and model-management requests before failing them.',
       )
       .addText((text) => {
         text.inputEl.type = 'number';
@@ -147,15 +161,158 @@ export class LocalSttSettingTab extends PluginSettingTab {
             return;
           }
 
-          await this.dependencies.saveSettings({
+          await this.persistSettings({
             ...this.dependencies.getSettings(),
             sidecarRequestTimeoutMs: parsedValue,
           });
         });
       });
 
+    new Setting(advancedDetails)
+      .setName('Model store folder override')
+      .setDesc(
+        'Optional absolute folder path for managed downloads. Leave blank to use the shared default model store.',
+      )
+      .addText((text) => {
+        text.setPlaceholder('Use the shared default model store');
+        text.setValue(settings.modelStorePathOverride);
+        text.onChange(async (value) => {
+          await this.persistSettings({
+            ...this.dependencies.getSettings(),
+            modelStorePathOverride: value.trim(),
+          });
+        });
+      });
+
     containerEl.createEl('p', {
-      text: 'Assign a hotkey to “Local STT: Press-And-Hold Gate” in Obsidian Hotkeys if you want keyboard press-and-hold input.',
+      text: 'Assign a hotkey to "Local STT: Press-And-Hold Gate" in Obsidian Hotkeys for keyboard press-and-hold input. This hotkey target does not appear in the command palette.',
     });
+  }
+
+  private async persistSettings(nextSettings: PluginSettings): Promise<void> {
+    await this.dependencies.saveSettings(nextSettings);
+  }
+
+  private async renderModelSection(containerEl: HTMLDivElement): Promise<void> {
+    containerEl.empty();
+
+    const placeholderSetting = new Setting(containerEl).setName('Loading current model\u2026');
+    this.addModelActions(placeholderSetting, null);
+
+    try {
+      const snapshot = await this.dependencies.modelManagementService.getSnapshot();
+      this.renderCurrentModelCard(containerEl, snapshot);
+    } catch (error) {
+      containerEl.empty();
+      containerEl.createEl('p', {
+        text: formatErrorMessage(error, 'Failed to load the current model state.'),
+      });
+    }
+  }
+
+  private renderCurrentModelCard(
+    containerEl: HTMLDivElement,
+    snapshot: ModelManagementSnapshot,
+  ): void {
+    containerEl.empty();
+
+    const { currentModel, currentSelection, modelStore } = snapshot;
+
+    const descFragment = document.createDocumentFragment();
+    if (currentModel.engineLabel.length > 0) {
+      descFragment.createSpan({ text: currentModel.engineLabel + ' \u00b7 ' });
+    }
+    const badge = getBadgeInfo(currentModel.installedLabel);
+    descFragment.createSpan({
+      cls: `local-stt-badge local-stt-badge--${badge.modifier}`,
+      text: badge.text,
+    });
+
+    const cardSetting = new Setting(containerEl)
+      .setName(currentModel.displayName)
+      .setDesc(descFragment);
+
+    this.addModelActions(
+      cardSetting,
+      currentSelection !== null
+        ? { currentModel, storePath: modelStore.path }
+        : null,
+    );
+
+    if (snapshot.activeInstall !== null) {
+      const { activeInstall } = snapshot;
+      new Setting(containerEl)
+        .setName(`Installing: ${activeInstall.modelId}`)
+        .setDesc(formatInstallProgress(activeInstall));
+    }
+  }
+
+  private addModelActions(
+    setting: Setting,
+    infoContext: { currentModel: CurrentModelCardState; storePath: string } | null,
+  ): void {
+    setting.addButton((button) => {
+      button
+        .setCta()
+        .setButtonText('Browse models')
+        .onClick(() => {
+          new ModelExplorerModal(this.app, {
+            onChanged: async () => {
+              this.display();
+            },
+            service: this.dependencies.modelManagementService,
+          }).open();
+        });
+    });
+
+    setting.addExtraButton((button) => {
+      button
+        .setIcon('file-input')
+        .setTooltip('Use external file')
+        .onClick(() => {
+          const selectedModel = this.dependencies.getSettings().selectedModel;
+          new ExternalModelFileModal(
+            this.app,
+            selectedModel?.kind === 'external_file' ? selectedModel.filePath : '',
+            {
+              onChanged: async () => {
+                this.display();
+              },
+              service: this.dependencies.modelManagementService,
+            },
+          ).open();
+        });
+    });
+
+    if (infoContext !== null) {
+      setting.addExtraButton((button) => {
+        button
+          .setIcon('info')
+          .setTooltip('Model details')
+          .onClick(() => {
+            new CurrentModelInfoModal(
+              this.app,
+              infoContext.currentModel,
+              infoContext.storePath,
+            ).open();
+          });
+      });
+    }
+  }
+}
+
+function getBadgeInfo(installedLabel: string): { modifier: string; text: string } {
+  switch (installedLabel) {
+    case 'Installed':
+    case 'Validated external file':
+      return { modifier: 'ready', text: 'Ready' };
+    case 'Not installed':
+      return { modifier: 'missing', text: 'Not installed' };
+    case 'Unavailable':
+      return { modifier: 'missing', text: 'Unavailable' };
+    case 'External file':
+      return { modifier: 'external', text: 'Unverified' };
+    default:
+      return { modifier: 'none', text: 'No model' };
   }
 }

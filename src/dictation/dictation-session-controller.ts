@@ -2,7 +2,6 @@ import type { App, Hotkey } from 'obsidian';
 
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
 import type { EditorService } from '../editor/editor-service';
-import { assertAbsoluteExistingFilePath } from '../filesystem/path-validation';
 import type { PluginSettings } from '../settings/plugin-settings';
 import type { SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
@@ -20,7 +19,7 @@ type DictationLogger = (message: string, error?: unknown) => void;
 interface DictationSessionControllerDependencies {
   app: App;
   captureStream: Pick<AudioCaptureStream, 'dispose' | 'isCapturing' | 'start' | 'stop'>;
-  editorService: Pick<EditorService, 'assertActiveEditorAvailable' | 'insertTextAtCursor'>;
+  editorService: Pick<EditorService, 'assertActiveEditorAvailable' | 'insertTranscript'>;
   getSettings: () => PluginSettings;
   logger?: DictationLogger;
   notice: (message: string) => void;
@@ -166,8 +165,8 @@ export class DictationSessionController {
       return;
     }
 
-    const modelFilePath = await this.requireConfiguredModelPath();
     const settings = this.dependencies.getSettings();
+    const selectedModel = this.requireSelectedModel(settings);
     const sessionId = createSessionId();
 
     this.dependencies.editorService.assertActiveEditorAvailable();
@@ -190,9 +189,12 @@ export class DictationSessionController {
       await this.dependencies.sidecarConnection.startSession({
         language: 'en',
         mode: settings.listeningMode,
-        modelFilePath,
+        modelSelection: selectedModel,
         pauseWhileProcessing: settings.pauseWhileProcessing,
         sessionId,
+        ...(settings.modelStorePathOverride.length > 0
+          ? { modelStorePathOverride: settings.modelStorePathOverride }
+          : {}),
       });
 
       if (options.openGateAfterStart && settings.listeningMode === 'press_and_hold') {
@@ -331,7 +333,10 @@ export class DictationSessionController {
     }
 
     try {
-      this.dependencies.editorService.insertTextAtCursor(normalizeTranscriptText(event));
+      this.dependencies.editorService.insertTranscript(
+        normalizeTranscriptText(event),
+        this.dependencies.getSettings().insertionMode,
+      );
     } catch (error) {
       this.handleError('Failed to insert the local transcript', error);
       void this.abortSessionAfterError(event.sessionId);
@@ -395,14 +400,14 @@ export class DictationSessionController {
     }
   }
 
-  private async requireConfiguredModelPath(): Promise<string> {
-    const modelFilePath = this.dependencies.getSettings().modelFilePath.trim();
-
-    if (modelFilePath.length === 0) {
-      throw new Error('Configure a Whisper model file path in Local STT settings.');
+  private requireSelectedModel(
+    settings: PluginSettings,
+  ): NonNullable<PluginSettings['selectedModel']> {
+    if (settings.selectedModel !== null) {
+      return settings.selectedModel;
     }
 
-    return assertAbsoluteExistingFilePath(modelFilePath, 'Whisper model file path');
+    throw new Error('Select a Local STT model before starting dictation.');
   }
 }
 

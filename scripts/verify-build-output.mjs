@@ -1,6 +1,7 @@
 import { access, readFile } from 'node:fs/promises';
 
 const MAIN_BUNDLE_PATH = 'main.js';
+const MODEL_CATALOG_PATH = 'config/model-catalog.json';
 const RECORDER_WORKLET_PATH = 'assets/pcm-recorder.worklet.js';
 const SIDECAR_BINARY_PATH =
   process.platform === 'win32'
@@ -16,10 +17,11 @@ async function main() {
     );
   }
 
+  await access(MODEL_CATALOG_PATH);
   await access(RECORDER_WORKLET_PATH);
   await access(SIDECAR_BINARY_PATH);
   console.log(
-    '[verify-build-output] main bundle, recorder worklet, and sidecar executable look valid',
+    '[verify-build-output] main bundle, model catalog, recorder worklet, and sidecar executable look valid',
   );
 }
 

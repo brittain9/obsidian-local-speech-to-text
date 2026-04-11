@@ -10,24 +10,53 @@ describe('resolvePluginSettings', () => {
   it('merges valid persisted values', () => {
     expect(
       resolvePluginSettings({
-        insertionMode: 'insert_at_cursor',
+        insertionMode: 'append_as_new_paragraph',
         listeningMode: 'press_and_hold',
-        modelFilePath: ' /tmp/models/ggml-large-v3-turbo.bin ',
+        modelStorePathOverride: ' /tmp/models ',
         pauseWhileProcessing: false,
+        selectedModel: {
+          engineId: 'whisper_cpp',
+          kind: 'catalog_model',
+          modelId: 'whisper_large_v3_turbo_q8_0',
+        },
         sidecarPathOverride: ' /tmp/sidecar ',
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
       }),
     ).toEqual({
-      insertionMode: 'insert_at_cursor',
+      insertionMode: 'append_as_new_paragraph',
       listeningMode: 'press_and_hold',
-      modelFilePath: '/tmp/models/ggml-large-v3-turbo.bin',
+      modelStorePathOverride: '/tmp/models',
       pauseWhileProcessing: false,
+      selectedModel: {
+        engineId: 'whisper_cpp',
+        kind: 'catalog_model',
+        modelId: 'whisper_large_v3_turbo_q8_0',
+      },
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
     });
   });
+
+  it('migrates the legacy model file path into an external selection', () => {
+    expect(
+      resolvePluginSettings({
+        modelFilePath: ' /tmp/models/ggml-large-v3-turbo.bin ',
+      }).selectedModel,
+    ).toEqual({
+      engineId: 'whisper_cpp',
+      filePath: '/tmp/models/ggml-large-v3-turbo.bin',
+      kind: 'external_file',
+    });
+  });
+
+  it.each(['insert_at_cursor', 'append_on_new_line', 'append_as_new_paragraph'] as const)(
+    'accepts the supported insertion mode %s',
+    (insertionMode) => {
+      expect(resolvePluginSettings({ insertionMode }).insertionMode).toBe(insertionMode);
+    },
+  );
 
   it('falls back when persisted values are invalid', () => {
     expect(
@@ -35,6 +64,7 @@ describe('resolvePluginSettings', () => {
         insertionMode: 'append_to_end',
         listeningMode: 'unsupported',
         modelFilePath: 42,
+        modelStorePathOverride: 42,
         pauseWhileProcessing: 'sometimes',
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,

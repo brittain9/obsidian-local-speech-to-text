@@ -39,10 +39,12 @@ export function registerCommands(dependencies: CommandDependencies): void {
     },
   });
 
+  // Obsidian needs a registered command id for Hotkeys, but the actual gate behavior
+  // is driven by document keydown/keyup listeners and should not be runnable directly.
   dependencies.plugin.addCommand({
     id: PRESS_AND_HOLD_GATE_COMMAND_ID,
     name: 'Local STT: Press-And-Hold Gate',
-    callback: () => {},
+    checkCallback: () => false,
   });
 
   dependencies.plugin.addCommand({

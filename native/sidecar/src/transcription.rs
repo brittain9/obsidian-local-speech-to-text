@@ -114,17 +114,8 @@ impl TranscriptionEngine {
             .unwrap_or(true);
 
         if should_reload {
-            let model_path = model_file_path.to_str().ok_or_else(|| {
-                TranscriptionError::invalid_model("model path must be valid UTF-8")
-            })?;
-            let context =
-                WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
-                    .map_err(|error| {
-                        TranscriptionError::invalid_model_with_details(error.to_string())
-                    })?;
-
             self.loaded_model = Some(LoadedModel {
-                context,
+                context: load_model_context(model_file_path)?,
                 model_path: model_file_path.to_path_buf(),
             });
         }
@@ -135,6 +126,16 @@ impl TranscriptionEngine {
             .expect("loaded model must exist after load_or_reuse_model")
             .context)
     }
+}
+
+pub fn probe_model_path(model_file_path: &Path) -> Result<u64, TranscriptionError> {
+    validate_model_path(model_file_path)?;
+    let _ = load_model_context(model_file_path)?;
+    let size_bytes = std::fs::metadata(model_file_path)
+        .map_err(|error| TranscriptionError::invalid_model_with_details(error.to_string()))?
+        .len();
+
+    Ok(size_bytes)
 }
 
 fn validate_audio_samples(audio_samples: &[f32]) -> Result<(), TranscriptionError> {
@@ -165,6 +166,15 @@ fn validate_model_path(model_file_path: &Path) -> Result<(), TranscriptionError>
     })?;
 
     Ok(())
+}
+
+fn load_model_context(model_file_path: &Path) -> Result<WhisperContext, TranscriptionError> {
+    let model_path = model_file_path
+        .to_str()
+        .ok_or_else(|| TranscriptionError::invalid_model("model path must be valid UTF-8"))?;
+
+    WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+        .map_err(|error| TranscriptionError::invalid_model_with_details(error.to_string()))
 }
 
 fn validate_language(language: &str) -> Result<(), TranscriptionError> {

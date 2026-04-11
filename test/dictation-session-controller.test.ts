@@ -1,20 +1,16 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import type { App, Hotkey } from 'obsidian';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DictationSessionController } from '../src/dictation/dictation-session-controller';
-import type { PluginSettings } from '../src/settings/plugin-settings';
+import type { InsertionMode, PluginSettings } from '../src/settings/plugin-settings';
 import type { SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
 
 class FakeEditorService {
-  public insertedText = '';
+  public insertedTranscripts: Array<{ mode: InsertionMode; text: string }> = [];
   public assertActiveEditorAvailable = vi.fn(() => {});
 
-  insertTextAtCursor(text: string): void {
-    this.insertedText += text;
+  insertTranscript(text: string, mode: InsertionMode): void {
+    this.insertedTranscripts.push({ mode, text });
   }
 }
 
@@ -41,13 +37,13 @@ class FakeCaptureStream {
 class FakeSidecarConnection {
   public cancelSession = vi.fn(async () => {
     this.emit({
-      protocolVersion: 'v2',
+      protocolVersion: 'v3',
       reason: 'user_cancel',
       sessionId: this.lastSessionId ?? 'session-1',
       type: 'session_stopped',
     });
     return {
-      protocolVersion: 'v2',
+      protocolVersion: 'v3',
       reason: 'user_cancel',
       sessionId: this.lastSessionId ?? 'session-1',
       type: 'session_stopped',
@@ -62,12 +58,12 @@ class FakeSidecarConnection {
       this.lastSessionId = payload.sessionId;
       this.emit({
         mode: payload.mode,
-        protocolVersion: 'v2',
+        protocolVersion: 'v3',
         sessionId: payload.sessionId,
         type: 'session_started',
       });
       this.emit({
-        protocolVersion: 'v2',
+        protocolVersion: 'v3',
         sessionId: payload.sessionId,
         state: payload.mode === 'press_and_hold' ? 'idle' : 'listening',
         type: 'session_state_changed',
@@ -75,7 +71,7 @@ class FakeSidecarConnection {
 
       return {
         mode: payload.mode,
-        protocolVersion: 'v2',
+        protocolVersion: 'v3',
         sessionId: payload.sessionId,
         type: 'session_started',
       } as const;
@@ -83,13 +79,13 @@ class FakeSidecarConnection {
   );
   public stopSession = vi.fn(async () => {
     this.emit({
-      protocolVersion: 'v2',
+      protocolVersion: 'v3',
       reason: 'user_stop',
       sessionId: this.lastSessionId ?? 'session-1',
       type: 'session_stopped',
     });
     return {
-      protocolVersion: 'v2',
+      protocolVersion: 'v3',
       reason: 'user_stop',
       sessionId: this.lastSessionId ?? 'session-1',
       type: 'session_stopped',
@@ -110,24 +106,13 @@ class FakeSidecarConnection {
   }
 }
 
-const tempDirectories: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(
-    tempDirectories
-      .splice(0)
-      .map((directoryPath) => rm(directoryPath, { force: true, recursive: true })),
-  );
-});
-
 describe('DictationSessionController', () => {
   it('starts a session and begins capture', async () => {
-    const modelFilePath = await createModelFile();
     const captureStream = new FakeCaptureStream();
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
       captureStream,
-      getSettings: () => createSettings({ modelFilePath }),
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
       sidecarConnection,
     });
 
@@ -138,21 +123,25 @@ describe('DictationSessionController', () => {
     expect(controller.getState()).toBe('listening');
   });
 
-  it('inserts transcript text from async sidecar events', async () => {
-    const modelFilePath = await createModelFile();
+  it('inserts transcript text from async sidecar events using the current placement mode', async () => {
     const editorService = new FakeEditorService();
     const sidecarConnection = new FakeSidecarConnection();
+    let settings = createSettings({ selectedModel: createExternalModelSelection() });
     const controller = createController({
       editorService,
-      getSettings: () => createSettings({ modelFilePath }),
+      getSettings: () => settings,
       sidecarConnection,
     });
 
     await controller.startDictation();
+    settings = {
+      ...settings,
+      insertionMode: 'append_as_new_paragraph',
+    };
 
     sidecarConnection.emit({
       processingDurationMs: 75,
-      protocolVersion: 'v2',
+      protocolVersion: 'v3',
       segments: [],
       sessionId: sidecarConnection.lastSessionId ?? 'session-1',
       text: 'hello obsidian',
@@ -160,18 +149,22 @@ describe('DictationSessionController', () => {
       utteranceDurationMs: 700,
     });
 
-    expect(editorService.insertedText).toBe('hello obsidian');
+    expect(editorService.insertedTranscripts).toEqual([
+      {
+        mode: 'append_as_new_paragraph',
+        text: 'hello obsidian',
+      },
+    ]);
   });
 
   it('opens and closes the press-and-hold gate on the configured hotkey', async () => {
-    const modelFilePath = await createModelFile();
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
       app: createAppWithHotkeys([{ key: 'K', modifiers: ['Shift'] }]),
       getSettings: () =>
         createSettings({
           listeningMode: 'press_and_hold',
-          modelFilePath,
+          selectedModel: createExternalModelSelection(),
         }),
       sidecarConnection,
     });
@@ -238,8 +231,9 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
   return {
     insertionMode: 'insert_at_cursor',
     listeningMode: 'one_sentence',
-    modelFilePath: '',
+    modelStorePathOverride: '',
     pauseWhileProcessing: true,
+    selectedModel: null,
     sidecarPathOverride: '',
     sidecarRequestTimeoutMs: 300_000,
     sidecarStartupTimeoutMs: 4_000,
@@ -247,10 +241,10 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
   };
 }
 
-async function createModelFile(): Promise<string> {
-  const tempDirectory = await mkdtemp(join(tmpdir(), 'obsidian-local-stt-model-'));
-  const modelFilePath = join(tempDirectory, 'ggml-small.en-q5_1.bin');
-  tempDirectories.push(tempDirectory);
-  await writeFile(modelFilePath, 'model placeholder');
-  return modelFilePath;
+function createExternalModelSelection() {
+  return {
+    engineId: 'whisper_cpp' as const,
+    filePath: '/tmp/ggml-small.en-q5_1.bin',
+    kind: 'external_file' as const,
+  };
 }

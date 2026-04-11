@@ -8,12 +8,12 @@ import { PRESS_AND_HOLD_GATE_COMMAND_ID, registerCommands } from './commands/reg
 import { DictationSessionController } from './dictation/dictation-session-controller';
 import { EditorService } from './editor/editor-service';
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
+import { ModelManagementService } from './models/model-management-service';
 import {
   DEFAULT_PLUGIN_SETTINGS,
   type PluginSettings,
   resolvePluginSettings,
 } from './settings/plugin-settings';
-import { normalizePersistedPluginSettings } from './settings/settings-normalization';
 import { LocalSttSettingTab } from './settings/settings-tab';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
@@ -28,24 +28,14 @@ export default class LocalSttPlugin extends Plugin {
   private audioCaptureStream: AudioCaptureStream | null = null;
   private dictationController: DictationSessionController | null = null;
   private editorService: EditorService | null = null;
+  private modelManagementService: ModelManagementService | null = null;
   private ribbonController: DictationRibbonController | null = null;
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
   private sidecarConnection: SidecarConnection | null = null;
   private statusBar: StatusBarController | null = null;
 
   override async onload(): Promise<void> {
-    const loadedSettings = resolvePluginSettings(await this.loadData());
-    const normalizedSettings = await normalizePersistedPluginSettings(loadedSettings);
-    this.settings = normalizedSettings.settings;
-
-    if (normalizedSettings.didChange) {
-      await this.saveData(this.settings);
-
-      for (const message of normalizedSettings.messages) {
-        console.warn('[Local STT]', message);
-        new Notice(`Local STT: ${message}`);
-      }
-    }
+    this.settings = resolvePluginSettings(await this.loadData());
 
     this.editorService = new EditorService(this.app);
     this.statusBar = new StatusBarController(this.addStatusBarItem());
@@ -65,6 +55,13 @@ export default class LocalSttPlugin extends Plugin {
         });
       },
       resolveWorkletModulePath: async () => this.resolveRecorderWorkletModulePath(),
+    });
+    this.modelManagementService = new ModelManagementService({
+      getSettings: () => this.settings,
+      saveSettings: async (nextSettings) => {
+        await this.updateSettings(nextSettings);
+      },
+      sidecarConnection: this.sidecarConnection,
     });
 
     const ribbonElement = this.addRibbonIcon('mic', 'Local STT: Start Dictation Session', () => {
@@ -116,6 +113,7 @@ export default class LocalSttPlugin extends Plugin {
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
         getSettings: () => this.settings,
+        modelManagementService: this.requireModelManagementService(),
         saveSettings: async (nextSettings) => {
           await this.updateSettings(nextSettings);
         },
@@ -137,6 +135,12 @@ export default class LocalSttPlugin extends Plugin {
   }
 
   override async onunload(): Promise<void> {
+    try {
+      this.modelManagementService?.dispose();
+    } catch (error) {
+      console.error('[Local STT] failed to dispose model management service cleanly', error);
+    }
+
     try {
       await this.dictationController?.dispose();
     } catch (error) {
@@ -223,10 +227,20 @@ export default class LocalSttPlugin extends Plugin {
     return this.sidecarConnection;
   }
 
+  private requireModelManagementService(): ModelManagementService {
+    if (this.modelManagementService === null) {
+      throw new Error('Model management service has not been initialized.');
+    }
+
+    return this.modelManagementService;
+  }
+
   private async resolveSidecarLaunchSpec(): Promise<SidecarLaunchSpec> {
     const executablePath = await this.resolveSidecarExecutablePath();
+    const catalogPath = await this.resolveModelCatalogPath();
 
     return {
+      args: ['--catalog-path', catalogPath],
       command: executablePath,
       cwd: dirname(executablePath),
     };
@@ -280,6 +294,13 @@ export default class LocalSttPlugin extends Plugin {
 
   private async resolveRecorderWorkletModulePath(): Promise<string> {
     return join(await this.resolvePluginDirectoryPath(), PCM_RECORDER_WORKLET_OUTPUT_PATH);
+  }
+
+  private async resolveModelCatalogPath(): Promise<string> {
+    return assertAbsoluteExistingFilePath(
+      join(await this.resolvePluginDirectoryPath(), 'config', 'model-catalog.json'),
+      'Bundled model catalog path',
+    );
   }
 }
 

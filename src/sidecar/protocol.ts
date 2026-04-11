@@ -1,6 +1,24 @@
+import {
+  type CatalogModelRecord,
+  type EngineId,
+  getPrimaryArtifact,
+  type InstalledModelRecord,
+  isEngineId,
+  type ModelCatalogRecord,
+  type ModelCollectionRecord,
+  type ModelEngineRecord,
+  type ModelInstallState,
+  type ModelInstallUpdateRecord,
+  type ModelProbeResultRecord,
+  type ModelRemovedRecord,
+  type ModelStoreRecord,
+  normalizeSelectedModel,
+  type SelectedModel,
+} from '../models/model-management-types';
 import { PCM_BYTES_PER_FRAME } from '../shared/pcm-format';
+import { isRecord } from '../shared/type-guards';
 
-export const SIDECAR_PROTOCOL_VERSION = 'v2' as const;
+export const SIDECAR_PROTOCOL_VERSION = 'v3' as const;
 
 export const JSON_FRAME_KIND = 0x01;
 export const AUDIO_FRAME_KIND = 0x02;
@@ -8,12 +26,12 @@ export const FRAME_HEADER_LENGTH = 5;
 
 export type ListeningMode = 'always_on' | 'press_and_hold' | 'one_sentence';
 export type SessionState =
+  | 'error'
   | 'idle'
   | 'listening'
-  | 'speech_detected'
-  | 'transcribing'
   | 'paused'
-  | 'error';
+  | 'speech_detected'
+  | 'transcribing';
 
 export type SessionStopReason =
   | 'sentence_complete'
@@ -38,9 +56,42 @@ export interface HealthCommand extends EnvelopeBase<'health'> {}
 export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   language: 'en';
   mode: ListeningMode;
-  modelFilePath: string;
+  modelSelection: SelectedModel;
+  modelStorePathOverride?: string;
   pauseWhileProcessing: boolean;
   sessionId: string;
+}
+
+export interface GetModelStoreCommand extends EnvelopeBase<'get_model_store'> {
+  modelStorePathOverride?: string;
+}
+
+export interface ListModelCatalogCommand extends EnvelopeBase<'list_model_catalog'> {}
+
+export interface ListInstalledModelsCommand extends EnvelopeBase<'list_installed_models'> {
+  modelStorePathOverride?: string;
+}
+
+export interface ProbeModelSelectionCommand extends EnvelopeBase<'probe_model_selection'> {
+  modelSelection: SelectedModel;
+  modelStorePathOverride?: string;
+}
+
+export interface RemoveModelCommand extends EnvelopeBase<'remove_model'> {
+  engineId: EngineId;
+  modelId: string;
+  modelStorePathOverride?: string;
+}
+
+export interface InstallModelCommand extends EnvelopeBase<'install_model'> {
+  engineId: EngineId;
+  installId: string;
+  modelId: string;
+  modelStorePathOverride?: string;
+}
+
+export interface CancelModelInstallCommand extends EnvelopeBase<'cancel_model_install'> {
+  installId: string;
 }
 
 export interface SetGateCommand extends EnvelopeBase<'set_gate'> {
@@ -54,17 +105,42 @@ export interface CancelSessionCommand extends EnvelopeBase<'cancel_session'> {}
 export interface ShutdownCommand extends EnvelopeBase<'shutdown'> {}
 
 export type SidecarCommand =
-  | HealthCommand
-  | StartSessionCommand
-  | SetGateCommand
-  | StopSessionCommand
+  | CancelModelInstallCommand
   | CancelSessionCommand
-  | ShutdownCommand;
+  | GetModelStoreCommand
+  | HealthCommand
+  | InstallModelCommand
+  | ListInstalledModelsCommand
+  | ListModelCatalogCommand
+  | ProbeModelSelectionCommand
+  | RemoveModelCommand
+  | SetGateCommand
+  | ShutdownCommand
+  | StartSessionCommand
+  | StopSessionCommand;
 
 export interface HealthOkEvent extends EnvelopeBase<'health_ok'> {
   sidecarVersion: string;
   status: 'ready';
 }
+
+export interface ModelStoreEvent extends EnvelopeBase<'model_store'>, ModelStoreRecord {}
+
+export interface ModelCatalogEvent extends EnvelopeBase<'model_catalog'>, ModelCatalogRecord {}
+
+export interface InstalledModelsEvent extends EnvelopeBase<'installed_models'> {
+  models: InstalledModelRecord[];
+}
+
+export interface ModelProbeResultEvent
+  extends EnvelopeBase<'model_probe_result'>,
+    ModelProbeResultRecord {}
+
+export interface ModelRemovedEvent extends EnvelopeBase<'model_removed'>, ModelRemovedRecord {}
+
+export interface ModelInstallUpdateEvent
+  extends EnvelopeBase<'model_install_update'>,
+    ModelInstallUpdateRecord {}
 
 export interface SessionStartedEvent extends EnvelopeBase<'session_started'> {
   mode: ListeningMode;
@@ -106,6 +182,12 @@ export interface ErrorEvent extends EnvelopeBase<'error'> {
 export type SidecarEvent =
   | ErrorEvent
   | HealthOkEvent
+  | InstalledModelsEvent
+  | ModelCatalogEvent
+  | ModelInstallUpdateEvent
+  | ModelProbeResultEvent
+  | ModelRemovedEvent
+  | ModelStoreEvent
   | SessionStartedEvent
   | SessionStateChangedEvent
   | SessionStoppedEvent
@@ -122,6 +204,60 @@ export function createStartSessionCommand(
   return {
     ...createEnvelope('start_session'),
     ...payload,
+  };
+}
+
+export function createGetModelStoreCommand(modelStorePathOverride?: string): GetModelStoreCommand {
+  return {
+    ...createEnvelope('get_model_store'),
+    ...(modelStorePathOverride !== undefined ? { modelStorePathOverride } : {}),
+  };
+}
+
+export function createListModelCatalogCommand(): ListModelCatalogCommand {
+  return createEnvelope('list_model_catalog');
+}
+
+export function createListInstalledModelsCommand(
+  modelStorePathOverride?: string,
+): ListInstalledModelsCommand {
+  return {
+    ...createEnvelope('list_installed_models'),
+    ...(modelStorePathOverride !== undefined ? { modelStorePathOverride } : {}),
+  };
+}
+
+export function createProbeModelSelectionCommand(
+  payload: Omit<ProbeModelSelectionCommand, 'protocolVersion' | 'type'>,
+): ProbeModelSelectionCommand {
+  return {
+    ...createEnvelope('probe_model_selection'),
+    ...payload,
+  };
+}
+
+export function createRemoveModelCommand(
+  payload: Omit<RemoveModelCommand, 'protocolVersion' | 'type'>,
+): RemoveModelCommand {
+  return {
+    ...createEnvelope('remove_model'),
+    ...payload,
+  };
+}
+
+export function createInstallModelCommand(
+  payload: Omit<InstallModelCommand, 'protocolVersion' | 'type'>,
+): InstallModelCommand {
+  return {
+    ...createEnvelope('install_model'),
+    ...payload,
+  };
+}
+
+export function createCancelModelInstallCommand(installId: string): CancelModelInstallCommand {
+  return {
+    ...createEnvelope('cancel_model_install'),
+    installId,
   };
 }
 
@@ -238,6 +374,72 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         type,
       };
 
+    case 'model_store':
+      return {
+        overridePath: readNullableString(parsedValue.overridePath, 'event.overridePath'),
+        path: readString(parsedValue.path, 'event.path'),
+        protocolVersion,
+        type,
+        usingDefaultPath: readBoolean(parsedValue.usingDefaultPath, 'event.usingDefaultPath'),
+      };
+
+    case 'model_catalog':
+      return {
+        catalogVersion: readPositiveInteger(parsedValue.catalogVersion, 'event.catalogVersion'),
+        collections: readModelCollections(parsedValue.collections),
+        engines: readModelEngines(parsedValue.engines),
+        models: readCatalogModels(parsedValue.models),
+        protocolVersion,
+        type,
+      };
+
+    case 'installed_models':
+      return {
+        models: readInstalledModels(parsedValue.models),
+        protocolVersion,
+        type,
+      };
+
+    case 'model_probe_result':
+      return {
+        available: readBoolean(parsedValue.available, 'event.available'),
+        details: readNullableString(parsedValue.details, 'event.details'),
+        displayName: readNullableString(parsedValue.displayName, 'event.displayName'),
+        engineId: readEngineId(parsedValue.engineId, 'event.engineId'),
+        installed: readBoolean(parsedValue.installed, 'event.installed'),
+        message: readString(parsedValue.message, 'event.message'),
+        modelId: readNullableString(parsedValue.modelId, 'event.modelId'),
+        protocolVersion,
+        resolvedPath: readNullableString(parsedValue.resolvedPath, 'event.resolvedPath'),
+        selection: readSelectedModel(parsedValue.selection, 'event.selection'),
+        sizeBytes: readNullableNumber(parsedValue.sizeBytes, 'event.sizeBytes'),
+        status: readModelProbeStatus(parsedValue.status, 'event.status'),
+        type,
+      };
+
+    case 'model_removed':
+      return {
+        engineId: readEngineId(parsedValue.engineId, 'event.engineId'),
+        modelId: readString(parsedValue.modelId, 'event.modelId'),
+        protocolVersion,
+        removed: readBoolean(parsedValue.removed, 'event.removed'),
+        type,
+      };
+
+    case 'model_install_update':
+      return {
+        details: readNullableString(parsedValue.details, 'event.details'),
+        downloadedBytes: readNullableNumber(parsedValue.downloadedBytes, 'event.downloadedBytes'),
+        engineId: readEngineId(parsedValue.engineId, 'event.engineId'),
+        installId: readString(parsedValue.installId, 'event.installId'),
+        message: readNullableString(parsedValue.message, 'event.message'),
+        modelId: readString(parsedValue.modelId, 'event.modelId'),
+        protocolVersion,
+        state: readModelInstallState(parsedValue.state, 'event.state'),
+        totalBytes: readNullableNumber(parsedValue.totalBytes, 'event.totalBytes'),
+        type,
+      };
+
     case 'session_started':
       return {
         mode: readListeningMode(parsedValue.mode, 'event.mode'),
@@ -328,10 +530,6 @@ function readUint32LE(bytes: Uint8Array, offset: number): number {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, true);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
 function readString(value: unknown, fieldName: string): string {
   if (typeof value !== 'string') {
     throw new Error(`${fieldName} must be a string.`);
@@ -348,9 +546,41 @@ function readOptionalString(value: unknown, fieldName: string): string | undefin
   return readString(value, fieldName);
 }
 
+function readNullableString(value: unknown, fieldName: string): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  return readString(value, fieldName);
+}
+
+function readBoolean(value: unknown, fieldName: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`${fieldName} must be a boolean.`);
+  }
+
+  return value;
+}
+
 function readNonNegativeNumber(value: unknown, fieldName: string): number {
   if (typeof value !== 'number' || Number.isNaN(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative number.`);
+  }
+
+  return value;
+}
+
+function readNullableNumber(value: unknown, fieldName: string): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  return readNonNegativeNumber(value, fieldName);
+}
+
+function readPositiveInteger(value: unknown, fieldName: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive integer.`);
   }
 
   return value;
@@ -390,12 +620,12 @@ function readSessionState(value: unknown, fieldName: string): SessionState {
   const state = readString(value, fieldName);
 
   if (
+    state === 'error' ||
     state === 'idle' ||
     state === 'listening' ||
-    state === 'speech_detected' ||
-    state === 'transcribing' ||
     state === 'paused' ||
-    state === 'error'
+    state === 'speech_detected' ||
+    state === 'transcribing'
   ) {
     return state;
   }
@@ -419,6 +649,70 @@ function readSessionStopReason(value: unknown, fieldName: string): SessionStopRe
   throw new Error(`Unsupported session stop reason: ${reason}`);
 }
 
+function readEngineId(value: unknown, fieldName: string): EngineId {
+  const engineId = readString(value, fieldName);
+
+  if (!isEngineId(engineId)) {
+    throw new Error(`Unsupported engine id: ${engineId}`);
+  }
+
+  return engineId;
+}
+
+function readSelectedModel(value: unknown, fieldName: string): SelectedModel {
+  if (!isRecord(value)) {
+    throw new Error(`${fieldName} must be an object.`);
+  }
+
+  const kind = readString(value.kind, `${fieldName}.kind`);
+
+  if (kind === 'catalog_model') {
+    return normalizeSelectedModel({
+      engineId: readEngineId(value.engineId, `${fieldName}.engineId`),
+      kind,
+      modelId: readString(value.modelId, `${fieldName}.modelId`),
+    });
+  }
+
+  if (kind === 'external_file') {
+    return normalizeSelectedModel({
+      engineId: readEngineId(value.engineId, `${fieldName}.engineId`),
+      filePath: readString(value.filePath, `${fieldName}.filePath`),
+      kind,
+    });
+  }
+
+  throw new Error(`Unsupported selected model kind: ${kind}`);
+}
+
+function readModelProbeStatus(value: unknown, fieldName: string): ModelProbeResultRecord['status'] {
+  const status = readString(value, fieldName);
+
+  if (status === 'invalid' || status === 'missing' || status === 'ready') {
+    return status;
+  }
+
+  throw new Error(`Unsupported model probe status: ${status}`);
+}
+
+function readModelInstallState(value: unknown, fieldName: string): ModelInstallState {
+  const state = readString(value, fieldName);
+
+  if (
+    state === 'cancelled' ||
+    state === 'completed' ||
+    state === 'downloading' ||
+    state === 'failed' ||
+    state === 'probing' ||
+    state === 'queued' ||
+    state === 'verifying'
+  ) {
+    return state;
+  }
+
+  throw new Error(`Unsupported model install state: ${state}`);
+}
+
 function readTranscriptSegments(value: unknown): TranscriptSegment[] {
   if (!Array.isArray(value)) {
     throw new Error('event.segments must be an array.');
@@ -437,6 +731,131 @@ function readTranscriptSegments(value: unknown): TranscriptSegment[] {
   });
 }
 
+function readModelEngines(value: unknown): ModelEngineRecord[] {
+  return readArray(value, 'event.engines').map((engine, index) => {
+    const record = readRecord(engine, `event.engines[${index}]`);
+
+    return {
+      displayName: readString(record.displayName, `event.engines[${index}].displayName`),
+      engineId: readEngineId(record.engineId, `event.engines[${index}].engineId`),
+      summary: readString(record.summary, `event.engines[${index}].summary`),
+    };
+  });
+}
+
+function readModelCollections(value: unknown): ModelCollectionRecord[] {
+  return readArray(value, 'event.collections').map((collection, index) => {
+    const record = readRecord(collection, `event.collections[${index}]`);
+
+    return {
+      collectionId: readString(record.collectionId, `event.collections[${index}].collectionId`),
+      displayName: readString(record.displayName, `event.collections[${index}].displayName`),
+      summary: readString(record.summary, `event.collections[${index}].summary`),
+    };
+  });
+}
+
+function readCatalogModels(value: unknown): CatalogModelRecord[] {
+  return readArray(value, 'event.models').map((model, index) => {
+    const record = readRecord(model, `event.models[${index}]`);
+    const artifacts = readModelArtifacts(record.artifacts, `event.models[${index}].artifacts`);
+    const parsedModel: CatalogModelRecord = {
+      artifacts,
+      capabilityFlags: readStringArray(
+        record.capabilityFlags,
+        `event.models[${index}].capabilityFlags`,
+      ),
+      collectionId: readString(record.collectionId, `event.models[${index}].collectionId`),
+      displayName: readString(record.displayName, `event.models[${index}].displayName`),
+      engineId: readEngineId(record.engineId, `event.models[${index}].engineId`),
+      languageTags: readStringArray(record.languageTags, `event.models[${index}].languageTags`),
+      licenseLabel: readString(record.licenseLabel, `event.models[${index}].licenseLabel`),
+      licenseUrl: readString(record.licenseUrl, `event.models[${index}].licenseUrl`),
+      modelCardUrl: readNullableString(record.modelCardUrl, `event.models[${index}].modelCardUrl`),
+      modelId: readString(record.modelId, `event.models[${index}].modelId`),
+      notes: readStringArray(record.notes, `event.models[${index}].notes`),
+      recommended: readBoolean(record.recommended, `event.models[${index}].recommended`),
+      sourceUrl: readString(record.sourceUrl, `event.models[${index}].sourceUrl`),
+      summary: readString(record.summary, `event.models[${index}].summary`),
+      uxTags: readStringArray(record.uxTags, `event.models[${index}].uxTags`),
+    };
+
+    if (getPrimaryArtifact(parsedModel) === null) {
+      throw new Error(`event.models[${index}] is missing a required transcription artifact.`);
+    }
+
+    return parsedModel;
+  });
+}
+
+function readModelArtifacts(value: unknown, fieldName: string): CatalogModelRecord['artifacts'] {
+  return readArray(value, fieldName).map((artifact, index) => {
+    const record = readRecord(artifact, `${fieldName}[${index}]`);
+    const role = readString(record.role, `${fieldName}[${index}].role`);
+
+    if (role !== 'punctuation_model' && role !== 'transcription_model') {
+      throw new Error(`Unsupported model artifact role: ${role}`);
+    }
+
+    return {
+      artifactId: readString(record.artifactId, `${fieldName}[${index}].artifactId`),
+      downloadUrl: readString(record.downloadUrl, `${fieldName}[${index}].downloadUrl`),
+      filename: readString(record.filename, `${fieldName}[${index}].filename`),
+      required: readBoolean(record.required, `${fieldName}[${index}].required`),
+      role,
+      sha256: readString(record.sha256, `${fieldName}[${index}].sha256`),
+      sizeBytes: readPositiveInteger(record.sizeBytes, `${fieldName}[${index}].sizeBytes`),
+    };
+  });
+}
+
+function readInstalledModels(value: unknown): InstalledModelRecord[] {
+  return readArray(value, 'event.models').map((model, index) => {
+    const record = readRecord(model, `event.models[${index}]`);
+
+    return {
+      catalogVersion: readPositiveInteger(
+        record.catalogVersion,
+        `event.models[${index}].catalogVersion`,
+      ),
+      engineId: readEngineId(record.engineId, `event.models[${index}].engineId`),
+      installPath: readString(record.installPath, `event.models[${index}].installPath`),
+      installedAtUnixMs: readNonNegativeNumber(
+        record.installedAtUnixMs,
+        `event.models[${index}].installedAtUnixMs`,
+      ),
+      modelId: readString(record.modelId, `event.models[${index}].modelId`),
+      runtimePath: readNullableString(record.runtimePath, `event.models[${index}].runtimePath`),
+      totalSizeBytes: readNonNegativeNumber(
+        record.totalSizeBytes,
+        `event.models[${index}].totalSizeBytes`,
+      ),
+    };
+  });
+}
+
+function readArray(value: unknown, fieldName: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array.`);
+  }
+
+  return value;
+}
+
+function readStringArray(value: unknown, fieldName: string): string[] {
+  return readArray(value, fieldName).map((entry, index) =>
+    readString(entry, `${fieldName}[${index}]`),
+  );
+}
+
+function readRecord(value: unknown, fieldName: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`${fieldName} must be an object.`);
+  }
+
+  return value;
+}
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -444,46 +863,43 @@ function createWarningEvent(
   value: Record<string, unknown>,
   protocolVersion: typeof SIDECAR_PROTOCOL_VERSION,
 ): WarningEvent {
-  const event: WarningEvent = {
+  return {
     code: readString(value.code, 'event.code'),
+    ...readOptionalEventFields(value),
     message: readString(value.message, 'event.message'),
     protocolVersion,
     type: 'warning',
   };
-  const details = readOptionalString(value.details, 'event.details');
-  const sessionId = readOptionalString(value.sessionId, 'event.sessionId');
-
-  if (details !== undefined) {
-    event.details = details;
-  }
-
-  if (sessionId !== undefined) {
-    event.sessionId = sessionId;
-  }
-
-  return event;
 }
 
 function createErrorEvent(
   value: Record<string, unknown>,
   protocolVersion: typeof SIDECAR_PROTOCOL_VERSION,
 ): ErrorEvent {
-  const event: ErrorEvent = {
+  return {
     code: readString(value.code, 'event.code'),
+    ...readOptionalEventFields(value),
     message: readString(value.message, 'event.message'),
     protocolVersion,
     type: 'error',
   };
+}
+
+function readOptionalEventFields(value: Record<string, unknown>): {
+  details?: string;
+  sessionId?: string;
+} {
+  const result: { details?: string; sessionId?: string } = {};
   const details = readOptionalString(value.details, 'event.details');
   const sessionId = readOptionalString(value.sessionId, 'event.sessionId');
 
   if (details !== undefined) {
-    event.details = details;
+    result.details = details;
   }
 
   if (sessionId !== undefined) {
-    event.sessionId = sessionId;
+    result.sessionId = sessionId;
   }
 
-  return event;
+  return result;
 }

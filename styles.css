@@ -1,0 +1,150 @@
+/* ===================================================================
+   Local STT – Plugin Styles
+   All selectors prefixed with .local-stt- to avoid collisions.
+   All colors use Obsidian CSS variables with fallback values.
+   =================================================================== */
+
+/* --- Status badges (inline pills) --------------------------------- */
+
+.local-stt-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: var(--font-smallest);
+  font-weight: 500;
+  line-height: 1.4;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.local-stt-badge--ready {
+  background-color: var(--background-modifier-success, rgba(0, 200, 0, 0.15));
+  color: var(--text-success, #2e8b57);
+}
+
+.local-stt-badge--missing {
+  background-color: var(--background-modifier-error, rgba(200, 0, 0, 0.15));
+  color: var(--text-error, #cd5c5c);
+}
+
+.local-stt-badge--external {
+  background-color: var(--background-modifier-border, rgba(128, 128, 128, 0.15));
+  color: var(--text-muted);
+}
+
+.local-stt-badge--none {
+  background-color: var(--background-modifier-border, rgba(128, 128, 128, 0.15));
+  color: var(--text-muted);
+}
+
+/* --- Tag pills ---------------------------------------------------- */
+
+.local-stt-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0;
+}
+
+.local-stt-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: var(--font-smallest);
+  line-height: 1.5;
+  background-color: var(--background-modifier-border, rgba(128, 128, 128, 0.15));
+  color: var(--text-muted);
+}
+
+.local-stt-tag--recommended {
+  background-color: var(--background-modifier-success, rgba(0, 200, 0, 0.15));
+  color: var(--text-success, #2e8b57);
+}
+
+/* --- Model explorer rows (card-like) ------------------------------ */
+
+.local-stt-model-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--background-modifier-border, rgba(128, 128, 128, 0.2));
+}
+
+.local-stt-model-row:last-child {
+  border-bottom: none;
+}
+
+.local-stt-row-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.local-stt-row-header strong {
+  font-size: var(--font-ui-medium);
+}
+
+.local-stt-row-size {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.local-stt-row-summary {
+  margin: 4px 0 6px;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+/* --- Details grid (dt/dd pairs) ----------------------------------- */
+
+.local-stt-details-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 8px 0;
+}
+
+.local-stt-details-grid dt {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  white-space: nowrap;
+}
+
+.local-stt-details-grid dd {
+  margin: 0;
+  font-size: var(--font-ui-small);
+  word-break: break-all;
+}
+
+.local-stt-mono {
+  font-family: var(--font-monospace);
+  font-size: var(--font-smallest);
+}
+
+/* --- Advanced (collapsible sidecar section) ----------------------- */
+
+.local-stt-advanced {
+  margin-top: 16px;
+  border: 1px solid var(--background-modifier-border, rgba(128, 128, 128, 0.2));
+  border-radius: var(--radius-s, 4px);
+  padding: 0 12px;
+}
+
+.local-stt-advanced summary {
+  cursor: pointer;
+  padding: 8px 0;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: var(--font-ui-medium);
+}
+
+.local-stt-advanced[open] summary {
+  margin-bottom: 4px;
+}
+
+/* --- Explorer modal width constraint ------------------------------ */
+
+.local-stt-explorer {
+  width: min(600px, 90vw);
+}
