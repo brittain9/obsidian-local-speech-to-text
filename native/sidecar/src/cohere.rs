@@ -26,8 +26,10 @@ const TOKEN_ITN_ON: i64 = 16391;
 const TOKEN_LANG_EN: i64 = 16393;
 
 /// Sibling filenames derived from the primary artifact path.
-const DECODER_FILENAME: &str = "decoder_model_merged.onnx";
-const TOKENS_FILENAME: &str = "tokens.txt";
+/// `tokens.txt` is retained as a candidate for backward compatibility with
+/// manually converted tokenizer files.  The HuggingFace-shipped format is
+/// `tokenizer.json`, which the loader now handles natively.
+const TOKENS_CANDIDATES: &[&str] = &["tokens.txt", "tokenizer.json"];
 
 // ---------------------------------------------------------------------------
 // Backend
@@ -93,22 +95,8 @@ impl TranscriptionBackend for CohereBackend {
         })?;
 
         validate_model_path(path)?;
-
-        let decoder_path = model_dir.join(DECODER_FILENAME);
-        if !decoder_path.is_file() {
-            return Err(TranscriptionError::invalid_model_with_details(format!(
-                "decoder model missing: {}",
-                decoder_path.display()
-            )));
-        }
-
-        let tokens_path = model_dir.join(TOKENS_FILENAME);
-        if !tokens_path.is_file() {
-            return Err(TranscriptionError::invalid_model_with_details(format!(
-                "tokenizer file missing: {}",
-                tokens_path.display()
-            )));
-        }
+        find_decoder_path(model_dir)?;
+        find_tokens_path(model_dir)?;
 
         Ok(())
     }
@@ -145,8 +133,8 @@ impl CohereBackend {
 }
 
 fn build_session(model_path: &Path, gpu_config: GpuConfig) -> Result<Session, TranscriptionError> {
-    let mut builder =
-        Session::builder().map_err(|e| TranscriptionError::transcription_failure("session builder", &e))?;
+    let mut builder = Session::builder()
+        .map_err(|e| TranscriptionError::transcription_failure("session builder", &e))?;
 
     #[cfg(feature = "gpu-ort-cuda")]
     if gpu_config.use_gpu {
@@ -170,8 +158,8 @@ fn load_cohere_model(
     gpu_config: GpuConfig,
 ) -> Result<LoadedCohereModel, TranscriptionError> {
     let encoder_path = find_encoder_path(model_dir)?;
-    let decoder_path = model_dir.join(DECODER_FILENAME);
-    let tokens_path = model_dir.join(TOKENS_FILENAME);
+    let decoder_path = find_decoder_path(model_dir)?;
+    let tokens_path = find_tokens_path(model_dir)?;
 
     let encoder = build_session(&encoder_path, gpu_config)?;
     let decoder = build_session(&decoder_path, gpu_config)?;
@@ -208,15 +196,108 @@ fn find_encoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
     )))
 }
 
+fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
+    let candidates = [
+        "decoder_model_merged_fp16.onnx",
+        "decoder_model_merged.onnx",
+        "decoder_model_merged_int8.onnx",
+        "decoder_model_merged_q4.onnx",
+        "decoder_model_merged_quantized.onnx",
+    ];
+
+    for name in &candidates {
+        let path = model_dir.join(name);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+
+    Err(TranscriptionError::invalid_model_with_details(format!(
+        "decoder model missing: no decoder ONNX file found in {}",
+        model_dir.display()
+    )))
+}
+
+/// Search for a tokenizer file in the model directory and its parent.
+/// HuggingFace repos place `tokenizer.json` at the repo root, which ends up
+/// one level above the `onnx/` subdirectory that contains the ONNX models.
+fn find_tokens_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
+    // Check model_dir itself first, then parent (for tokenizer.json at repo root).
+    let search_dirs: Vec<&Path> = if let Some(parent) = model_dir.parent() {
+        vec![model_dir, parent]
+    } else {
+        vec![model_dir]
+    };
+
+    for dir in &search_dirs {
+        for name in TOKENS_CANDIDATES {
+            let path = dir.join(name);
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+    }
+
+    Err(TranscriptionError::invalid_model_with_details(format!(
+        "tokenizer file missing: no tokens.txt or tokenizer.json found in {}",
+        model_dir.display()
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // Tokenizer
 // ---------------------------------------------------------------------------
 
 fn load_vocab(path: &Path) -> Result<HashMap<u32, String>, TranscriptionError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
-        TranscriptionError::invalid_model_with_details(format!("failed to read tokens.txt: {e}"))
+        TranscriptionError::invalid_model_with_details(format!(
+            "failed to read tokenizer file {}: {e}",
+            path.display()
+        ))
     })?;
 
+    let is_json = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+
+    if is_json {
+        load_vocab_from_json(&content)
+    } else {
+        load_vocab_from_tsv(&content)
+    }
+}
+
+/// Parse a HuggingFace `tokenizer.json` file.
+/// The vocab lives at `model.vocab` as `{ token_string: id, ... }`.
+fn load_vocab_from_json(content: &str) -> Result<HashMap<u32, String>, TranscriptionError> {
+    let root: serde_json::Value = serde_json::from_str(content).map_err(|e| {
+        TranscriptionError::invalid_model_with_details(format!(
+            "failed to parse tokenizer.json: {e}"
+        ))
+    })?;
+
+    let vocab_obj = root
+        .get("model")
+        .and_then(|m| m.get("vocab"))
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            TranscriptionError::invalid_model_with_details(
+                "tokenizer.json missing model.vocab object".to_string(),
+            )
+        })?;
+
+    let mut vocab = HashMap::with_capacity(vocab_obj.len());
+    for (token, id_val) in vocab_obj {
+        if let Some(id) = id_val.as_u64() {
+            vocab.insert(id as u32, token.clone());
+        }
+    }
+
+    Ok(vocab)
+}
+
+/// Parse a tab-separated `tokens.txt` file (id\ttoken per line).
+fn load_vocab_from_tsv(content: &str) -> Result<HashMap<u32, String>, TranscriptionError> {
     let mut vocab = HashMap::new();
 
     for line in content.lines() {
@@ -313,11 +394,9 @@ fn autoregressive_decode(
     let cache_names: Vec<String> = (0..NUM_DECODER_LAYERS)
         .flat_map(|layer| {
             ["key", "value"].into_iter().flat_map(move |cache_type| {
-                ["self", "cross"]
-                    .into_iter()
-                    .map(move |attn_type| {
-                        format!("past_{cache_type}_{attn_type}_attention.{layer}")
-                    })
+                ["self", "cross"].into_iter().map(move |attn_type| {
+                    format!("past_{cache_type}_{attn_type}_attention.{layer}")
+                })
             })
         })
         .collect();
@@ -358,8 +437,9 @@ fn autoregressive_decode(
         } else {
             for name in &cache_names {
                 let cache = ndarray::Array4::<f32>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
-                let cache_value = Value::from_array(cache)
-                    .map_err(|e| TranscriptionError::transcription_failure("initial KV cache", &e))?;
+                let cache_value = Value::from_array(cache).map_err(|e| {
+                    TranscriptionError::transcription_failure("initial KV cache", &e)
+                })?;
                 inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
             }
         }
@@ -405,7 +485,7 @@ fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
     if dims.len() != 3 || dims[0] != 1 {
         return Err(TranscriptionError::transcription_failure(
             "logits shape",
-            &format!("expected [1, seq, vocab], got {dims:?}"),
+            format!("expected [1, seq, vocab], got {dims:?}"),
         ));
     }
 
@@ -414,7 +494,7 @@ fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
     if seq_len == 0 || vocab_size == 0 {
         return Err(TranscriptionError::transcription_failure(
             "logits shape",
-            &format!("degenerate: seq_len={seq_len}, vocab_size={vocab_size}"),
+            format!("degenerate: seq_len={seq_len}, vocab_size={vocab_size}"),
         ));
     }
 
@@ -497,23 +577,51 @@ mod tests {
     fn probe_rejects_missing_tokens() {
         let temp = temp_dir("probe-tokens");
         std::fs::write(temp.join("encoder_model_fp16.onnx"), b"fake").unwrap();
-        std::fs::write(temp.join(DECODER_FILENAME), b"fake").unwrap();
+        std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
 
         let error = CohereBackend::probe_model(&temp.join("encoder_model_fp16.onnx"))
-            .expect_err("should fail without tokens.txt");
+            .expect_err("should fail without tokenizer");
         assert!(error.details.unwrap().contains("tokenizer"));
 
         let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
-    fn probe_succeeds_with_all_files() {
-        let temp = temp_dir("probe-ok");
+    fn probe_succeeds_with_tokens_txt() {
+        let temp = temp_dir("probe-ok-tsv");
         std::fs::write(temp.join("encoder_model_fp16.onnx"), b"fake").unwrap();
-        std::fs::write(temp.join(DECODER_FILENAME), b"fake").unwrap();
-        std::fs::write(temp.join(TOKENS_FILENAME), b"0\thello").unwrap();
+        std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
+        std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
 
         assert!(CohereBackend::probe_model(&temp.join("encoder_model_fp16.onnx")).is_ok());
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn probe_succeeds_with_quantized_decoder() {
+        let temp = temp_dir("probe-ok-quant");
+        std::fs::write(temp.join("encoder_model_quantized.onnx"), b"fake").unwrap();
+        std::fs::write(temp.join("decoder_model_merged_quantized.onnx"), b"fake").unwrap();
+        std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
+
+        assert!(CohereBackend::probe_model(&temp.join("encoder_model_quantized.onnx")).is_ok());
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn probe_succeeds_with_tokenizer_json_in_parent() {
+        // Simulates the HuggingFace layout: onnx/ subdir with models,
+        // tokenizer.json at repo root (parent of onnx/).
+        let temp = temp_dir("probe-ok-json");
+        let onnx_dir = temp.join("onnx");
+        std::fs::create_dir_all(&onnx_dir).unwrap();
+        std::fs::write(onnx_dir.join("encoder_model_fp16.onnx"), b"fake").unwrap();
+        std::fs::write(onnx_dir.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
+        std::fs::write(temp.join("tokenizer.json"), b"{}").unwrap();
+
+        assert!(CohereBackend::probe_model(&onnx_dir.join("encoder_model_fp16.onnx")).is_ok());
 
         let _ = std::fs::remove_dir_all(&temp);
     }
@@ -577,6 +685,23 @@ mod tests {
         let temp = temp_dir("vocab-tab");
         let path = temp.join("tokens.txt");
         std::fs::write(&path, "0\thello\n1\t world\n").unwrap();
+
+        let vocab = load_vocab(&path).expect("should parse");
+        assert_eq!(vocab.get(&0), Some(&"hello".to_string()));
+        assert_eq!(vocab.get(&1), Some(&" world".to_string()));
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn load_vocab_parses_tokenizer_json() {
+        let temp = temp_dir("vocab-json");
+        let path = temp.join("tokenizer.json");
+        std::fs::write(
+            &path,
+            r#"{"model":{"vocab":{"hello":0," world":1}}}"#,
+        )
+        .unwrap();
 
         let vocab = load_vocab(&path).expect("should parse");
         assert_eq!(vocab.get(&0), Some(&"hello".to_string()));

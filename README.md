@@ -12,9 +12,16 @@ Local, private speech-to-text for Obsidian. Transcription runs entirely on your 
 - Optional GPU acceleration (CUDA on Linux/Windows, Metal on macOS)
 - Works entirely offline after initial model download
 
+## Design Principles
+
+- **Desktop-first** — built for Obsidian on desktop operating systems
+- **Privacy-first** — transcription stays on your machine; no accounts, no cloud, no telemetry
+- **English-first** — optimized for English; other languages supported where engines allow
+- **Offline after setup** — only model downloads require a network connection
+
 ## Quick Start
 
-1. Install the plugin from Obsidian's community plugins (or clone this repo into your vault's plugin directory). // TODO: FUTURE
+1. Clone this repo into `<vault>/.obsidian/plugins/obsidian-local-stt` and enable it in Obsidian's community plugins settings.
 2. Open `Settings -> Local STT`.
 3. Click `Browse models` and install a model — start with `Whisper Small English Q5_1` for a quick first test.
 4. Open a note, click the microphone ribbon button or run `Local STT: Start Dictation Session`.

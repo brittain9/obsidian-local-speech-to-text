@@ -230,34 +230,28 @@ export class LocalSttSettingTab extends PluginSettingTab {
       const info = await this.dependencies.sidecarConnection.getSystemInfo();
       gpuBackends = info.compiledBackends.filter((backend) => backend !== 'cpu');
     } catch {
-      // Sidecar may not be running yet; show the fallback dropdown without surfacing noise.
+      // Sidecar may not be running yet; show the fallback toggle without surfacing noise.
     }
 
     const settings = this.dependencies.getSettings();
-    const description =
-      gpuBackends.length > 0
-        ? 'Select the hardware accelerator for transcription.'
-        : 'Not available in this build. Rebuild the sidecar with a GPU feature flag to enable.';
+    const hasGpu = gpuBackends.length > 0;
+    const backendLabel = gpuBackends.map(formatBackendLabel).join(', ');
+    const description = hasGpu
+      ? `Use ${backendLabel} for transcription.`
+      : 'Not available in this build. Rebuild the sidecar with a GPU feature flag to enable.';
 
     containerEl.empty();
 
     new Setting(containerEl)
       .setName('Hardware acceleration')
       .setDesc(description)
-      .addDropdown((dropdown) => {
-        dropdown.addOption('off', 'None');
-
-        for (const backend of gpuBackends) {
-          dropdown.addOption(backend, formatBackendLabel(backend));
-        }
-
-        dropdown.setValue(
-          settings.useGpu && gpuBackends.length > 0 ? (gpuBackends[0] ?? 'off') : 'off',
-        );
-        dropdown.onChange(async (value) => {
+      .addToggle((toggle) => {
+        toggle.setValue(settings.useGpu && hasGpu);
+        toggle.setDisabled(!hasGpu);
+        toggle.onChange(async (value) => {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            useGpu: value !== 'off',
+            useGpu: value,
           });
         });
       });

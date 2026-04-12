@@ -11,8 +11,9 @@ import type {
 import { applyInstallUpdateToSnapshot, isTerminalInstallState } from './model-management-service';
 import {
   type CatalogModelRecord,
+  type EngineId,
   getEngineDisplayName,
-  getPrimaryArtifact,
+  getTotalModelSize,
 } from './model-management-types';
 
 interface ModelModalDependencies {
@@ -21,11 +22,14 @@ interface ModelModalDependencies {
 }
 
 export class ModelExplorerModal extends Modal {
+  private activeEngineId: EngineId | null = null;
   private listContainer: HTMLDivElement | null = null;
   private loadSequence = 0;
   private releaseInstallUpdateSubscription: (() => void) | null = null;
   private searchQuery = '';
   private snapshot: ModelManagementSnapshot | null = null;
+  private tabBarEl: HTMLDivElement | null = null;
+  private tabButtons: Map<EngineId, HTMLButtonElement> = new Map();
 
   constructor(
     app: App,
@@ -39,16 +43,18 @@ export class ModelExplorerModal extends Modal {
     this.titleEl.setText('Browse models');
     this.contentEl.empty();
 
-    new Setting(this.contentEl)
-      .setName('Search')
-      .setDesc('Filter the catalog by name, summary, notes, or tags.')
-      .addText((text) => {
-        text.setPlaceholder('Search models');
-        text.onChange((value) => {
-          this.searchQuery = value.trim().toLowerCase();
-          this.renderFromCache();
-        });
-      });
+    // Tab bar + search row
+    const toolbar = this.contentEl.createDiv({ cls: 'local-stt-toolbar' });
+    this.tabBarEl = toolbar.createDiv({ cls: 'local-stt-tab-bar' });
+    const searchWrapper = toolbar.createDiv({ cls: 'local-stt-search-wrapper' });
+    const searchInput = searchWrapper.createEl('input', {
+      cls: 'local-stt-search-input',
+      attr: { type: 'text', placeholder: 'Search\u2026', spellcheck: 'false' },
+    });
+    searchInput.addEventListener('input', () => {
+      this.searchQuery = searchInput.value.trim().toLowerCase();
+      this.renderFromCache();
+    });
 
     this.listContainer = this.contentEl.createDiv({ cls: 'local-stt-model-list' });
     this.releaseInstallUpdateSubscription = this.dependencies.service.subscribeToInstallUpdates(
@@ -70,6 +76,8 @@ export class ModelExplorerModal extends Modal {
     this.releaseInstallUpdateSubscription = null;
     this.listContainer = null;
     this.snapshot = null;
+    this.tabBarEl = null;
+    this.tabButtons.clear();
     this.contentEl.empty();
   }
 
@@ -90,6 +98,20 @@ export class ModelExplorerModal extends Modal {
       }
 
       this.snapshot = snapshot;
+
+      // Initialize active engine to first supported, preserving current tab across reloads
+      const supportedEngines = snapshot.catalog.engines.filter((e) =>
+        snapshot.supportedEngineIds.includes(e.engineId),
+      );
+
+      if (
+        this.activeEngineId === null ||
+        !supportedEngines.some((e) => e.engineId === this.activeEngineId)
+      ) {
+        this.activeEngineId = supportedEngines[0]?.engineId ?? null;
+      }
+
+      this.renderTabs();
       this.renderFromCache();
     } catch (error) {
       if (this.listContainer !== null && loadSequence === this.loadSequence) {
@@ -101,17 +123,65 @@ export class ModelExplorerModal extends Modal {
     }
   }
 
+  private renderTabs(): void {
+    if (this.snapshot === null || this.tabBarEl === null) {
+      return;
+    }
+
+    this.tabBarEl.empty();
+    this.tabButtons.clear();
+
+    const supportedEngines = this.snapshot.catalog.engines.filter((e) =>
+      this.snapshot!.supportedEngineIds.includes(e.engineId),
+    );
+
+    for (const engine of supportedEngines) {
+      const btn = this.tabBarEl.createEl('button', {
+        cls: 'local-stt-tab',
+        text: engine.displayName,
+      });
+
+      if (engine.engineId === this.activeEngineId) {
+        btn.addClass('local-stt-tab--active');
+      }
+
+      btn.addEventListener('click', () => {
+        this.activeEngineId = engine.engineId;
+        this.updateTabActiveStates();
+        this.renderFromCache();
+      });
+
+      this.tabButtons.set(engine.engineId, btn);
+    }
+  }
+
+  private updateTabActiveStates(): void {
+    for (const [engineId, btn] of this.tabButtons) {
+      btn.toggleClass('local-stt-tab--active', engineId === this.activeEngineId);
+    }
+  }
+
   private renderFromCache(): void {
-    if (this.listContainer === null || this.snapshot === null) {
+    if (this.listContainer === null || this.snapshot === null || this.activeEngineId === null) {
       return;
     }
 
     this.listContainer.empty();
 
-    const matchingRows = this.snapshot.rows.filter((row) => matchesQuery(row, this.searchQuery));
+    const engineRows = this.snapshot.rows.filter(
+      (row) => row.model.engineId === this.activeEngineId,
+    );
+    const matchingRows = engineRows.filter((row) => matchesQuery(row, this.searchQuery));
 
     if (matchingRows.length === 0) {
-      this.listContainer.createEl('p', { text: 'No catalog models matched the current search.' });
+      const message =
+        this.searchQuery.length > 0
+          ? 'No models matched the current search.'
+          : 'No models available for this engine.';
+      this.listContainer.createEl('p', {
+        cls: 'local-stt-empty-state',
+        text: message,
+      });
       return;
     }
 
@@ -121,43 +191,44 @@ export class ModelExplorerModal extends Modal {
   }
 
   private renderRow(row: CatalogExplorerRowState): void {
-    const rowEl = this.listContainer?.createDiv({ cls: 'local-stt-model-row' });
-
-    if (rowEl === undefined || rowEl === null) {
+    if (this.listContainer === null) {
       return;
     }
 
-    // Header: name (left) + size (right)
-    const header = rowEl.createDiv({ cls: 'local-stt-row-header' });
-    header.createEl('strong', { text: row.model.displayName });
-    const primaryArtifact = getPrimaryArtifact(row.model);
-    if (primaryArtifact !== null) {
-      header.createSpan({
-        cls: 'local-stt-row-size',
-        text: formatBytes(primaryArtifact.sizeBytes),
-      });
-    }
+    const setting = new Setting(this.listContainer);
+    setting.settingEl.addClass('local-stt-model-row');
 
-    // Summary
-    rowEl.createEl('p', { cls: 'local-stt-row-summary', text: row.model.summary });
+    // Name
+    setting.setName(row.model.displayName);
 
-    // Tags
-    if (row.model.uxTags.length > 0) {
-      const tagsEl = rowEl.createDiv({ cls: 'local-stt-tags' });
+    // Description: tags + size pill, or install progress
+    if (row.installUpdate !== null) {
+      setting.setDesc(formatInstallProgress(row.installUpdate));
+    } else {
+      const frag = document.createDocumentFragment();
+      const tagsContainer = frag.createEl('span', { cls: 'local-stt-tags' });
+
       for (const tag of row.model.uxTags) {
-        tagsEl.createSpan({
+        tagsContainer.createEl('span', {
           cls: tag === 'recommended' ? 'local-stt-tag local-stt-tag--recommended' : 'local-stt-tag',
           text: tag,
         });
       }
+
+      const totalSize = getTotalModelSize(row.model);
+      if (totalSize > 0) {
+        tagsContainer.createEl('span', {
+          cls: 'local-stt-tag local-stt-tag--size',
+          text: formatBytes(totalSize),
+        });
+      }
+
+      setting.setDesc(frag);
     }
 
-    // Actions — single Setting row
-    const actionSetting = new Setting(rowEl);
-
+    // Action buttons
     if (row.installUpdate !== null) {
-      actionSetting.setDesc(formatInstallProgress(row.installUpdate));
-      actionSetting.addButton((button) => {
+      setting.addButton((button) => {
         button
           .setCta()
           .setButtonText('Cancel')
@@ -166,7 +237,7 @@ export class ModelExplorerModal extends Modal {
           });
       });
     } else if (row.installedModel !== null) {
-      actionSetting.addButton((button) => {
+      setting.addButton((button) => {
         button.setButtonText(row.isSelected ? 'Selected' : 'Use').setDisabled(row.isSelected);
         if (!row.isSelected) {
           button.setCta();
@@ -185,7 +256,7 @@ export class ModelExplorerModal extends Modal {
           }
         });
       });
-      actionSetting.addButton((button) => {
+      setting.addButton((button) => {
         button
           .setWarning()
           .setButtonText('Remove')
@@ -200,7 +271,7 @@ export class ModelExplorerModal extends Modal {
           });
       });
     } else {
-      actionSetting.addButton((button) => {
+      setting.addButton((button) => {
         button
           .setCta()
           .setButtonText('Install')
@@ -216,7 +287,8 @@ export class ModelExplorerModal extends Modal {
       });
     }
 
-    actionSetting.addExtraButton((button) => {
+    // Info button
+    setting.addExtraButton((button) => {
       button
         .setIcon('info')
         .setTooltip('Details')
@@ -303,8 +375,6 @@ class ModelDetailsModal extends Modal {
   }
 
   override onOpen(): void {
-    const primaryArtifact = getPrimaryArtifact(this.model);
-
     this.titleEl.setText(this.model.displayName);
     this.contentEl.empty();
     this.contentEl.createEl('p', { text: this.model.summary });
@@ -314,24 +384,17 @@ class ModelDetailsModal extends Modal {
     dl.createEl('dt', { text: 'Engine' });
     dl.createEl('dd', { text: getEngineDisplayName(this.model.engineId) });
 
+    const totalSize = getTotalModelSize(this.model);
+    if (totalSize > 0) {
+      dl.createEl('dt', { text: 'Total size' });
+      dl.createEl('dd', { text: formatBytes(totalSize) });
+    }
+
     dl.createEl('dt', { text: 'Source' });
     dl.createEl('dd', { text: this.model.sourceUrl, cls: 'local-stt-mono' });
 
     dl.createEl('dt', { text: 'License' });
     dl.createEl('dd', { text: `${this.model.licenseLabel} (${this.model.licenseUrl})` });
-
-    if (primaryArtifact !== null) {
-      dl.createEl('dt', { text: 'Artifact' });
-      dl.createEl('dd', {
-        text: `${primaryArtifact.filename} (${formatBytes(primaryArtifact.sizeBytes)})`,
-      });
-
-      dl.createEl('dt', { text: 'SHA-256' });
-      dl.createEl('dd', { text: primaryArtifact.sha256, cls: 'local-stt-mono' });
-
-      dl.createEl('dt', { text: 'Download URL' });
-      dl.createEl('dd', { text: primaryArtifact.downloadUrl, cls: 'local-stt-mono' });
-    }
 
     if (this.installPath !== null) {
       dl.createEl('dt', { text: 'Install path' });
@@ -342,6 +405,42 @@ class ModelDetailsModal extends Modal {
       dl.createEl('dt', { text: 'Notes' });
       dl.createEl('dd', { text: this.model.notes.join(' ') });
     }
+
+    // Artifact table — all files, not just primary
+    if (this.model.artifacts.length > 0) {
+      this.contentEl.createEl('h4', {
+        text: `Files (${this.model.artifacts.length})`,
+        cls: 'local-stt-details-section-heading',
+      });
+
+      const table = this.contentEl.createEl('table', { cls: 'local-stt-artifact-table' });
+      const thead = table.createEl('thead');
+      const headerRow = thead.createEl('tr');
+      headerRow.createEl('th', { text: 'File' });
+      headerRow.createEl('th', { text: 'Size' });
+      headerRow.createEl('th', { text: 'Role' });
+
+      const tbody = table.createEl('tbody');
+      for (const artifact of this.model.artifacts) {
+        const tr = tbody.createEl('tr');
+        tr.createEl('td', { text: artifact.filename, cls: 'local-stt-mono' });
+        tr.createEl('td', { text: formatBytes(artifact.sizeBytes) });
+        tr.createEl('td', { text: formatArtifactRole(artifact.role) });
+      }
+    }
+  }
+}
+
+function formatArtifactRole(role: string): string {
+  switch (role) {
+    case 'transcription_model':
+      return 'Model';
+    case 'supporting_file':
+      return 'Supporting';
+    case 'punctuation_model':
+      return 'Punctuation';
+    default:
+      return role;
   }
 }
 

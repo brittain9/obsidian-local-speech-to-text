@@ -8,7 +8,7 @@ use crate::model_store::{
 };
 use crate::protocol::{
     Command, EngineId, Event, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
-    SessionState, SessionStopReason, compiled_backends, system_info_string,
+    SessionState, SessionStopReason, compiled_backends, compiled_engines, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
@@ -292,6 +292,7 @@ impl AppState {
             Command::GetSystemInfo => {
                 events.push(Event::SystemInfo {
                     compiled_backends: compiled_backends(),
+                    compiled_engines: compiled_engines(),
                     system_info: system_info_string(),
                 });
 
@@ -950,9 +951,11 @@ mod tests {
         match &events[0] {
             Event::SystemInfo {
                 compiled_backends,
+                compiled_engines,
                 system_info,
             } => {
                 assert!(compiled_backends.contains(&"cpu".to_string()));
+                assert!(compiled_engines.contains(&"whisper_cpp".to_string()));
                 assert!(!system_info.is_empty());
             }
             other => panic!("expected SystemInfo event, got {other:?}"),

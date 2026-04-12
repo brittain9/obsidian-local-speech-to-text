@@ -270,6 +270,8 @@ pub enum Event {
     SystemInfo {
         #[serde(rename = "compiledBackends")]
         compiled_backends: Vec<String>,
+        #[serde(rename = "compiledEngines")]
+        compiled_engines: Vec<String>,
         #[serde(rename = "systemInfo")]
         system_info: String,
     },
@@ -396,6 +398,8 @@ pub fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> 
     Ok(())
 }
 
+/// Hardware acceleration backends (CPU is always present; GPU entries are
+/// compile-time features).  This list drives the settings-tab GPU toggle.
 pub fn compiled_backends() -> Vec<String> {
     #[allow(unused_mut)]
     let mut backends = vec!["cpu".to_string()];
@@ -406,13 +410,22 @@ pub fn compiled_backends() -> Vec<String> {
     #[cfg(feature = "gpu-cuda")]
     backends.push("cuda".to_string());
 
-    #[cfg(feature = "engine-cohere")]
-    backends.push("cohere-onnx".to_string());
-
     #[cfg(feature = "gpu-ort-cuda")]
     backends.push("ort-cuda".to_string());
 
     backends
+}
+
+/// Inference engines compiled into this build.  whisper_cpp is always
+/// present; additional engines are gated on compile-time features.
+pub fn compiled_engines() -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut engines = vec!["whisper_cpp".to_string()];
+
+    #[cfg(feature = "engine-cohere")]
+    engines.push("cohere_onnx".to_string());
+
+    engines
 }
 
 /// Collect system info from all compiled engines into a single string.
@@ -448,7 +461,8 @@ mod tests {
     use super::{
         AUDIO_FRAME_KIND, Command, EngineId, Event, EventEnvelope, FRAME_HEADER_LENGTH,
         IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME, PROTOCOL_VERSION,
-        SelectedModel, compiled_backends, read_frame, write_event_frame, write_frame,
+        SelectedModel, compiled_backends, compiled_engines, read_frame, write_event_frame,
+        write_frame,
     };
 
     #[test]
@@ -553,6 +567,7 @@ mod tests {
     fn system_info_event_round_trip() {
         let event = Event::SystemInfo {
             compiled_backends: compiled_backends(),
+            compiled_engines: compiled_engines(),
             system_info: "AVX = 1 | NEON = 0 | CUDA = 0".to_string(),
         };
         let mut framed = Vec::new();

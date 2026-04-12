@@ -62,6 +62,7 @@ describe('sidecar protocol', () => {
     const parser = new FramedMessageParser(parseEventFrame);
     const frame = encodeJsonFrame({
       compiledBackends: ['cpu', 'cuda'],
+      compiledEngines: ['whisper_cpp', 'cohere_onnx'],
       protocolVersion: SIDECAR_PROTOCOL_VERSION,
       systemInfo: 'AVX = 1 | CUDA = 1',
       type: 'system_info',
@@ -72,6 +73,7 @@ describe('sidecar protocol', () => {
     expect(parsed[0]).toEqual({
       envelope: {
         compiledBackends: ['cpu', 'cuda'],
+        compiledEngines: ['whisper_cpp', 'cohere_onnx'],
         protocolVersion: SIDECAR_PROTOCOL_VERSION,
         systemInfo: 'AVX = 1 | CUDA = 1',
         type: 'system_info',

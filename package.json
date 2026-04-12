@@ -12,8 +12,8 @@
     "npm": "11.12.x"
   },
   "scripts": {
-    "build:sidecar": "cargo build --manifest-path native/sidecar/Cargo.toml",
-    "build:sidecar:gpu": "cargo build --manifest-path native/sidecar/Cargo.toml --features gpu-cuda",
+    "build:sidecar": "cargo build --manifest-path native/sidecar/Cargo.toml --features engine-cohere",
+    "build:sidecar:gpu": "cargo build --manifest-path native/sidecar/Cargo.toml --features engine-cohere,gpu-cuda",
     "build": "npm run build:sidecar && node esbuild.config.mjs production && node scripts/verify-build-output.mjs",
     "dev": "node esbuild.config.mjs watch",
     "typecheck": "tsc --project tsconfig.json --noEmit",
@@ -22,7 +22,7 @@
     "test": "vitest run",
     "verify:build-output": "node scripts/verify-build-output.mjs",
     "check:js": "npm run typecheck && npm run lint && npm run test && npm run build",
-    "check:rust": "npm run build:sidecar && cargo fmt --manifest-path native/sidecar/Cargo.toml --check && DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1 cargo clippy --manifest-path native/sidecar/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path native/sidecar/Cargo.toml",
+    "check:rust": "npm run build:sidecar && cargo fmt --manifest-path native/sidecar/Cargo.toml --check && DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1 cargo clippy --manifest-path native/sidecar/Cargo.toml --all-targets --features engine-cohere -- -D warnings && cargo test --manifest-path native/sidecar/Cargo.toml --features engine-cohere",
     "check": "npm run check:js && npm run check:rust"
   },
   "devDependencies": {

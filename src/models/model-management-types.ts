@@ -130,7 +130,7 @@ export function getEngineDisplayName(engineId: EngineId): string {
     case 'cohere_onnx':
       return 'Cohere Transcribe';
     case 'whisper_cpp':
-      return 'Whisper.cpp';
+      return 'Whisper';
   }
 }
 
@@ -174,6 +174,10 @@ export function normalizeSelectedModel(value: SelectedModel): SelectedModel {
     filePath: value.filePath.trim(),
     kind: value.kind,
   };
+}
+
+export function getTotalModelSize(model: CatalogModelRecord): number {
+  return model.artifacts.reduce((sum, a) => sum + a.sizeBytes, 0);
 }
 
 export function getPrimaryArtifact(model: CatalogModelRecord): ModelArtifactRecord | null {

@@ -130,6 +130,7 @@ export interface HealthOkEvent extends EnvelopeBase<'health_ok'> {
 
 export interface SystemInfoEvent extends EnvelopeBase<'system_info'> {
   compiledBackends: string[];
+  compiledEngines: string[];
   systemInfo: string;
 }
 
@@ -457,6 +458,7 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
     case 'system_info':
       return {
         compiledBackends: readStringArray(parsedValue.compiledBackends, 'event.compiledBackends'),
+        compiledEngines: readStringArray(parsedValue.compiledEngines, 'event.compiledEngines'),
         protocolVersion,
         systemInfo: readString(parsedValue.systemInfo, 'event.systemInfo'),
         type,
@@ -815,7 +817,11 @@ function readModelArtifacts(value: unknown, fieldName: string): CatalogModelReco
     const record = readRecord(artifact, `${fieldName}[${index}]`);
     const role = readString(record.role, `${fieldName}[${index}].role`);
 
-    if (role !== 'punctuation_model' && role !== 'transcription_model') {
+    if (
+      role !== 'punctuation_model' &&
+      role !== 'supporting_file' &&
+      role !== 'transcription_model'
+    ) {
       throw new Error(`Unsupported model artifact role: ${role}`);
     }
 

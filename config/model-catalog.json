@@ -3,8 +3,13 @@
   "engines": [
     {
       "engineId": "whisper_cpp",
-      "displayName": "Whisper.cpp",
+      "displayName": "Whisper",
       "summary": "Local CPU speech-to-text with whisper.cpp-compatible GGML model files."
+    },
+    {
+      "engineId": "cohere_onnx",
+      "displayName": "Cohere Transcribe",
+      "summary": "High-accuracy ONNX speech-to-text with Cohere Transcribe (2B parameters, 14 languages)."
     }
   ],
   "collections": [
@@ -12,6 +17,11 @@
       "collectionId": "english_cpu_first",
       "displayName": "English CPU First",
       "summary": "Recommended English-first CPU models for the current desktop dictation scope."
+    },
+    {
+      "collectionId": "cohere_transcribe",
+      "displayName": "Cohere Transcribe",
+      "summary": "Cohere Transcribe ONNX models in three quality tiers."
     }
   ],
   "models": [
@@ -162,6 +172,267 @@
           "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q8_0.bin?download=true",
           "sha256": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
           "sizeBytes": 874188075
+        }
+      ]
+    },
+    {
+      "engineId": "cohere_onnx",
+      "modelId": "cohere_transcribe_fp16",
+      "collectionId": "cohere_transcribe",
+      "displayName": "Cohere Transcribe FP16",
+      "summary": "Full-precision model with the highest accuracy. Recommended for users with sufficient RAM and storage.",
+      "languageTags": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "nl",
+        "ja",
+        "ko",
+        "zh",
+        "ru",
+        "pl",
+        "tr",
+        "sv"
+      ],
+      "uxTags": ["recommended", "accuracy"],
+      "capabilityFlags": ["dictation"],
+      "recommended": true,
+      "licenseLabel": "Apache-2.0",
+      "licenseUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026/blob/main/LICENSE",
+      "sourceUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX",
+      "modelCardUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026",
+      "notes": [
+        "Leads the HuggingFace Open ASR Leaderboard at 5.42% average WER.",
+        "FP16 is effectively lossless for inference and half the size of FP32."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "encoder",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "onnx/encoder_model_fp16.onnx",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_fp16.onnx",
+          "sha256": "155046e82c022bb37a43ca13c0d7837bc0fd046b152d578d8312fc1e10567e8a",
+          "sizeBytes": 1192583
+        },
+        {
+          "artifactId": "encoder_data_0",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/encoder_model_fp16.onnx_data",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_fp16.onnx_data",
+          "sha256": "7c309fd84aca668770dbf8e0370ca3b0e523ac915b368d7dea284702cd3847cd",
+          "sizeBytes": 2094166528
+        },
+        {
+          "artifactId": "encoder_data_1",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/encoder_model_fp16.onnx_data_1",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_fp16.onnx_data_1",
+          "sha256": "772b2bbf50fdfc248df832333f06e22fc6f9d41316abbea72b82526f72a6050f",
+          "sizeBytes": 1698889728
+        },
+        {
+          "artifactId": "decoder",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/decoder_model_merged_fp16.onnx",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/decoder_model_merged_fp16.onnx",
+          "sha256": "88e272acb7b436e7ed01c43c2c4d63a5d93f1c3d324fff6329b4c6538743563f",
+          "sizeBytes": 155297
+        },
+        {
+          "artifactId": "decoder_data",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/decoder_model_merged_fp16.onnx_data",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/decoder_model_merged_fp16.onnx_data",
+          "sha256": "4aead3d7d2a04a84001690d992945bba8b45a1082db6b0812c3f352189323e29",
+          "sizeBytes": 337993728
+        },
+        {
+          "artifactId": "tokenizer",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "tokenizer.json",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/tokenizer.json",
+          "sha256": "e263c0ba13be0f0803705b002756908f84efc6e75a4c273231a01c4371908a2b",
+          "sizeBytes": 1152395
+        }
+      ]
+    },
+    {
+      "engineId": "cohere_onnx",
+      "modelId": "cohere_transcribe_int8",
+      "collectionId": "cohere_transcribe",
+      "displayName": "Cohere Transcribe INT8",
+      "summary": "Balanced quantized model offering near-full accuracy at reduced size and memory use.",
+      "languageTags": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "nl",
+        "ja",
+        "ko",
+        "zh",
+        "ru",
+        "pl",
+        "tr",
+        "sv"
+      ],
+      "uxTags": ["balanced"],
+      "capabilityFlags": ["dictation"],
+      "recommended": false,
+      "licenseLabel": "Apache-2.0",
+      "licenseUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026/blob/main/LICENSE",
+      "sourceUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX",
+      "modelCardUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026",
+      "notes": [
+        "INT8 quantization with minimal accuracy loss compared to FP16.",
+        "Good choice when storage or memory is a concern."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "encoder",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "onnx/encoder_model_quantized.onnx",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_quantized.onnx",
+          "sha256": "9e7e59a14821e5a08c71b0d849a956b6375007a5f0be795c448499b0328d7923",
+          "sizeBytes": 1420203
+        },
+        {
+          "artifactId": "encoder_data_0",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/encoder_model_quantized.onnx_data",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_quantized.onnx_data",
+          "sha256": "8733a14ed4e365cacaa8f1af8764e31b7f728fc4db79d8e8d4836e59d396ccea",
+          "sizeBytes": 2096573952
+        },
+        {
+          "artifactId": "encoder_data_1",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/encoder_model_quantized.onnx_data_1",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_quantized.onnx_data_1",
+          "sha256": "a86b005d5c77583389f0f0dcf558ebe4ed615fad96f3473303eaaf7d9990a7ae",
+          "sizeBytes": 774430720
+        },
+        {
+          "artifactId": "decoder",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/decoder_model_merged_quantized.onnx",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/decoder_model_merged_quantized.onnx",
+          "sha256": "e9916f9a7ec732fd2181157e7899950d895ecf21867cea1aa0e8fff13a85fd53",
+          "sizeBytes": 196039
+        },
+        {
+          "artifactId": "decoder_data",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/decoder_model_merged_quantized.onnx_data",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/decoder_model_merged_quantized.onnx_data",
+          "sha256": "84d949b4b89d2b2b4e9ba201b28344f2c517fe03bd50a6b92be1756942f9d40b",
+          "sizeBytes": 195903488
+        },
+        {
+          "artifactId": "tokenizer",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "tokenizer.json",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/tokenizer.json",
+          "sha256": "e263c0ba13be0f0803705b002756908f84efc6e75a4c273231a01c4371908a2b",
+          "sizeBytes": 1152395
+        }
+      ]
+    },
+    {
+      "engineId": "cohere_onnx",
+      "modelId": "cohere_transcribe_q4",
+      "collectionId": "cohere_transcribe",
+      "displayName": "Cohere Transcribe Q4",
+      "summary": "Compact 4-bit quantized model for constrained storage or memory environments.",
+      "languageTags": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "nl",
+        "ja",
+        "ko",
+        "zh",
+        "ru",
+        "pl",
+        "tr",
+        "sv"
+      ],
+      "uxTags": ["compact", "lightweight"],
+      "capabilityFlags": ["dictation"],
+      "recommended": false,
+      "licenseLabel": "Apache-2.0",
+      "licenseUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026/blob/main/LICENSE",
+      "sourceUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX",
+      "modelCardUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026",
+      "notes": [
+        "Aggressive 4-bit quantization trades some accuracy for the smallest download.",
+        "Best for trying Cohere Transcribe on space-constrained systems."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "encoder",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "onnx/encoder_model_q4.onnx",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_q4.onnx",
+          "sha256": "de0f7e2c5f4c2e46e3704704a3cb41153ed45f5af07530b4b1d34f895c36db4b",
+          "sizeBytes": 1400792
+        },
+        {
+          "artifactId": "encoder_data",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/encoder_model_q4.onnx_data",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/encoder_model_q4.onnx_data",
+          "sha256": "c5c668cc8c5951c789893ad25b06c654fc7cced7fb0989ad7ef0fb44a0554ee6",
+          "sizeBytes": 2016067072
+        },
+        {
+          "artifactId": "decoder",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/decoder_model_merged_q4.onnx",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/decoder_model_merged_q4.onnx",
+          "sha256": "a565cdfa7ad3e12e1149e8cdcf519ade36f9e76c43038471c876c25893f8f8bf",
+          "sizeBytes": 193099
+        },
+        {
+          "artifactId": "decoder_data",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "onnx/decoder_model_merged_q4.onnx_data",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/onnx/decoder_model_merged_q4.onnx_data",
+          "sha256": "9223643714186378c6aa0c95439d74298ed25d40b43b6737c55c016055ceb1ee",
+          "sizeBytes": 108855296
+        },
+        {
+          "artifactId": "tokenizer",
+          "role": "supporting_file",
+          "required": true,
+          "filename": "tokenizer.json",
+          "downloadUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX/resolve/main/tokenizer.json",
+          "sha256": "e263c0ba13be0f0803705b002756908f84efc6e75a4c273231a01c4371908a2b",
+          "sizeBytes": 1152395
         }
       ]
     }

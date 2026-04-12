@@ -8,6 +8,7 @@ import {
 } from '../src/models/model-management-service';
 import type {
   CatalogModelRecord,
+  EngineId,
   InstalledModelRecord,
   ModelCatalogRecord,
   ModelInstallUpdateRecord,
@@ -64,13 +65,13 @@ describe('model management snapshot builders', () => {
 
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.model.modelId)).toEqual([
-      'whisper_small_en_q5_1',
       'whisper_large_v3_turbo_q8_0',
+      'whisper_small_en_q5_1',
     ]);
-    expect(firstRow?.isSelected).toBe(true);
-    expect(firstRow?.installedModel?.modelId).toBe('whisper_small_en_q5_1');
-    expect(firstRow?.installUpdate).toBeNull();
-    expect(secondRow?.installUpdate?.installId).toBe('install-1');
+    expect(firstRow?.installUpdate?.installId).toBe('install-1');
+    expect(secondRow?.isSelected).toBe(true);
+    expect(secondRow?.installedModel?.modelId).toBe('whisper_small_en_q5_1');
+    expect(secondRow?.installUpdate).toBeNull();
   });
 
   it('builds a managed-model card from catalog metadata when the install is missing', () => {
@@ -96,7 +97,7 @@ describe('model management snapshot builders', () => {
     const card = buildCurrentModelCardState(currentSelection, sampleCatalog(), [], probeResult);
 
     expect(card.displayName).toBe('Whisper Small English Q5_1');
-    expect(card.engineLabel).toBe('Whisper.cpp');
+    expect(card.engineLabel).toBe('Whisper');
     expect(card.installedLabel).toBe('Not installed');
     expect(card.sizeBytes).toBe(100);
     expect(card.sourceLabel).toBe('Managed download');
@@ -161,6 +162,7 @@ describe('model management snapshot builders', () => {
         usingDefaultPath: true,
       },
       rows: buildCatalogExplorerRows(catalog, [], currentSelection, activeInstall),
+      supportedEngineIds: ['whisper_cpp'] as EngineId[],
     };
 
     const nextSnapshot = applyInstallUpdateToSnapshot(snapshot, {
@@ -229,7 +231,7 @@ function sampleCatalog(): ModelCatalogRecord {
     ],
     engines: [
       {
-        displayName: 'Whisper.cpp',
+        displayName: 'Whisper',
         engineId: 'whisper_cpp',
         summary: 'summary',
       },

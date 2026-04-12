@@ -13,9 +13,11 @@ import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import {
   type CatalogModelRecord,
   type CatalogModelSelection,
+  type EngineId,
   getEngineDisplayName,
-  getPrimaryArtifact,
+  getTotalModelSize,
   type InstalledModelRecord,
+  isEngineId,
   type ModelCatalogRecord,
   type ModelInstallUpdateRecord,
   type ModelProbeResultRecord,
@@ -33,6 +35,7 @@ interface ModelManagementServiceDependencies {
     SidecarConnection,
     | 'cancelModelInstall'
     | 'getModelStore'
+    | 'getSystemInfo'
     | 'installModel'
     | 'listInstalledModels'
     | 'listModelCatalog'
@@ -68,6 +71,7 @@ export interface ModelManagementSnapshot {
   installedModels: InstalledModelRecord[];
   modelStore: ModelStoreRecord;
   rows: CatalogExplorerRowState[];
+  supportedEngineIds: EngineId[];
 }
 
 export class ModelManagementService {
@@ -119,12 +123,14 @@ export class ModelManagementService {
     const settings = this.dependencies.getSettings();
     const modelStorePathOverride =
       settings.modelStorePathOverride.length > 0 ? settings.modelStorePathOverride : undefined;
-    const [catalogEvent, installedEvent, modelStoreEvent, probeResult] = await Promise.all([
-      this.dependencies.sidecarConnection.listModelCatalog(),
-      this.dependencies.sidecarConnection.listInstalledModels(modelStorePathOverride),
-      this.dependencies.sidecarConnection.getModelStore(modelStorePathOverride),
-      this.probeCurrentSelection(settings.selectedModel, modelStorePathOverride),
-    ]);
+    const [catalogEvent, installedEvent, modelStoreEvent, probeResult, supportedEngineIds] =
+      await Promise.all([
+        this.dependencies.sidecarConnection.listModelCatalog(),
+        this.dependencies.sidecarConnection.listInstalledModels(modelStorePathOverride),
+        this.dependencies.sidecarConnection.getModelStore(modelStorePathOverride),
+        this.probeCurrentSelection(settings.selectedModel, modelStorePathOverride),
+        this.fetchSupportedEngineIds(),
+      ]);
 
     return buildModelManagementSnapshot({
       activeInstall: this.activeInstall,
@@ -133,6 +139,7 @@ export class ModelManagementService {
       installedModels: installedEvent.models,
       modelStore: modelStoreEvent,
       probeResult,
+      supportedEngineIds,
     });
   }
 
@@ -237,6 +244,15 @@ export class ModelManagementService {
     });
   }
 
+  private async fetchSupportedEngineIds(): Promise<EngineId[]> {
+    try {
+      const info = await this.dependencies.sidecarConnection.getSystemInfo();
+      return info.compiledEngines.filter(isEngineId);
+    } catch {
+      return ['whisper_cpp'];
+    }
+  }
+
   private async updateSettings(patch: Partial<PluginSettings>): Promise<void> {
     await this.dependencies.saveSettings({
       ...this.dependencies.getSettings(),
@@ -252,6 +268,7 @@ export function buildModelManagementSnapshot(input: {
   installedModels: InstalledModelsEvent['models'];
   modelStore: ModelStoreEvent;
   probeResult: ModelProbeResultRecord | null;
+  supportedEngineIds: EngineId[];
 }): ModelManagementSnapshot {
   return {
     activeInstall: input.activeInstall,
@@ -271,6 +288,7 @@ export function buildModelManagementSnapshot(input: {
       input.currentSelection,
       input.activeInstall,
     ),
+    supportedEngineIds: input.supportedEngineIds,
   };
 }
 
@@ -389,7 +407,7 @@ export function buildCurrentModelCardState(
   const sizeBytes =
     probeResult?.sizeBytes ??
     installedModel?.totalSizeBytes ??
-    (catalogEntry !== null ? (getPrimaryArtifact(catalogEntry)?.sizeBytes ?? null) : null);
+    (catalogEntry !== null ? getTotalModelSize(catalogEntry) : null);
 
   return {
     detail: probeResult?.message ?? defaultSelectionDetail(currentSelection),
@@ -403,12 +421,9 @@ export function buildCurrentModelCardState(
   };
 }
 
-function compareCatalogModels(left: CatalogModelRecord, right: CatalogModelRecord): number {
-  if (left.recommended !== right.recommended) {
-    return left.recommended ? -1 : 1;
-  }
 
-  return left.displayName.localeCompare(right.displayName);
+function compareCatalogModels(left: CatalogModelRecord, right: CatalogModelRecord): number {
+  return getTotalModelSize(right) - getTotalModelSize(left);
 }
 
 function createModelStoreOverridePayload(modelStorePathOverride: string | undefined): {
