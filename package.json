@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build:sidecar": "cargo build --manifest-path native/sidecar/Cargo.toml --features engine-cohere",
-    "build:sidecar:gpu": "cargo build --manifest-path native/sidecar/Cargo.toml --features engine-cohere,gpu-cuda",
+    "build:sidecar:gpu": "cargo build --manifest-path native/sidecar/Cargo.toml --features engine-cohere,gpu-cuda,gpu-ort-cuda",
     "build": "npm run build:sidecar && node esbuild.config.mjs production && node scripts/verify-build-output.mjs",
     "dev": "node esbuild.config.mjs watch",
     "typecheck": "tsc --project tsconfig.json --noEmit",

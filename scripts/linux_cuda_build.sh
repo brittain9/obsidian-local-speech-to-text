@@ -165,6 +165,7 @@ run_build() {
 cpu_args=(
   build
   --manifest-path "$SIDECAR_MANIFEST"
+  --features engine-cohere
   -j "$jobs"
 )
 
@@ -172,7 +173,7 @@ cuda_args=(
   build
   --manifest-path "$SIDECAR_MANIFEST"
   --target-dir "$cuda_target_dir"
-  --features gpu-cuda
+  --features engine-cohere,gpu-cuda,gpu-ort-cuda
   -j "$jobs"
   --config "$host_linker_config"
   --config "$host_rustflags_config"

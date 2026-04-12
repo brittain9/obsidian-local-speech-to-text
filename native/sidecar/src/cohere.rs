@@ -17,13 +17,19 @@ const MAX_SEQ_LEN: usize = 1024;
 const MAX_AUDIO_DURATION_SECS: f32 = 35.0;
 const SAMPLE_RATE: usize = 16_000;
 
-// Special token IDs (from the Cohere Transcribe tokenizer).
-const TOKEN_START_OF_CONTEXT: i64 = 16384;
-const TOKEN_START_OF_TRANSCRIPT: i64 = 16385;
-const TOKEN_END_OF_TRANSCRIPT: i64 = 16386;
-const TOKEN_PNC_ON: i64 = 16389;
-const TOKEN_ITN_ON: i64 = 16391;
-const TOKEN_LANG_EN: i64 = 16393;
+// Special token IDs (verified against tokenizer.json added_tokens and
+// processing_cohere_asr.py).  IDs 0-254 are special/control tokens;
+// BPE text tokens start at 255.
+const TOKEN_DECODER_START: i64 = 13764; // ▁ (decoder_start_token_id)
+const TOKEN_START_OF_CONTEXT: i64 = 7; // <|startofcontext|>
+const TOKEN_START_OF_TRANSCRIPT: i64 = 4; // <|startoftranscript|>
+const TOKEN_END_OF_TRANSCRIPT: i64 = 3; // <|endoftext|>
+const TOKEN_EMO_UNDEFINED: i64 = 16; // <|emo:undefined|>
+const TOKEN_PNC_ON: i64 = 5; // <|pnc|>
+const TOKEN_NO_ITN: i64 = 9; // <|noitn|>
+const TOKEN_NO_TIMESTAMP: i64 = 11; // <|notimestamp|>
+const TOKEN_NO_DIARIZE: i64 = 13; // <|nodiarize|>
+const TOKEN_LANG_EN: i64 = 62; // <|en|>
 
 /// Sibling filenames derived from the primary artifact path.
 /// `tokens.txt` is retained as a candidate for backward compatibility with
@@ -44,6 +50,7 @@ struct LoadedCohereModel {
     decoder: Session,
     encoder: Session,
     gpu_config: GpuConfig,
+    mel_extractor: crate::mel::MelFeatureExtractor,
     model_dir: PathBuf,
     vocab: HashMap<u32, String>,
 }
@@ -60,18 +67,16 @@ impl TranscriptionBackend for CohereBackend {
         self.ensure_loaded(&request.model_file_path, request.gpu_config)?;
         let model = self.loaded.as_mut().unwrap();
 
-        // --- Encoder: raw audio → hidden states ---
-        let encoder_input = ndarray::Array2::from_shape_vec(
-            (1, request.audio_samples.len()),
-            request.audio_samples.clone(),
-        )
-        .map_err(|e| TranscriptionError::transcription_failure("encoder input shape", &e))?;
+        // --- Feature extraction: raw audio → mel spectrogram [1, T, 128] ---
+        let mel = model.mel_extractor.extract(&request.audio_samples);
+        let features_value = Value::from_array(mel.features)
+            .map_err(|e| TranscriptionError::transcription_failure("encoder features", &e))?;
 
-        let input_value = Value::from_array(encoder_input)
-            .map_err(|e| TranscriptionError::transcription_failure("encoder input", &e))?;
+        // --- Encoder: mel features → hidden states ---
+        // Encoder input: input_features f32 [batch, seq_len, 128]
         let encoder_outputs = model
             .encoder
-            .run(ort::inputs![input_value])
+            .run(ort::inputs!["input_features" => features_value])
             .map_err(|e| TranscriptionError::transcription_failure("encoder forward pass", &e))?;
 
         let (_, encoder_hidden) = encoder_outputs.into_iter().next().ok_or_else(|| {
@@ -164,11 +169,13 @@ fn load_cohere_model(
     let encoder = build_session(&encoder_path, gpu_config)?;
     let decoder = build_session(&decoder_path, gpu_config)?;
     let vocab = load_vocab(&tokens_path)?;
+    let mel_extractor = crate::mel::MelFeatureExtractor::new();
 
     Ok(LoadedCohereModel {
         decoder,
         encoder,
         gpu_config,
+        mel_extractor,
         model_dir: model_dir.to_path_buf(),
         vocab,
     })
@@ -333,8 +340,9 @@ fn detokenize(token_ids: &[i64], vocab: &HashMap<u32, String>) -> String {
     for &id in token_ids {
         let id = id as u32;
 
-        // Skip special tokens.
-        if id >= TOKEN_START_OF_CONTEXT as u32 {
+        // Skip special/control tokens (IDs 0-254 are added_tokens).
+        const SPECIAL_TOKEN_BOUNDARY: u32 = 255;
+        if id < SPECIAL_TOKEN_BOUNDARY {
             continue;
         }
 
@@ -348,6 +356,9 @@ fn detokenize(token_ids: &[i64], vocab: &HashMap<u32, String>) -> String {
 }
 
 fn decode_bpe_bytes(text: &str) -> String {
+    // Step 1: Replace ▁ (U+2581) with space (tokenizer decoder pipeline rule)
+    let text = text.replace('\u{2581}', " ");
+    // Step 2: ByteFallback — decode <0xNN> byte tokens
     let mut result = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -389,15 +400,19 @@ fn autoregressive_decode(
     let prompt = build_prompt_tokens();
     let mut generated_ids: Vec<i64> = Vec::new();
     let mut kv_cache: Option<Vec<DynValue>> = None;
-    let mut offset: i64 = 0;
+    let mut past_seq_len: i64 = 0;
 
+    // KV cache names: past_key_values.{layer}.{decoder,encoder}.{key,value}
+    // Must match the ONNX decoder model input names exactly.
     let cache_names: Vec<String> = (0..NUM_DECODER_LAYERS)
         .flat_map(|layer| {
-            ["key", "value"].into_iter().flat_map(move |cache_type| {
-                ["self", "cross"].into_iter().map(move |attn_type| {
-                    format!("past_{cache_type}_{attn_type}_attention.{layer}")
+            ["decoder", "encoder"]
+                .into_iter()
+                .flat_map(move |attn_type| {
+                    ["key", "value"]
+                        .into_iter()
+                        .map(move |kv| format!("past_key_values.{layer}.{attn_type}.{kv}"))
                 })
-            })
         })
         .collect();
 
@@ -409,22 +424,42 @@ fn autoregressive_decode(
         };
 
         let seq_len = input_ids.len();
+
+        // input_ids: [1, seq_len]
         let input_ids_arr = ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
             .map_err(|e| TranscriptionError::transcription_failure("decoder input shape", &e))?;
-        let offset_arr = ndarray::Array1::from_vec(vec![offset]);
+
+        // position_ids: [1, seq_len] — absolute positions starting at past_seq_len
+        let positions: Vec<i64> = (past_seq_len..past_seq_len + seq_len as i64).collect();
+        let position_ids_arr = ndarray::Array2::from_shape_vec((1, seq_len), positions)
+            .map_err(|e| TranscriptionError::transcription_failure("decoder position_ids", &e))?;
+
+        // attention_mask: [1, total_seq_len] — all ones (no padding in single-utterance)
+        let total_len = past_seq_len as usize + seq_len;
+        let attn_mask_arr = ndarray::Array2::from_elem((1, total_len), 1_i64);
+
+        // num_logits_to_keep: scalar i64 — only produce logits for the last token
+        let num_logits_arr = ndarray::Array0::from_elem((), 1_i64);
 
         let input_ids_value = Value::from_array(input_ids_arr)
             .map_err(|e| TranscriptionError::transcription_failure("decoder input_ids", &e))?;
-        let offset_value = Value::from_array(offset_arr)
-            .map_err(|e| TranscriptionError::transcription_failure("decoder offset", &e))?;
+        let position_ids_value = Value::from_array(position_ids_arr)
+            .map_err(|e| TranscriptionError::transcription_failure("decoder position_ids", &e))?;
+        let attn_mask_value = Value::from_array(attn_mask_arr)
+            .map_err(|e| TranscriptionError::transcription_failure("decoder attention_mask", &e))?;
+        let num_logits_value = Value::from_array(num_logits_arr).map_err(|e| {
+            TranscriptionError::transcription_failure("decoder num_logits_to_keep", &e)
+        })?;
 
-        let mut inputs: Vec<NamedInput<'_>> = Vec::with_capacity(3 + cache_names.len());
+        let mut inputs: Vec<NamedInput<'_>> = Vec::with_capacity(5 + cache_names.len());
         inputs.push(("input_ids".into(), (&input_ids_value).into()));
+        inputs.push(("attention_mask".into(), (&attn_mask_value).into()));
+        inputs.push(("position_ids".into(), (&position_ids_value).into()));
+        inputs.push(("num_logits_to_keep".into(), (&num_logits_value).into()));
         inputs.push((
             "encoder_hidden_states".into(),
             SessionInputValue::from(encoder_hidden),
         ));
-        inputs.push(("offset".into(), (&offset_value).into()));
 
         // KV cache inputs.
         if let Some(ref cache_values) = kv_cache {
@@ -449,6 +484,7 @@ fn autoregressive_decode(
             .map_err(|e| TranscriptionError::transcription_failure("decoder forward pass", &e))?;
 
         // Separate logits (first output) from KV cache (remaining outputs).
+        // Output order: logits, then present.{layer}.{decoder,encoder}.{key,value}
         let mut output_iter = decoder_outputs.into_iter();
 
         let (_, logits_value) = output_iter.next().ok_or_else(|| {
@@ -462,7 +498,7 @@ fn autoregressive_decode(
         }
 
         generated_ids.push(best_id);
-        offset += seq_len as i64;
+        past_seq_len += seq_len as i64;
 
         // Collect updated KV cache tensors from remaining decoder outputs.
         let new_cache: Vec<DynValue> = output_iter.map(|(_, v)| v).collect();
@@ -516,11 +552,16 @@ fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
 
 fn build_prompt_tokens() -> Vec<i64> {
     vec![
-        TOKEN_START_OF_CONTEXT,
-        TOKEN_START_OF_TRANSCRIPT,
-        TOKEN_LANG_EN,
-        TOKEN_PNC_ON,
-        TOKEN_ITN_ON,
+        TOKEN_DECODER_START,       // ▁
+        TOKEN_START_OF_CONTEXT,    // <|startofcontext|>
+        TOKEN_START_OF_TRANSCRIPT, // <|startoftranscript|>
+        TOKEN_EMO_UNDEFINED,       // <|emo:undefined|>
+        TOKEN_LANG_EN,             // <|en|> (first)
+        TOKEN_LANG_EN,             // <|en|> (second — official repeats this)
+        TOKEN_PNC_ON,              // <|pnc|>
+        TOKEN_NO_ITN,              // <|noitn|>
+        TOKEN_NO_TIMESTAMP,        // <|notimestamp|>
+        TOKEN_NO_DIARIZE,          // <|nodiarize|>
     ]
 }
 
@@ -642,22 +683,22 @@ mod tests {
     #[test]
     fn detokenize_handles_basic_tokens() {
         let mut vocab = HashMap::new();
-        vocab.insert(0, "Hello".to_string());
-        vocab.insert(1, " world".to_string());
+        vocab.insert(300, "Hello".to_string());
+        vocab.insert(301, " world".to_string());
 
-        assert_eq!(detokenize(&[0, 1], &vocab), "Hello world");
+        assert_eq!(detokenize(&[300, 301], &vocab), "Hello world");
     }
 
     #[test]
     fn detokenize_skips_special_tokens() {
         let mut vocab = HashMap::new();
-        vocab.insert(0, "Hello".to_string());
+        vocab.insert(300, "Hello".to_string());
 
         let result = detokenize(
             &[
                 TOKEN_START_OF_CONTEXT,
                 TOKEN_START_OF_TRANSCRIPT,
-                0,
+                300,
                 TOKEN_END_OF_TRANSCRIPT,
             ],
             &vocab,
@@ -681,6 +722,15 @@ mod tests {
     }
 
     #[test]
+    fn decode_bpe_bytes_converts_word_separator() {
+        // U+2581 (▁) is the BPE word separator; should become ASCII space
+        assert_eq!(
+            decode_bpe_bytes("\u{2581}Hello\u{2581}world"),
+            " Hello world"
+        );
+    }
+
+    #[test]
     fn load_vocab_parses_tab_separated() {
         let temp = temp_dir("vocab-tab");
         let path = temp.join("tokens.txt");
@@ -697,11 +747,7 @@ mod tests {
     fn load_vocab_parses_tokenizer_json() {
         let temp = temp_dir("vocab-json");
         let path = temp.join("tokenizer.json");
-        std::fs::write(
-            &path,
-            r#"{"model":{"vocab":{"hello":0," world":1}}}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"model":{"vocab":{"hello":0," world":1}}}"#).unwrap();
 
         let vocab = load_vocab(&path).expect("should parse");
         assert_eq!(vocab.get(&0), Some(&"hello".to_string()));
@@ -711,13 +757,23 @@ mod tests {
     }
 
     #[test]
-    fn build_prompt_tokens_includes_required_control_tokens() {
+    fn build_prompt_tokens_matches_official_10_token_sequence() {
         let tokens = build_prompt_tokens();
-        assert!(tokens.contains(&TOKEN_START_OF_CONTEXT));
-        assert!(tokens.contains(&TOKEN_START_OF_TRANSCRIPT));
-        assert!(tokens.contains(&TOKEN_LANG_EN));
-        assert!(tokens.contains(&TOKEN_PNC_ON));
-        assert!(tokens.contains(&TOKEN_ITN_ON));
+        assert_eq!(
+            tokens,
+            vec![
+                TOKEN_DECODER_START,       // ▁
+                TOKEN_START_OF_CONTEXT,    // <|startofcontext|>
+                TOKEN_START_OF_TRANSCRIPT, // <|startoftranscript|>
+                TOKEN_EMO_UNDEFINED,       // <|emo:undefined|>
+                TOKEN_LANG_EN,             // <|en|>
+                TOKEN_LANG_EN,             // <|en|> (repeated)
+                TOKEN_PNC_ON,              // <|pnc|>
+                TOKEN_NO_ITN,              // <|noitn|>
+                TOKEN_NO_TIMESTAMP,        // <|notimestamp|>
+                TOKEN_NO_DIARIZE,          // <|nodiarize|>
+            ]
+        );
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {

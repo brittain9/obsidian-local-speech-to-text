@@ -3,6 +3,8 @@ pub mod catalog;
 #[cfg(feature = "engine-cohere")]
 pub mod cohere;
 pub mod installer;
+#[cfg(feature = "engine-cohere")]
+pub mod mel;
 pub mod model_store;
 pub mod protocol;
 pub mod session;
