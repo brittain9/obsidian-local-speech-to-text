@@ -120,7 +120,25 @@ describe('DictationSessionController', () => {
 
     expect(captureStream.start).toHaveBeenCalledTimes(1);
     expect(sidecarConnection.startSession).toHaveBeenCalledTimes(1);
+    expect(sidecarConnection.startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ useGpu: true }),
+    );
     expect(controller.getState()).toBe('listening');
+  });
+
+  it('forwards useGpu false to the sidecar when settings disable it', async () => {
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      getSettings: () =>
+        createSettings({ selectedModel: createExternalModelSelection(), useGpu: false }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(sidecarConnection.startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ useGpu: false }),
+    );
   });
 
   it('inserts transcript text from async sidecar events using the current placement mode', async () => {
@@ -238,6 +256,7 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
     sidecarPathOverride: '',
     sidecarRequestTimeoutMs: 300_000,
     sidecarStartupTimeoutMs: 4_000,
+    useGpu: true,
     ...overrides,
   };
 }

@@ -73,7 +73,7 @@ export interface ModelManagementSnapshot {
 export class ModelManagementService {
   private activeInstall: ModelInstallUpdateRecord | null = null;
   private readonly installUpdateListeners = new Set<InstallUpdateListener>();
-  private lastLoggedDownloadPercent = -1;
+  private lastLoggedInstallStateKey: string | null = null;
   private readonly releaseSidecarSubscription: () => void;
 
   constructor(private readonly dependencies: ModelManagementServiceDependencies) {
@@ -82,28 +82,18 @@ export class ModelManagementService {
         return;
       }
 
-      this.activeInstall =
-        event.state === 'cancelled' || event.state === 'completed' || event.state === 'failed'
-          ? null
-          : event;
+      this.activeInstall = isTerminalInstallState(event.state) ? null : event;
+      const installStateKey = `${event.installId}:${event.state}`;
 
-      if (event.state === 'downloading' && event.totalBytes) {
-        const pct = Math.round(((event.downloadedBytes ?? 0) / event.totalBytes) * 100);
-        if (pct !== this.lastLoggedDownloadPercent) {
-          this.lastLoggedDownloadPercent = pct;
-          this.dependencies.logger?.debug(
-            'model',
-            `install ${event.installId}: ${pct}% downloaded`,
-          );
+      if (installStateKey !== this.lastLoggedInstallStateKey) {
+        const logMessage = createInstallLifecycleLogMessage(event);
+
+        if (logMessage !== null) {
+          this.dependencies.logger?.debug('model', logMessage);
         }
-      } else {
-        this.lastLoggedDownloadPercent = -1;
-        this.dependencies.logger?.debug(
-          'model',
-          `install ${event.installId}: ${event.state}`,
-          event.message,
-        );
       }
+
+      this.lastLoggedInstallStateKey = isTerminalInstallState(event.state) ? null : installStateKey;
 
       for (const listener of this.installUpdateListeners) {
         listener(event);
@@ -281,6 +271,55 @@ export function buildModelManagementSnapshot(input: {
       input.currentSelection,
       input.activeInstall,
     ),
+  };
+}
+
+export function isTerminalInstallState(state: ModelInstallUpdateRecord['state']): boolean {
+  return state === 'cancelled' || state === 'completed' || state === 'failed';
+}
+
+export function createInstallLifecycleLogMessage(
+  installUpdate: ModelInstallUpdateRecord,
+): string | null {
+  const installLabel = `${installUpdate.modelId} (${installUpdate.installId})`;
+
+  switch (installUpdate.state) {
+    case 'downloading':
+      return `install ${installLabel}: download started`;
+    case 'completed':
+      return `install ${installLabel}: completed`;
+    case 'cancelled':
+      return `install ${installLabel}: cancelled`;
+    case 'failed':
+    case 'probing':
+    case 'queued':
+    case 'verifying':
+      return null;
+  }
+}
+
+export function applyInstallUpdateToSnapshot(
+  snapshot: ModelManagementSnapshot,
+  installUpdate: ModelInstallUpdateRecord,
+): ModelManagementSnapshot {
+  const nextActiveInstall = isTerminalInstallState(installUpdate.state) ? null : installUpdate;
+
+  return {
+    ...snapshot,
+    activeInstall: nextActiveInstall,
+    rows: snapshot.rows.map((row) => {
+      if (
+        row.model.engineId !== installUpdate.engineId ||
+        row.model.modelId !== installUpdate.modelId
+      ) {
+        return row;
+      }
+
+      return {
+        ...row,
+        installUpdate: nextActiveInstall,
+      };
+    }),
   };
 }
 

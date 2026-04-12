@@ -24,6 +24,7 @@ export interface PluginSettings {
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
+  useGpu: boolean;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -36,6 +37,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
+  useGpu: true,
 };
 
 export function resolvePluginSettings(data: unknown): PluginSettings {
@@ -66,6 +68,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.sidecarStartupTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
+    useGpu: readBoolean(raw.useGpu, DEFAULT_PLUGIN_SETTINGS.useGpu),
   };
 }
 

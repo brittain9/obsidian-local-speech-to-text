@@ -60,6 +60,7 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   modelStorePathOverride?: string;
   pauseWhileProcessing: boolean;
   sessionId: string;
+  useGpu?: boolean;
 }
 
 export interface GetModelStoreCommand extends EnvelopeBase<'get_model_store'> {
@@ -104,10 +105,13 @@ export interface CancelSessionCommand extends EnvelopeBase<'cancel_session'> {}
 
 export interface ShutdownCommand extends EnvelopeBase<'shutdown'> {}
 
+export interface GetSystemInfoCommand extends EnvelopeBase<'get_system_info'> {}
+
 export type SidecarCommand =
   | CancelModelInstallCommand
   | CancelSessionCommand
   | GetModelStoreCommand
+  | GetSystemInfoCommand
   | HealthCommand
   | InstallModelCommand
   | ListInstalledModelsCommand
@@ -122,6 +126,11 @@ export type SidecarCommand =
 export interface HealthOkEvent extends EnvelopeBase<'health_ok'> {
   sidecarVersion: string;
   status: 'ready';
+}
+
+export interface SystemInfoEvent extends EnvelopeBase<'system_info'> {
+  compiledBackends: string[];
+  systemInfo: string;
 }
 
 export interface ModelStoreEvent extends EnvelopeBase<'model_store'>, ModelStoreRecord {}
@@ -191,11 +200,16 @@ export type SidecarEvent =
   | SessionStartedEvent
   | SessionStateChangedEvent
   | SessionStoppedEvent
+  | SystemInfoEvent
   | TranscriptReadyEvent
   | WarningEvent;
 
 export function createHealthCommand(): HealthCommand {
   return createEnvelope('health');
+}
+
+export function createGetSystemInfoCommand(): GetSystemInfoCommand {
+  return createEnvelope('get_system_info');
 }
 
 export function createStartSessionCommand(
@@ -437,6 +451,14 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         protocolVersion,
         state: readModelInstallState(parsedValue.state, 'event.state'),
         totalBytes: readNullableNumber(parsedValue.totalBytes, 'event.totalBytes'),
+        type,
+      };
+
+    case 'system_info':
+      return {
+        compiledBackends: readStringArray(parsedValue.compiledBackends, 'event.compiledBackends'),
+        protocolVersion,
+        systemInfo: readString(parsedValue.systemInfo, 'event.systemInfo'),
         type,
       };
 

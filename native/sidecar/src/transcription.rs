@@ -7,6 +7,11 @@ use crate::protocol::TranscriptSegment;
 
 const SUPPORTED_LANGUAGE: &str = "en";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GpuConfig {
+    pub use_gpu: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct TranscriptionEngine {
     loaded_model: Option<LoadedModel>,
@@ -15,12 +20,14 @@ pub struct TranscriptionEngine {
 #[derive(Debug)]
 struct LoadedModel {
     context: WhisperContext,
+    gpu_config: GpuConfig,
     model_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionRequest {
     pub audio_samples: Vec<f32>,
+    pub gpu_config: GpuConfig,
     pub language: String,
     pub model_file_path: PathBuf,
 }
@@ -58,7 +65,7 @@ impl TranscriptionEngine {
         validate_language(&request.language)?;
         validate_audio_samples(&request.audio_samples)?;
 
-        let context = self.load_or_reuse_model(&request.model_file_path)?;
+        let context = self.load_or_reuse_model(&request.model_file_path, request.gpu_config)?;
         let mut state = context.create_state().map_err(|error| {
             TranscriptionError::transcription_failure("failed to create whisper state", error)
         })?;
@@ -97,25 +104,23 @@ impl TranscriptionEngine {
         })
     }
 
-    pub fn reset_model(&mut self) {
-        self.loaded_model = None;
-    }
-
     fn load_or_reuse_model(
         &mut self,
         model_file_path: &Path,
+        gpu_config: GpuConfig,
     ) -> Result<&WhisperContext, TranscriptionError> {
         validate_model_path(model_file_path)?;
 
         let should_reload = self
             .loaded_model
             .as_ref()
-            .map(|loaded_model| loaded_model.model_path != model_file_path)
+            .map(|m| m.model_path != model_file_path || m.gpu_config != gpu_config)
             .unwrap_or(true);
 
         if should_reload {
             self.loaded_model = Some(LoadedModel {
-                context: load_model_context(model_file_path)?,
+                context: load_model_context(model_file_path, &gpu_config)?,
+                gpu_config,
                 model_path: model_file_path.to_path_buf(),
             });
         }
@@ -130,7 +135,7 @@ impl TranscriptionEngine {
 
 pub fn probe_model_path(model_file_path: &Path) -> Result<u64, TranscriptionError> {
     validate_model_path(model_file_path)?;
-    let _ = load_model_context(model_file_path)?;
+    let _ = load_model_context(model_file_path, &GpuConfig { use_gpu: false })?;
     let size_bytes = std::fs::metadata(model_file_path)
         .map_err(|error| TranscriptionError::invalid_model_with_details(error.to_string()))?
         .len();
@@ -168,12 +173,19 @@ fn validate_model_path(model_file_path: &Path) -> Result<(), TranscriptionError>
     Ok(())
 }
 
-fn load_model_context(model_file_path: &Path) -> Result<WhisperContext, TranscriptionError> {
+fn load_model_context(
+    model_file_path: &Path,
+    gpu_config: &GpuConfig,
+) -> Result<WhisperContext, TranscriptionError> {
     let model_path = model_file_path
         .to_str()
         .ok_or_else(|| TranscriptionError::invalid_model("model path must be valid UTF-8"))?;
 
-    WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(gpu_config.use_gpu);
+    params.flash_attn(gpu_config.use_gpu);
+
+    WhisperContext::new_with_params(model_path, params)
         .map_err(|error| TranscriptionError::invalid_model_with_details(error.to_string()))
 }
 
@@ -230,7 +242,7 @@ impl TranscriptionError {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{TranscriptionEngine, TranscriptionRequest};
+    use super::{GpuConfig, TranscriptionEngine, TranscriptionRequest};
 
     #[test]
     fn transcribe_rejects_unsupported_language() {
@@ -238,6 +250,7 @@ mod tests {
         let error = engine
             .transcribe(&TranscriptionRequest {
                 audio_samples: vec![0.0, 0.1],
+                gpu_config: GpuConfig::default(),
                 language: "fr".to_string(),
                 model_file_path: PathBuf::from("/tmp/missing-model.bin"),
             })
@@ -252,6 +265,7 @@ mod tests {
         let error = engine
             .transcribe(&TranscriptionRequest {
                 audio_samples: Vec::new(),
+                gpu_config: GpuConfig::default(),
                 language: "en".to_string(),
                 model_file_path: PathBuf::from("/tmp/missing-model.bin"),
             })

@@ -105,6 +105,7 @@ export default class LocalSttPlugin extends Plugin {
         saveSettings: async (nextSettings) => {
           await this.updateSettings(nextSettings);
         },
+        sidecarConnection: this.requireSidecarConnection(),
       }),
     );
 
@@ -228,7 +229,7 @@ export default class LocalSttPlugin extends Plugin {
     const catalogPath = await this.resolveModelCatalogPath();
 
     return {
-      args: ['--catalog-path', catalogPath],
+      args: ['--catalog-path', catalogPath, '--app-version', this.manifest.version],
       command: executablePath,
       cwd: dirname(executablePath),
     };

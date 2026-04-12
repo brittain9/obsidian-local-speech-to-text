@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyInstallUpdateToSnapshot,
   buildCatalogExplorerRows,
   buildCurrentModelCardState,
+  createInstallLifecycleLogMessage,
 } from '../src/models/model-management-service';
 import type {
   CatalogModelRecord,
@@ -128,6 +130,90 @@ describe('model management snapshot builders', () => {
     expect(card.resolvedPath).toBe('/tmp/models/custom-model.bin');
     expect(card.sizeBytes).toBe(321);
     expect(card.sourceLabel).toBe('External file');
+  });
+
+  it('applies non-terminal install updates without rebuilding the full snapshot', () => {
+    const currentSelection: SelectedModel = {
+      engineId: 'whisper_cpp',
+      kind: 'catalog_model',
+      modelId: 'whisper_small_en_q5_1',
+    };
+    const catalog = sampleCatalog();
+    const activeInstall: ModelInstallUpdateRecord = {
+      details: null,
+      downloadedBytes: 50,
+      engineId: 'whisper_cpp',
+      installId: 'install-1',
+      message: 'Downloading',
+      modelId: 'whisper_large_v3_turbo_q8_0',
+      state: 'downloading',
+      totalBytes: 900,
+    };
+    const snapshot = {
+      activeInstall,
+      catalog,
+      currentModel: buildCurrentModelCardState(currentSelection, catalog, [], null),
+      currentSelection,
+      installedModels: [] as InstalledModelRecord[],
+      modelStore: {
+        overridePath: null,
+        path: '/models',
+        usingDefaultPath: true,
+      },
+      rows: buildCatalogExplorerRows(catalog, [], currentSelection, activeInstall),
+    };
+
+    const nextSnapshot = applyInstallUpdateToSnapshot(snapshot, {
+      ...activeInstall,
+      downloadedBytes: 400,
+    });
+
+    expect(nextSnapshot.activeInstall?.downloadedBytes).toBe(400);
+    expect(
+      nextSnapshot.rows.find((row) => row.model.modelId === 'whisper_large_v3_turbo_q8_0'),
+    ).toMatchObject({
+      installUpdate: expect.objectContaining({ downloadedBytes: 400 }),
+    });
+    expect(
+      nextSnapshot.rows.find((row) => row.model.modelId === 'whisper_small_en_q5_1'),
+    ).toMatchObject({
+      installUpdate: null,
+    });
+  });
+
+  it('logs only install lifecycle boundaries instead of download percentages', () => {
+    const baseUpdate: ModelInstallUpdateRecord = {
+      details: null,
+      downloadedBytes: 50,
+      engineId: 'whisper_cpp',
+      installId: 'install-1',
+      message: 'Downloading',
+      modelId: 'whisper_large_v3_turbo_q8_0',
+      state: 'downloading',
+      totalBytes: 900,
+    };
+
+    expect(createInstallLifecycleLogMessage(baseUpdate)).toBe(
+      'install whisper_large_v3_turbo_q8_0 (install-1): download started',
+    );
+    expect(
+      createInstallLifecycleLogMessage({
+        ...baseUpdate,
+        state: 'completed',
+      }),
+    ).toBe('install whisper_large_v3_turbo_q8_0 (install-1): completed');
+    expect(
+      createInstallLifecycleLogMessage({
+        ...baseUpdate,
+        state: 'failed',
+      }),
+    ).toBeNull();
+    expect(
+      createInstallLifecycleLogMessage({
+        ...baseUpdate,
+        state: 'verifying',
+      }),
+    ).toBeNull();
   });
 });
 

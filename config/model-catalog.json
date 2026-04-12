@@ -17,21 +17,81 @@
   "models": [
     {
       "engineId": "whisper_cpp",
+      "modelId": "whisper_tiny_en_q8_0",
+      "collectionId": "english_cpu_first",
+      "displayName": "Whisper Tiny English Q8_0",
+      "summary": "Fastest model with lowest resource cost. Good for testing or low-power machines.",
+      "languageTags": ["en"],
+      "uxTags": ["fast", "lightweight", "cpu"],
+      "capabilityFlags": ["dictation"],
+      "recommended": false,
+      "licenseLabel": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
+      "modelCardUrl": "https://github.com/ggml-org/whisper.cpp",
+      "notes": [
+        "Fastest inference but lowest accuracy. Best for quick tests or constrained hardware.",
+        "Upgrade to Small or Base for everyday dictation quality."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "transcription",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "ggml-tiny.en-q8_0.bin",
+          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en-q8_0.bin?download=true",
+          "sha256": "5bc2b3860aa151a4c6e7bb095e1fcce7cf12c7b020ca08dcec0c6d018bb7dd94",
+          "sizeBytes": 43550795
+        }
+      ]
+    },
+    {
+      "engineId": "whisper_cpp",
+      "modelId": "whisper_base_en_q8_0",
+      "collectionId": "english_cpu_first",
+      "displayName": "Whisper Base English Q8_0",
+      "summary": "Fast model with decent accuracy. A good choice for quick drafts on CPU.",
+      "languageTags": ["en"],
+      "uxTags": ["fast", "cpu"],
+      "capabilityFlags": ["dictation"],
+      "recommended": false,
+      "licenseLabel": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
+      "modelCardUrl": "https://github.com/ggml-org/whisper.cpp",
+      "notes": [
+        "Noticeably better accuracy than Tiny with a small size increase.",
+        "Still very fast on modern CPUs."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "transcription",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "ggml-base.en-q8_0.bin",
+          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en-q8_0.bin?download=true",
+          "sha256": "a4d4a0768075e13cfd7e19df3ae2dbc4a68d37d36a7dad45e8410c9a34f8c87e",
+          "sizeBytes": 81781811
+        }
+      ]
+    },
+    {
+      "engineId": "whisper_cpp",
       "modelId": "whisper_small_en_q5_1",
       "collectionId": "english_cpu_first",
       "displayName": "Whisper Small English Q5_1",
-      "summary": "Recommended first-run English model with lower CPU and disk cost.",
+      "summary": "Recommended starter model with a good balance of accuracy and speed.",
       "languageTags": ["en"],
       "uxTags": ["recommended", "starter", "cpu"],
       "capabilityFlags": ["dictation"],
       "recommended": true,
       "licenseLabel": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
-      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/f281eb45af861ab5e5297d23694b7d46e090c02c",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
       "modelCardUrl": "https://github.com/ggml-org/whisper.cpp",
       "notes": [
-        "Start here for the first CPU verification pass.",
-        "English-only runtime remains the current supported dictation path."
+        "Start here for everyday English dictation.",
+        "Best tradeoff between download size, inference speed, and transcription quality."
       ],
       "artifacts": [
         {
@@ -39,9 +99,39 @@
           "role": "transcription_model",
           "required": true,
           "filename": "ggml-small.en-q5_1.bin",
-          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/f281eb45af861ab5e5297d23694b7d46e090c02c/ggml-small.en-q5_1.bin?download=true",
+          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en-q5_1.bin?download=true",
           "sha256": "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
           "sizeBytes": 190098681
+        }
+      ]
+    },
+    {
+      "engineId": "whisper_cpp",
+      "modelId": "whisper_medium_en_q5_0",
+      "collectionId": "english_cpu_first",
+      "displayName": "Whisper Medium English Q5_0",
+      "summary": "High-accuracy model for users who prioritize transcription quality over speed.",
+      "languageTags": ["en"],
+      "uxTags": ["accuracy", "cpu"],
+      "capabilityFlags": ["dictation"],
+      "recommended": false,
+      "licenseLabel": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
+      "modelCardUrl": "https://github.com/ggml-org/whisper.cpp",
+      "notes": [
+        "Significantly better accuracy than Small, especially with technical vocabulary.",
+        "CPU inference is slower — consider GPU acceleration or patience."
+      ],
+      "artifacts": [
+        {
+          "artifactId": "transcription",
+          "role": "transcription_model",
+          "required": true,
+          "filename": "ggml-medium.en-q5_0.bin",
+          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-medium.en-q5_0.bin?download=true",
+          "sha256": "76733e26ad8fe1c7a5bf7531a9d41917b2adc0f20f2e4f5531688a8c6cd88eb0",
+          "sizeBytes": 539225533
         }
       ]
     },
@@ -50,18 +140,18 @@
       "modelId": "whisper_large_v3_turbo_q8_0",
       "collectionId": "english_cpu_first",
       "displayName": "Whisper Large V3 Turbo Q8_0",
-      "summary": "Higher-accuracy English dictation model with a heavier CPU and disk footprint.",
+      "summary": "Best accuracy with an architecture optimized for GPU acceleration.",
       "languageTags": ["en"],
-      "uxTags": ["accuracy", "cpu"],
+      "uxTags": ["accuracy", "gpu"],
       "capabilityFlags": ["dictation"],
       "recommended": false,
       "licenseLabel": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
-      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/f281eb45af861ab5e5297d23694b7d46e090c02c",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
       "modelCardUrl": "https://github.com/ggml-org/whisper.cpp",
       "notes": [
-        "Use after the smaller English model path is proven in your local environment.",
-        "This package is intentionally optional because CPU decode is materially slower."
+        "Highest accuracy available. The Turbo architecture is faster than standard Large V3.",
+        "CPU inference is slow — best paired with hardware acceleration."
       ],
       "artifacts": [
         {
@@ -69,7 +159,7 @@
           "role": "transcription_model",
           "required": true,
           "filename": "ggml-large-v3-turbo-q8_0.bin",
-          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/f281eb45af861ab5e5297d23694b7d46e090c02c/ggml-large-v3-turbo-q8_0.bin?download=true",
+          "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q8_0.bin?download=true",
           "sha256": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
           "sizeBytes": 874188075
         }

@@ -8,6 +8,7 @@ import type {
   ModelManagementService,
   ModelManagementSnapshot,
 } from './model-management-service';
+import { applyInstallUpdateToSnapshot, isTerminalInstallState } from './model-management-service';
 import {
   type CatalogModelRecord,
   getEngineDisplayName,
@@ -21,6 +22,7 @@ interface ModelModalDependencies {
 
 export class ModelExplorerModal extends Modal {
   private listContainer: HTMLDivElement | null = null;
+  private loadSequence = 0;
   private releaseInstallUpdateSubscription: (() => void) | null = null;
   private searchQuery = '';
   private snapshot: ModelManagementSnapshot | null = null;
@@ -50,7 +52,13 @@ export class ModelExplorerModal extends Modal {
 
     this.listContainer = this.contentEl.createDiv({ cls: 'local-stt-model-list' });
     this.releaseInstallUpdateSubscription = this.dependencies.service.subscribeToInstallUpdates(
-      () => {
+      (event) => {
+        if (this.snapshot !== null && !isTerminalInstallState(event.state)) {
+          this.snapshot = applyInstallUpdateToSnapshot(this.snapshot, event);
+          this.renderFromCache();
+          return;
+        }
+
         void this.loadAndRender();
       },
     );
@@ -70,19 +78,21 @@ export class ModelExplorerModal extends Modal {
       return;
     }
 
+    const loadSequence = ++this.loadSequence;
     this.listContainer.empty();
     this.listContainer.createEl('p', { text: 'Loading model catalog\u2026' });
 
     try {
-      this.snapshot = await this.dependencies.service.getSnapshot();
+      const snapshot = await this.dependencies.service.getSnapshot();
 
-      if (this.listContainer === null) {
+      if (this.listContainer === null || loadSequence !== this.loadSequence) {
         return;
       }
 
+      this.snapshot = snapshot;
       this.renderFromCache();
     } catch (error) {
-      if (this.listContainer !== null) {
+      if (this.listContainer !== null && loadSequence === this.loadSequence) {
         this.listContainer.empty();
         this.listContainer.createEl('p', {
           text: formatErrorMessage(error, 'Failed to load the model catalog.'),
@@ -162,14 +172,17 @@ export class ModelExplorerModal extends Modal {
           button.setCta();
         }
         button.onClick(async () => {
-          await this.runAction(async () => {
+          const completed = await this.runAction(async () => {
             await this.dependencies.service.selectCatalogModel({
               engineId: row.model.engineId,
               kind: 'catalog_model',
               modelId: row.model.modelId,
             });
-            this.close();
           }, 'Selected managed model.');
+
+          if (completed) {
+            this.close();
+          }
         });
       });
       actionSetting.addButton((button) => {
@@ -217,14 +230,16 @@ export class ModelExplorerModal extends Modal {
     });
   }
 
-  private async runAction(action: () => Promise<void>, successMessage: string): Promise<void> {
+  private async runAction(action: () => Promise<void>, successMessage: string): Promise<boolean> {
     try {
       await action();
       new Notice(`Local STT: ${successMessage}`);
       await this.dependencies.onChanged();
       await this.loadAndRender();
+      return true;
     } catch (error) {
       new Notice(`Local STT: ${formatErrorMessage(error, 'The model action failed.')}`);
+      return false;
     }
   }
 }

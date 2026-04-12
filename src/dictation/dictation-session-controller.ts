@@ -192,6 +192,7 @@ export class DictationSessionController {
         modelSelection: selectedModel,
         pauseWhileProcessing: settings.pauseWhileProcessing,
         sessionId,
+        useGpu: settings.useGpu,
         ...(settings.modelStorePathOverride.length > 0
           ? { modelStorePathOverride: settings.modelStorePathOverride }
           : {}),
@@ -303,6 +304,7 @@ export class DictationSessionController {
     switch (event.type) {
       case 'health_ok':
       case 'session_started':
+      case 'system_info':
         return;
 
       case 'session_state_changed':

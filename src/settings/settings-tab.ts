@@ -12,12 +12,14 @@ import type {
   ModelManagementSnapshot,
 } from '../models/model-management-service';
 import { formatErrorMessage, formatInstallProgress } from '../shared/format-utils';
+import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import type { InsertionMode, PluginSettings } from './plugin-settings';
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
   modelManagementService: ModelManagementService;
   saveSettings: (settings: PluginSettings) => Promise<void>;
+  sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
 }
 
 const INSERTION_MODE_OPTIONS: Array<{ label: string; value: InsertionMode }> = [
@@ -25,6 +27,18 @@ const INSERTION_MODE_OPTIONS: Array<{ label: string; value: InsertionMode }> = [
   { label: 'Append on a new line', value: 'append_on_new_line' },
   { label: 'Append as a new paragraph', value: 'append_as_new_paragraph' },
 ];
+
+function formatBackendLabel(backend: string): string {
+  if (backend === 'cuda') {
+    return 'CUDA';
+  }
+
+  if (backend === 'metal') {
+    return 'Metal';
+  }
+
+  return backend.charAt(0).toUpperCase() + backend.slice(1);
+}
 
 export class LocalSttSettingTab extends PluginSettingTab {
   constructor(
@@ -107,6 +121,11 @@ export class LocalSttSettingTab extends PluginSettingTab {
           });
         });
       });
+
+    // --- Engine options ---
+    new Setting(containerEl).setName('Engine options').setHeading();
+    const engineSection = containerEl.createDiv();
+    void this.renderEngineOptions(engineSection);
 
     // --- Advanced: Sidecar (collapsible) ---
     const advancedDetails = containerEl.createEl('details', { cls: 'local-stt-advanced' });
@@ -202,6 +221,46 @@ export class LocalSttSettingTab extends PluginSettingTab {
     containerEl.createEl('p', {
       text: 'Assign a hotkey to "Local STT: Press-And-Hold Gate" in Obsidian Hotkeys for keyboard press-and-hold input. This hotkey target does not appear in the command palette.',
     });
+  }
+
+  private async renderEngineOptions(containerEl: HTMLDivElement): Promise<void> {
+    let gpuBackends: string[] = [];
+
+    try {
+      const info = await this.dependencies.sidecarConnection.getSystemInfo();
+      gpuBackends = info.compiledBackends.filter((backend) => backend !== 'cpu');
+    } catch {
+      // Sidecar may not be running yet; show the fallback dropdown without surfacing noise.
+    }
+
+    const settings = this.dependencies.getSettings();
+    const description =
+      gpuBackends.length > 0
+        ? 'Select the hardware accelerator for transcription.'
+        : 'Not available in this build. Rebuild the sidecar with a GPU feature flag to enable.';
+
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName('Hardware acceleration')
+      .setDesc(description)
+      .addDropdown((dropdown) => {
+        dropdown.addOption('off', 'None');
+
+        for (const backend of gpuBackends) {
+          dropdown.addOption(backend, formatBackendLabel(backend));
+        }
+
+        dropdown.setValue(
+          settings.useGpu && gpuBackends.length > 0 ? (gpuBackends[0] ?? 'off') : 'off',
+        );
+        dropdown.onChange(async (value) => {
+          await this.persistSettings({
+            ...this.dependencies.getSettings(),
+            useGpu: value !== 'off',
+          });
+        });
+      });
   }
 
   private async persistSettings(nextSettings: PluginSettings): Promise<void> {

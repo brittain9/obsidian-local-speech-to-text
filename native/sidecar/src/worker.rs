@@ -5,10 +5,11 @@ use std::time::Instant;
 
 use whisper_rs::convert_integer_to_float_audio;
 
-use crate::transcription::{Transcript, TranscriptionEngine, TranscriptionRequest};
+use crate::transcription::{GpuConfig, Transcript, TranscriptionEngine, TranscriptionRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMetadata {
+    pub gpu_config: GpuConfig,
     pub language: String,
     pub model_file_path: PathBuf,
     pub session_id: String,
@@ -74,15 +75,10 @@ impl TranscriptionWorker {
 fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent>) {
     let mut engine = TranscriptionEngine::default();
     let mut active_session: Option<SessionMetadata> = None;
-    let mut loaded_model_path: Option<PathBuf> = None;
 
     while let Ok(command) = command_rx.recv() {
         match command {
             WorkerCommand::BeginSession(metadata) => {
-                if loaded_model_path.as_ref() != Some(&metadata.model_file_path) {
-                    engine.reset_model();
-                    loaded_model_path = None;
-                }
                 active_session = Some(metadata);
             }
             WorkerCommand::EndSession { session_id } => {
@@ -123,15 +119,13 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
                 let started_at = Instant::now();
                 let result = engine.transcribe(&TranscriptionRequest {
                     audio_samples,
+                    gpu_config: metadata.gpu_config,
                     language: metadata.language.clone(),
                     model_file_path: metadata.model_file_path.clone(),
                 });
 
                 match result {
                     Ok(transcript) => {
-                        if loaded_model_path.is_none() {
-                            loaded_model_path = Some(metadata.model_file_path.clone());
-                        }
                         let _ = event_tx.send(WorkerEvent::TranscriptReady {
                             processing_duration_ms: started_at.elapsed().as_millis() as u64,
                             session_id,

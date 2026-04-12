@@ -8,12 +8,12 @@ use crate::model_store::{
 };
 use crate::protocol::{
     Command, EngineId, Event, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
-    SessionState, SessionStopReason,
+    SessionState, SessionStopReason, compiled_backends,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
 };
-use crate::transcription::{TranscriptionError, probe_model_path};
+use crate::transcription::{GpuConfig, TranscriptionError, probe_model_path};
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
@@ -289,6 +289,14 @@ impl AppState {
 
                 (ControlFlow::Continue, events)
             }
+            Command::GetSystemInfo => {
+                events.push(Event::SystemInfo {
+                    compiled_backends: compiled_backends(),
+                    system_info: whisper_rs::print_system_info().to_string(),
+                });
+
+                (ControlFlow::Continue, events)
+            }
             Command::StartSession {
                 language,
                 mode,
@@ -296,6 +304,7 @@ impl AppState {
                 model_store_path_override,
                 pause_while_processing,
                 session_id,
+                use_gpu,
             } => {
                 if let Some(replaced_events) =
                     self.finish_active_session(SessionStopReason::SessionReplaced)
@@ -320,6 +329,7 @@ impl AppState {
                         if self
                             .transcription_worker
                             .send(WorkerCommand::BeginSession(SessionMetadata {
+                                gpu_config: GpuConfig { use_gpu },
                                 language,
                                 model_file_path: resolved_model.resolved_path.clone(),
                                 session_id: session_id.clone(),
@@ -924,6 +934,25 @@ mod tests {
     }
 
     #[test]
+    fn get_system_info_returns_compiled_backends() {
+        let (control_flow, events) =
+            AppState::new("0.1.0", sample_catalog()).handle_command(Command::GetSystemInfo);
+
+        assert_eq!(control_flow, ControlFlow::Continue);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::SystemInfo {
+                compiled_backends,
+                system_info,
+            } => {
+                assert!(compiled_backends.contains(&"cpu".to_string()));
+                assert!(!system_info.is_empty());
+            }
+            other => panic!("expected SystemInfo event, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn start_session_returns_started_and_state_events() {
         let model_file_path = create_model_file();
         let (_, events) = test_app().handle_command(Command::StartSession {
@@ -936,6 +965,7 @@ mod tests {
             model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-1".to_string(),
+            use_gpu: true,
         });
 
         assert_eq!(
@@ -966,6 +996,7 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
+                use_gpu: true,
             });
 
         assert!(
@@ -1006,6 +1037,7 @@ mod tests {
             model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-1".to_string(),
+            use_gpu: true,
         });
 
         let (_, events) = app.handle_command(Command::StartSession {
@@ -1018,6 +1050,7 @@ mod tests {
             model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-2".to_string(),
+            use_gpu: true,
         });
 
         assert!(events.contains(&Event::SessionStopped {
@@ -1040,6 +1073,7 @@ mod tests {
             model_store_path_override: None,
             pause_while_processing: true,
             session_id: "session-1".to_string(),
+            use_gpu: true,
         });
 
         let (_, events) = app.handle_command(Command::StopSession);

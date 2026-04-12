@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { PCM_BYTES_PER_FRAME } from '../src/shared/pcm-format';
 import {
   AUDIO_FRAME_KIND,
+  createGetSystemInfoCommand,
   createHealthCommand,
+  createStartSessionCommand,
   encodeAudioFrame,
   encodeJsonFrame,
   FramedMessageParser,
@@ -29,6 +31,53 @@ describe('sidecar protocol', () => {
 
     expect(frame[0]).toBe(AUDIO_FRAME_KIND);
     expect(frame.byteLength).toBe(5 + PCM_BYTES_PER_FRAME);
+  });
+
+  it('serializes start_session command with useGpu field', () => {
+    const command = createStartSessionCommand({
+      language: 'en',
+      mode: 'always_on',
+      modelSelection: { kind: 'external_file', engineId: 'whisper_cpp', filePath: '/tmp/m.bin' },
+      pauseWhileProcessing: true,
+      sessionId: 'session-gpu',
+      useGpu: false,
+    });
+    const frame = encodeJsonFrame(command);
+    const payload = readPayload(frame) as Record<string, unknown>;
+
+    expect(payload.useGpu).toBe(false);
+    expect(payload.sessionId).toBe('session-gpu');
+  });
+
+  it('serializes get_system_info command', () => {
+    const frame = encodeJsonFrame(createGetSystemInfoCommand());
+
+    expect(readPayload(frame)).toEqual({
+      protocolVersion: SIDECAR_PROTOCOL_VERSION,
+      type: 'get_system_info',
+    });
+  });
+
+  it('parses system_info event', () => {
+    const parser = new FramedMessageParser(parseEventFrame);
+    const frame = encodeJsonFrame({
+      compiledBackends: ['cpu', 'cuda'],
+      protocolVersion: SIDECAR_PROTOCOL_VERSION,
+      systemInfo: 'AVX = 1 | CUDA = 1',
+      type: 'system_info',
+    });
+    const parsed = parser.pushChunk(frame);
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toEqual({
+      envelope: {
+        compiledBackends: ['cpu', 'cuda'],
+        protocolVersion: SIDECAR_PROTOCOL_VERSION,
+        systemInfo: 'AVX = 1 | CUDA = 1',
+        type: 'system_info',
+      },
+      kind: JSON_FRAME_KIND,
+    });
   });
 
   it('parses mixed JSON and binary frames across chunk boundaries', () => {

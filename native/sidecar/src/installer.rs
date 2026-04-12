@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
 
@@ -265,9 +265,23 @@ impl DownloadSource for HttpDownloadSource {
             .client
             .get(&artifact.download_url)
             .send()
-            .with_context(|| format!("failed to download {}", artifact.download_url))?
-            .error_for_status()
-            .with_context(|| format!("download returned an error for {}", artifact.download_url))?;
+            .with_context(|| {
+                format!(
+                    "Failed to start download for {} from {}.",
+                    artifact.filename, artifact.download_url
+                )
+            })?;
+        let status = response.status();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "Download request for {} returned HTTP {} from {}.",
+                artifact.filename,
+                status,
+                artifact.download_url
+            ));
+        }
+
         let total_bytes = response.content_length();
 
         Ok(DownloadStream {
@@ -668,6 +682,40 @@ mod tests {
     }
 
     #[test]
+    fn install_surfaces_download_source_failures_cleanly() {
+        let request = sample_request();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let (tx, _rx) = mpsc::channel();
+        let reporter = InstallReporter {
+            engine_id: request.engine_id,
+            install_id: request.install_id.clone(),
+            model_id: request.model_id.clone(),
+            total_bytes: 4,
+            tx,
+        };
+        let downloader = FailingDownloadSource::new(anyhow!(
+            "Download request for model.bin returned HTTP 404 Not Found from https://example.com/model.bin."
+        ));
+
+        let error = install_model_with_downloader(
+            &request,
+            cancel_flag,
+            &reporter,
+            &downloader,
+            test_probe,
+        )
+        .expect_err("install should fail");
+
+        match error {
+            InstallError::Failed(message) => {
+                assert!(message.contains("HTTP 404 Not Found"));
+                assert!(message.contains("model.bin"));
+            }
+            InstallError::Cancelled => panic!("install should not cancel"),
+        }
+    }
+
+    #[test]
     fn happy_path_install_creates_model_file_and_metadata() {
         let request = sample_request();
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -783,6 +831,22 @@ mod tests {
                 total_bytes: Some(bytes.len() as u64),
                 reader: Box::new(Cursor::new(bytes)),
             })
+        }
+    }
+
+    struct FailingDownloadSource {
+        error: anyhow::Error,
+    }
+
+    impl FailingDownloadSource {
+        fn new(error: anyhow::Error) -> Self {
+            Self { error }
+        }
+    }
+
+    impl DownloadSource for FailingDownloadSource {
+        fn open(&self, _artifact: &ModelArtifact) -> Result<DownloadStream> {
+            Err(anyhow!("{}", self.error))
         }
     }
 

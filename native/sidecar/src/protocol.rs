@@ -140,7 +140,10 @@ pub enum Command {
         pause_while_processing: bool,
         #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(rename = "useGpu", default = "default_use_gpu")]
+        use_gpu: bool,
     },
+    GetSystemInfo,
     GetModelStore {
         #[serde(rename = "modelStorePathOverride", default)]
         model_store_path_override: Option<String>,
@@ -261,6 +264,12 @@ pub enum Event {
         state: ModelInstallState,
         #[serde(rename = "totalBytes", skip_serializing_if = "Option::is_none")]
         total_bytes: Option<u64>,
+    },
+    SystemInfo {
+        #[serde(rename = "compiledBackends")]
+        compiled_backends: Vec<String>,
+        #[serde(rename = "systemInfo")]
+        system_info: String,
     },
     SessionStarted {
         mode: ListeningMode,
@@ -385,6 +394,23 @@ pub fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> 
     Ok(())
 }
 
+fn default_use_gpu() -> bool {
+    true
+}
+
+pub fn compiled_backends() -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut backends = vec!["cpu".to_string()];
+
+    #[cfg(feature = "gpu-metal")]
+    backends.push("metal".to_string());
+
+    #[cfg(feature = "gpu-cuda")]
+    backends.push("cuda".to_string());
+
+    backends
+}
+
 fn read_exact_or_eof<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize> {
     let mut total_read = 0;
 
@@ -406,7 +432,7 @@ mod tests {
     use super::{
         AUDIO_FRAME_KIND, Command, EngineId, Event, EventEnvelope, FRAME_HEADER_LENGTH,
         IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME, PROTOCOL_VERSION,
-        SelectedModel, read_frame, write_event_frame, write_frame,
+        SelectedModel, compiled_backends, read_frame, write_event_frame, write_frame,
     };
 
     #[test]
@@ -444,8 +470,83 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
+                use_gpu: true,
             })
         );
+    }
+
+    #[test]
+    fn start_session_with_explicit_use_gpu_false() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "type": "start_session",
+            "sessionId": "session-2",
+            "mode": "one_sentence",
+            "modelSelection": {
+                "kind": "external_file",
+                "engineId": "whisper_cpp",
+                "filePath": "/tmp/model.bin"
+            },
+            "language": "en",
+            "pauseWhileProcessing": false,
+            "useGpu": false
+        }))
+        .expect("payload should serialize");
+        let mut framed = Vec::new();
+        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
+
+        let parsed = read_frame(&mut framed.as_slice())
+            .expect("frame should parse")
+            .expect("frame should exist");
+
+        assert_eq!(
+            parsed,
+            IncomingFrame::Command(Command::StartSession {
+                language: "en".to_string(),
+                mode: ListeningMode::OneSentence,
+                model_selection: SelectedModel::ExternalFile {
+                    engine_id: EngineId::WhisperCpp,
+                    file_path: "/tmp/model.bin".to_string(),
+                },
+                model_store_path_override: None,
+                pause_while_processing: false,
+                session_id: "session-2".to_string(),
+                use_gpu: false,
+            })
+        );
+    }
+
+    #[test]
+    fn get_system_info_round_trip() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "type": "get_system_info"
+        }))
+        .expect("payload should serialize");
+        let mut framed = Vec::new();
+        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
+
+        let parsed = read_frame(&mut framed.as_slice())
+            .expect("frame should parse")
+            .expect("frame should exist");
+
+        assert_eq!(parsed, IncomingFrame::Command(Command::GetSystemInfo));
+    }
+
+    #[test]
+    fn system_info_event_round_trip() {
+        let event = Event::SystemInfo {
+            compiled_backends: compiled_backends(),
+            system_info: "AVX = 1 | NEON = 0 | CUDA = 0".to_string(),
+        };
+        let mut framed = Vec::new();
+        write_event_frame(&mut framed, &event).expect("frame should write");
+        let payload_length =
+            u32::from_le_bytes([framed[1], framed[2], framed[3], framed[4]]) as usize;
+        let payload = &framed[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + payload_length];
+        let parsed: EventEnvelope = serde_json::from_slice(payload).expect("event should parse");
+
+        assert_eq!(parsed.event, event);
     }
 
     #[test]

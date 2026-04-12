@@ -4,6 +4,7 @@ import {
   createCancelModelInstallCommand,
   createCancelSessionCommand,
   createGetModelStoreCommand,
+  createGetSystemInfoCommand,
   createHealthCommand,
   createInstallModelCommand,
   createListInstalledModelsCommand,
@@ -32,6 +33,7 @@ import {
   type SidecarCommand,
   type SidecarEvent,
   type StartSessionCommand,
+  type SystemInfoEvent,
 } from './protocol';
 import { createSidecarStderrLogEntry } from './sidecar-logging';
 import { type ResolveSidecarLaunchSpec, SidecarProcess } from './sidecar-process';
@@ -109,6 +111,15 @@ export class SidecarConnection {
       createHealthCommand(),
       (event): event is HealthOkEvent => event.type === 'health_ok',
       'health_ok',
+      timeoutMs,
+    );
+  }
+
+  async getSystemInfo(timeoutMs = this.options.getRequestTimeoutMs()): Promise<SystemInfoEvent> {
+    return this.sendCommandAndWait(
+      createGetSystemInfoCommand(),
+      (event): event is SystemInfoEvent => event.type === 'system_info',
+      'system_info',
       timeoutMs,
     );
   }
@@ -349,12 +360,17 @@ export class SidecarConnection {
   }
 
   private dispatchEvent(event: SidecarEvent): void {
-    if (event.type !== 'model_install_update' || event.state !== 'downloading') {
-      this.options.logger?.debug('protocol', `event: ${event.type}`, event);
+    if (shouldLogProtocolEvent(event)) {
+      this.options.logger?.debug('protocol', summarizeProtocolEvent(event));
     }
 
     if (event.type === 'model_install_update' && event.state === 'failed') {
-      this.options.logger?.warn('model', 'install failed:', event.message, event.details);
+      this.options.logger?.warn(
+        'model',
+        `install ${event.modelId} (${event.installId}) failed`,
+        event.message,
+        event.details,
+      );
     }
 
     for (const listener of this.eventListeners) {
@@ -383,5 +399,42 @@ export class SidecarConnection {
       this.pendingWaiters.delete(waiter);
       waiter.reject(error);
     }
+  }
+}
+
+function shouldLogProtocolEvent(event: SidecarEvent): boolean {
+  switch (event.type) {
+    case 'error':
+    case 'session_started':
+    case 'session_state_changed':
+    case 'session_stopped':
+    case 'transcript_ready':
+    case 'warning':
+      return true;
+    case 'model_install_update':
+      return false;
+    default:
+      return false;
+  }
+}
+
+function summarizeProtocolEvent(event: SidecarEvent): string {
+  switch (event.type) {
+    case 'model_install_update':
+      return `event: model_install_update (${event.modelId}, ${event.state})`;
+    case 'session_started':
+      return `event: session_started (${event.sessionId})`;
+    case 'session_state_changed':
+      return `event: session_state_changed (${event.sessionId}, ${event.state})`;
+    case 'session_stopped':
+      return `event: session_stopped (${event.sessionId}, ${event.reason})`;
+    case 'transcript_ready':
+      return `event: transcript_ready (${event.sessionId}, ${event.text.length} chars)`;
+    case 'warning':
+      return `event: warning (${event.code})`;
+    case 'error':
+      return `event: error (${event.code})`;
+    default:
+      return `event: ${event.type}`;
   }
 }
