@@ -421,7 +421,6 @@ export function buildCurrentModelCardState(
   };
 }
 
-
 function compareCatalogModels(left: CatalogModelRecord, right: CatalogModelRecord): number {
   return getTotalModelSize(right) - getTotalModelSize(left);
 }

@@ -71,6 +71,13 @@ pub enum ListeningMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AccelerationPreference {
+    Auto,
+    CpuOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Idle,
     Listening,
@@ -120,6 +127,15 @@ pub struct TranscriptSegment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCapability {
+    pub available: bool,
+    pub backend: String,
+    pub engine: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandEnvelope {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
@@ -132,6 +148,8 @@ pub struct CommandEnvelope {
 pub enum Command {
     Health,
     StartSession {
+        #[serde(rename = "accelerationPreference", default)]
+        acceleration_preference: Option<AccelerationPreference>,
         language: String,
         mode: ListeningMode,
         #[serde(rename = "modelSelection")]
@@ -146,6 +164,7 @@ pub enum Command {
         use_gpu: bool,
     },
     GetSystemInfo,
+    RefreshCapabilities,
     GetModelStore {
         #[serde(rename = "modelStorePathOverride", default)]
         model_store_path_override: Option<String>,
@@ -272,6 +291,8 @@ pub enum Event {
         compiled_backends: Vec<String>,
         #[serde(rename = "compiledEngines")]
         compiled_engines: Vec<String>,
+        #[serde(rename = "runtimeCapabilities")]
+        runtime_capabilities: Vec<RuntimeCapability>,
         #[serde(rename = "systemInfo")]
         system_info: String,
     },
@@ -398,8 +419,7 @@ pub fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> 
     Ok(())
 }
 
-/// Hardware acceleration backends (CPU is always present; GPU entries are
-/// compile-time features).  This list drives the settings-tab GPU toggle.
+/// Build flavors compiled into this sidecar binary.
 pub fn compiled_backends() -> Vec<String> {
     #[allow(unused_mut)]
     let mut backends = vec!["cpu".to_string()];
@@ -459,10 +479,10 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        AUDIO_FRAME_KIND, Command, EngineId, Event, EventEnvelope, FRAME_HEADER_LENGTH,
-        IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME, PROTOCOL_VERSION,
-        SelectedModel, compiled_backends, compiled_engines, read_frame, write_event_frame,
-        write_frame,
+        AUDIO_FRAME_KIND, AccelerationPreference, Command, EngineId, Event, EventEnvelope,
+        FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME,
+        PROTOCOL_VERSION, RuntimeCapability, SelectedModel, compiled_backends, compiled_engines,
+        read_frame, write_event_frame, write_frame,
     };
 
     #[test]
@@ -491,6 +511,7 @@ mod tests {
         assert_eq!(
             parsed,
             IncomingFrame::Command(Command::StartSession {
+                acceleration_preference: None,
                 language: "en".to_string(),
                 mode: ListeningMode::AlwaysOn,
                 model_selection: SelectedModel::ExternalFile {
@@ -532,6 +553,7 @@ mod tests {
         assert_eq!(
             parsed,
             IncomingFrame::Command(Command::StartSession {
+                acceleration_preference: None,
                 language: "en".to_string(),
                 mode: ListeningMode::OneSentence,
                 model_selection: SelectedModel::ExternalFile {
@@ -542,6 +564,49 @@ mod tests {
                 pause_while_processing: false,
                 session_id: "session-2".to_string(),
                 use_gpu: false,
+            })
+        );
+    }
+
+    #[test]
+    fn start_session_with_acceleration_preference_auto() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "type": "start_session",
+            "sessionId": "session-3",
+            "mode": "always_on",
+            "modelSelection": {
+                "kind": "external_file",
+                "engineId": "whisper_cpp",
+                "filePath": "/tmp/model.bin"
+            },
+            "language": "en",
+            "pauseWhileProcessing": true,
+            "accelerationPreference": "auto",
+            "useGpu": true
+        }))
+        .expect("payload should serialize");
+        let mut framed = Vec::new();
+        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
+
+        let parsed = read_frame(&mut framed.as_slice())
+            .expect("frame should parse")
+            .expect("frame should exist");
+
+        assert_eq!(
+            parsed,
+            IncomingFrame::Command(Command::StartSession {
+                acceleration_preference: Some(AccelerationPreference::Auto),
+                language: "en".to_string(),
+                mode: ListeningMode::AlwaysOn,
+                model_selection: SelectedModel::ExternalFile {
+                    engine_id: EngineId::WhisperCpp,
+                    file_path: "/tmp/model.bin".to_string(),
+                },
+                model_store_path_override: None,
+                pause_while_processing: true,
+                session_id: "session-3".to_string(),
+                use_gpu: true,
             })
         );
     }
@@ -568,6 +633,12 @@ mod tests {
         let event = Event::SystemInfo {
             compiled_backends: compiled_backends(),
             compiled_engines: compiled_engines(),
+            runtime_capabilities: vec![RuntimeCapability {
+                available: true,
+                backend: "cpu".to_string(),
+                engine: "whisper_cpp".to_string(),
+                reason: None,
+            }],
             system_info: "AVX = 1 | NEON = 0 | CUDA = 0".to_string(),
         };
         let mut framed = Vec::new();

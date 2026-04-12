@@ -7,6 +7,7 @@ export interface SidecarLaunchSpec {
   args?: string[];
   command: string;
   cwd?: string;
+  env?: Record<string, string>;
 }
 
 interface SidecarProcessHandlers {
@@ -41,6 +42,7 @@ export class SidecarProcess {
     const launchSpec = await this.resolveLaunchSpec();
     const child = spawn(launchSpec.command, launchSpec.args ?? [], {
       cwd: launchSpec.cwd,
+      env: launchSpec.env ? { ...process.env, ...launchSpec.env } : undefined,
       stdio: 'pipe',
     });
 

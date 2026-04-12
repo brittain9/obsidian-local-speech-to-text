@@ -14,6 +14,7 @@ import {
   type EngineId,
   getEngineDisplayName,
   getTotalModelSize,
+  type ModelInstallUpdateRecord,
 } from './model-management-types';
 
 interface ModelModalDependencies {
@@ -26,6 +27,7 @@ export class ModelExplorerModal extends Modal {
   private listContainer: HTMLDivElement | null = null;
   private loadSequence = 0;
   private releaseInstallUpdateSubscription: (() => void) | null = null;
+  private readonly rowContainers = new Map<string, HTMLDivElement>();
   private searchQuery = '';
   private snapshot: ModelManagementSnapshot | null = null;
   private tabBarEl: HTMLDivElement | null = null;
@@ -61,7 +63,7 @@ export class ModelExplorerModal extends Modal {
       (event) => {
         if (this.snapshot !== null && !isTerminalInstallState(event.state)) {
           this.snapshot = applyInstallUpdateToSnapshot(this.snapshot, event);
-          this.renderFromCache();
+          this.updateVisibleInstallRow(event);
           return;
         }
 
@@ -78,6 +80,7 @@ export class ModelExplorerModal extends Modal {
     this.snapshot = null;
     this.tabBarEl = null;
     this.tabButtons.clear();
+    this.rowContainers.clear();
     this.contentEl.empty();
   }
 
@@ -132,7 +135,7 @@ export class ModelExplorerModal extends Modal {
     this.tabButtons.clear();
 
     const supportedEngines = this.snapshot.catalog.engines.filter((e) =>
-      this.snapshot!.supportedEngineIds.includes(e.engineId),
+      this.snapshot?.supportedEngineIds.includes(e.engineId),
     );
 
     for (const engine of supportedEngines) {
@@ -167,6 +170,7 @@ export class ModelExplorerModal extends Modal {
     }
 
     this.listContainer.empty();
+    this.rowContainers.clear();
 
     const engineRows = this.snapshot.rows.filter(
       (row) => row.model.engineId === this.activeEngineId,
@@ -186,16 +190,47 @@ export class ModelExplorerModal extends Modal {
     }
 
     for (const row of matchingRows) {
-      this.renderRow(row);
+      const rowContainer = this.listContainer.createDiv();
+      this.rowContainers.set(getRowKey(row.model.engineId, row.model.modelId), rowContainer);
+      this.renderRow(row, rowContainer);
     }
   }
 
-  private renderRow(row: CatalogExplorerRowState): void {
-    if (this.listContainer === null) {
+  private updateVisibleInstallRow(installUpdate: ModelInstallUpdateRecord): void {
+    if (this.snapshot === null || this.activeEngineId === null) {
       return;
     }
 
-    const setting = new Setting(this.listContainer);
+    if (installUpdate.engineId !== this.activeEngineId) {
+      return;
+    }
+
+    const row = this.snapshot.rows.find(
+      (candidate) =>
+        candidate.model.engineId === installUpdate.engineId &&
+        candidate.model.modelId === installUpdate.modelId,
+    );
+
+    if (row === undefined || !matchesQuery(row, this.searchQuery)) {
+      return;
+    }
+
+    const rowContainer = this.rowContainers.get(
+      getRowKey(installUpdate.engineId, installUpdate.modelId),
+    );
+
+    if (rowContainer === undefined) {
+      return;
+    }
+
+    // Preserve interactivity in the rest of the modal while one row streams progress updates.
+    this.renderRow(row, rowContainer);
+  }
+
+  private renderRow(row: CatalogExplorerRowState, rowContainer: HTMLDivElement): void {
+    rowContainer.empty();
+
+    const setting = new Setting(rowContainer);
     setting.settingEl.addClass('local-stt-model-row');
 
     // Name
@@ -508,4 +543,8 @@ function matchesQuery(row: CatalogExplorerRowState, query: string): boolean {
     .toLowerCase();
 
   return haystack.includes(query);
+}
+
+function getRowKey(engineId: EngineId, modelId: string): string {
+  return `${engineId}:${modelId}`;
 }

@@ -10,6 +10,8 @@ bash scripts/build-cpu.sh "$@"
 
 printf '\nBuilding TypeScript plugin...\n'
 node esbuild.config.mjs production
-node scripts/verify-build-output.mjs
+
+printf '\nVerifying build output...\n'
+node scripts/verify-build-output.mjs "$@"
 
 printf '\nFull build complete.\n'

@@ -2,8 +2,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "gpu-ort-cuda")]
+use ort::ep::{CUDAExecutionProvider, ExecutionProvider};
 use ort::session::{Session, SessionInputValue};
-use ort::value::{DynValue, Value};
+use ort::value::{DynValue, TensorElementType, Value, ValueType};
 
 use crate::transcription::{
     GpuConfig, Transcript, TranscriptionBackend, TranscriptionError, TranscriptionRequest,
@@ -130,6 +132,7 @@ impl CohereBackend {
             .unwrap_or(true);
 
         if should_reload {
+            drop(self.loaded.take());
             self.loaded = Some(load_cohere_model(model_dir, gpu_config)?);
         }
 
@@ -144,9 +147,7 @@ fn build_session(model_path: &Path, gpu_config: GpuConfig) -> Result<Session, Tr
     #[cfg(feature = "gpu-ort-cuda")]
     if gpu_config.use_gpu {
         builder = builder
-            .with_execution_providers([
-                ort::execution_providers::CUDAExecutionProvider::default().build()
-            ])
+            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
             .map_err(|e| TranscriptionError::transcription_failure("CUDA EP registration", &e))?;
     }
 
@@ -158,6 +159,28 @@ fn build_session(model_path: &Path, gpu_config: GpuConfig) -> Result<Session, Tr
         .map_err(|e| TranscriptionError::transcription_failure("model loading", &e))
 }
 
+#[cfg(feature = "gpu-ort-cuda")]
+pub fn probe_cuda_execution_provider() -> Result<(), String> {
+    let execution_provider = CUDAExecutionProvider::default();
+    match execution_provider.is_available() {
+        Ok(false) => {
+            return Err("ONNX Runtime CUDA execution provider is unavailable.".to_string());
+        }
+        Err(error) => {
+            return Err(format!(
+                "Failed to query ONNX Runtime CUDA execution provider: {error}"
+            ));
+        }
+        Ok(true) => {}
+    }
+
+    Session::builder()
+        .map_err(|error| format!("Failed to create an ONNX Runtime session builder: {error}"))?
+        .with_execution_providers([execution_provider.build().error_on_failure()])
+        .map(|_| ())
+        .map_err(|error| format!("CUDA execution provider registration failed: {error}"))
+}
+
 fn load_cohere_model(
     model_dir: &Path,
     gpu_config: GpuConfig,
@@ -167,7 +190,9 @@ fn load_cohere_model(
     let tokens_path = find_tokens_path(model_dir)?;
 
     let encoder = build_session(&encoder_path, gpu_config)?;
-    let decoder = build_session(&decoder_path, gpu_config)?;
+    // Decoder must run on CPU: ORT's CUDA GroupQueryAttention kernel does not
+    // support attention_bias, which the Cohere decoder graph requires.
+    let decoder = build_session(&decoder_path, GpuConfig { use_gpu: false })?;
     let vocab = load_vocab(&tokens_path)?;
     let mel_extractor = crate::mel::MelFeatureExtractor::new();
 
@@ -470,12 +495,28 @@ fn autoregressive_decode(
                 ));
             }
         } else {
+            let use_fp16 = decoder
+                .inputs()
+                .iter()
+                .find(|o| o.name().starts_with("past_key_values."))
+                .is_some_and(|o| {
+                    matches!(o.dtype(), ValueType::Tensor { ty: TensorElementType::Float16, .. })
+                });
+
             for name in &cache_names {
-                let cache = ndarray::Array4::<f32>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
-                let cache_value = Value::from_array(cache).map_err(|e| {
-                    TranscriptionError::transcription_failure("initial KV cache", &e)
-                })?;
-                inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
+                if use_fp16 {
+                    let cache = ndarray::Array4::<half::f16>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
+                    let cache_value = Value::from_array(cache).map_err(|e| {
+                        TranscriptionError::transcription_failure("initial KV cache", &e)
+                    })?;
+                    inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
+                } else {
+                    let cache = ndarray::Array4::<f32>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
+                    let cache_value = Value::from_array(cache).map_err(|e| {
+                        TranscriptionError::transcription_failure("initial KV cache", &e)
+                    })?;
+                    inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
+                }
             }
         }
 
@@ -511,13 +552,19 @@ fn autoregressive_decode(
 }
 
 /// Extract the token ID with the highest logit at the last sequence position.
-/// Validates the expected `[batch, seq_len, vocab_size]` shape before indexing.
+/// Handles both f32 (int8/default) and f16 (fp16) model outputs.
 fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
-    let (logits_shape, logits_data) = logits_value
-        .try_extract_tensor::<f32>()
+    if let Ok((shape, data)) = logits_value.try_extract_tensor::<f32>() {
+        return argmax_from_logits(shape, data);
+    }
+    let (shape, data_f16) = logits_value
+        .try_extract_tensor::<half::f16>()
         .map_err(|e| TranscriptionError::transcription_failure("logits extraction", &e))?;
+    let data_f32: Vec<f32> = data_f16.iter().map(|v| v.to_f32()).collect();
+    argmax_from_logits(shape, &data_f32)
+}
 
-    let dims: &[i64] = logits_shape;
+fn argmax_from_logits(dims: &[i64], logits_data: &[f32]) -> Result<i64, TranscriptionError> {
     if dims.len() != 3 || dims[0] != 1 {
         return Err(TranscriptionError::transcription_failure(
             "logits shape",

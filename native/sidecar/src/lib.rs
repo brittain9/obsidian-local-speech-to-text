@@ -1,4 +1,5 @@
 pub mod app;
+pub mod capabilities;
 pub mod catalog;
 #[cfg(feature = "engine-cohere")]
 pub mod cohere;

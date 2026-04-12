@@ -4,7 +4,7 @@ import {
   type SelectedModel,
 } from '../models/model-management-types';
 import { isRecord } from '../shared/type-guards';
-import type { ListeningMode } from '../sidecar/protocol';
+import type { AccelerationPreference, ListeningMode } from '../sidecar/protocol';
 
 export const INSERTION_MODES = [
   'insert_at_cursor',
@@ -15,6 +15,8 @@ export const INSERTION_MODES = [
 export type InsertionMode = (typeof INSERTION_MODES)[number];
 
 export interface PluginSettings {
+  accelerationPreference: AccelerationPreference;
+  cudaLibraryPath: string;
   developerMode: boolean;
   insertionMode: InsertionMode;
   listeningMode: ListeningMode;
@@ -24,10 +26,11 @@ export interface PluginSettings {
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
-  useGpu: boolean;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
+  accelerationPreference: 'auto',
+  cudaLibraryPath: '',
   developerMode: false,
   insertionMode: 'insert_at_cursor',
   listeningMode: 'one_sentence',
@@ -37,13 +40,14 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
-  useGpu: false,
 };
 
 export function resolvePluginSettings(data: unknown): PluginSettings {
   const raw = isRecord(data) ? data : {};
 
   return {
+    accelerationPreference: readAccelerationPreference(raw.accelerationPreference, raw.useGpu),
+    cudaLibraryPath: readString(raw.cudaLibraryPath, DEFAULT_PLUGIN_SETTINGS.cudaLibraryPath),
     developerMode: readBoolean(raw.developerMode, DEFAULT_PLUGIN_SETTINGS.developerMode),
     insertionMode: readInsertionMode(raw.insertionMode),
     listeningMode: readListeningMode(raw.listeningMode),
@@ -68,8 +72,15 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.sidecarStartupTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
-    useGpu: readBoolean(raw.useGpu, DEFAULT_PLUGIN_SETTINGS.useGpu),
   };
+}
+
+function readAccelerationPreference(value: unknown, legacyUseGpu: unknown): AccelerationPreference {
+  if (value === 'auto' || value === 'cpu_only') {
+    return value;
+  }
+
+  return legacyUseGpu === false ? 'cpu_only' : DEFAULT_PLUGIN_SETTINGS.accelerationPreference;
 }
 
 function readBoolean(value: unknown, fallback: boolean): boolean {

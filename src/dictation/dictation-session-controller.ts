@@ -187,12 +187,13 @@ export class DictationSessionController {
         }
       });
       await this.dependencies.sidecarConnection.startSession({
+        accelerationPreference: settings.accelerationPreference,
         language: 'en',
         mode: settings.listeningMode,
         modelSelection: selectedModel,
         pauseWhileProcessing: settings.pauseWhileProcessing,
         sessionId,
-        useGpu: settings.useGpu,
+        useGpu: settings.accelerationPreference === 'auto',
         ...(settings.modelStorePathOverride.length > 0
           ? { modelStorePathOverride: settings.modelStorePathOverride }
           : {}),

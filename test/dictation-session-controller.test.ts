@@ -121,23 +121,32 @@ describe('DictationSessionController', () => {
     expect(captureStream.start).toHaveBeenCalledTimes(1);
     expect(sidecarConnection.startSession).toHaveBeenCalledTimes(1);
     expect(sidecarConnection.startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ useGpu: false }),
+      expect.objectContaining({
+        accelerationPreference: 'auto',
+        useGpu: true,
+      }),
     );
     expect(controller.getState()).toBe('listening');
   });
 
-  it('forwards useGpu true to the sidecar when settings enable it', async () => {
+  it('forces CPU when accelerationPreference is cpu_only', async () => {
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
       getSettings: () =>
-        createSettings({ selectedModel: createExternalModelSelection(), useGpu: true }),
+        createSettings({
+          accelerationPreference: 'cpu_only',
+          selectedModel: createExternalModelSelection(),
+        }),
       sidecarConnection,
     });
 
     await controller.startDictation();
 
     expect(sidecarConnection.startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ useGpu: true }),
+      expect.objectContaining({
+        accelerationPreference: 'cpu_only',
+        useGpu: false,
+      }),
     );
   });
 
@@ -247,6 +256,8 @@ function createKeyboardEvent(
 
 function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
   return {
+    accelerationPreference: 'auto',
+    cudaLibraryPath: '',
     developerMode: false,
     insertionMode: 'insert_at_cursor',
     listeningMode: 'one_sentence',
@@ -256,7 +267,6 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
     sidecarPathOverride: '',
     sidecarRequestTimeoutMs: 300_000,
     sidecarStartupTimeoutMs: 4_000,
-    useGpu: false,
     ...overrides,
   };
 }

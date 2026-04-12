@@ -56,11 +56,11 @@ The default build is CPU-only and works everywhere. GPU acceleration is opt-in v
 Build the CUDA sidecar on Linux:
 
 ```sh
-bash scripts/linux_cuda_build.sh --no-clean       # debug
-bash scripts/linux_cuda_build.sh --no-clean --release  # optimized
+bash scripts/build-cuda.sh           # debug
+bash scripts/build-cuda.sh --release # optimized
 ```
 
-Then point `Settings -> Local STT -> Advanced -> Sidecar path override` to the CUDA binary and enable the GPU toggle.
+Then point `Settings -> Local STT -> Advanced -> Sidecar path override` to the CUDA binary. On Linux Flatpak, also set `CUDA library path` so the plugin scopes `LD_LIBRARY_PATH` to the sidecar child process only. `GPU acceleration` defaults to `Use when available`, which uses a working GPU backend when one is available for the selected engine.
 
 ## Development
 

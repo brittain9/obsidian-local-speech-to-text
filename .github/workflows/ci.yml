@@ -5,17 +5,29 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            build_metal: false
+            rust_cache_key: engine-cohere
+          - os: macos-14
+            build_metal: true
+            rust_cache_key: engine-cohere-gpu-metal
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24.14.1
           cache: npm
@@ -24,6 +36,7 @@ jobs:
         run: npm install --global npm@11.12.1
 
       - name: Install native build dependencies
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake
 
       - name: Setup Rust
@@ -34,9 +47,94 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.rust_cache_key }}
 
       - name: Install JavaScript dependencies
         run: npm ci
 
+      - name: Build macOS Metal sidecar
+        if: matrix.build_metal
+        run: bash scripts/build-metal.sh
+
       - name: Run quality gates
         run: npm run check
+
+  build-release-linux:
+    if: github.event_name == 'workflow_dispatch'
+    needs: quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-cpu
+
+      - name: Build Linux CPU sidecar
+        run: bash scripts/build-cpu.sh --release
+
+      - id: arch
+        name: Detect architecture
+        run: echo "value=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p dist
+          cp native/sidecar/target/release/obsidian-local-stt-sidecar \
+            dist/sidecar-linux-${{ steps.arch.outputs.value }}
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-linux-${{ steps.arch.outputs.value }}
+          path: dist/sidecar-linux-${{ steps.arch.outputs.value }}
+
+  build-release-macos:
+    if: github.event_name == 'workflow_dispatch'
+    needs: quality
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos-gpu-metal
+
+      - name: Build macOS Metal sidecar
+        run: bash scripts/build-metal.sh --release
+
+      - id: arch
+        name: Detect architecture
+        run: echo "value=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p dist
+          cp native/sidecar/target/release/obsidian-local-stt-sidecar \
+            dist/sidecar-macos-${{ steps.arch.outputs.value }}
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-macos-${{ steps.arch.outputs.value }}
+          path: dist/sidecar-macos-${{ steps.arch.outputs.value }}

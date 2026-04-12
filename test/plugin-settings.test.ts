@@ -10,6 +10,8 @@ describe('resolvePluginSettings', () => {
   it('merges valid persisted values', () => {
     expect(
       resolvePluginSettings({
+        accelerationPreference: 'cpu_only',
+        cudaLibraryPath: ' /run/host/usr/lib64 ',
         insertionMode: 'append_as_new_paragraph',
         listeningMode: 'press_and_hold',
         modelStorePathOverride: ' /tmp/models ',
@@ -24,6 +26,8 @@ describe('resolvePluginSettings', () => {
         sidecarStartupTimeoutMs: 6_000,
       }),
     ).toEqual({
+      accelerationPreference: 'cpu_only',
+      cudaLibraryPath: '/run/host/usr/lib64',
       developerMode: false,
       insertionMode: 'append_as_new_paragraph',
       listeningMode: 'press_and_hold',
@@ -37,7 +41,6 @@ describe('resolvePluginSettings', () => {
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
-      useGpu: false,
     });
   });
 
@@ -62,17 +65,28 @@ describe('resolvePluginSettings', () => {
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);
   });
 
-  it('defaults useGpu to false', () => {
-    expect(DEFAULT_PLUGIN_SETTINGS.useGpu).toBe(false);
-    expect(resolvePluginSettings({}).useGpu).toBe(false);
+  it('defaults accelerationPreference to auto', () => {
+    expect(DEFAULT_PLUGIN_SETTINGS.accelerationPreference).toBe('auto');
+    expect(resolvePluginSettings({}).accelerationPreference).toBe('auto');
   });
 
-  it('persists useGpu false when explicitly set', () => {
-    expect(resolvePluginSettings({ useGpu: false }).useGpu).toBe(false);
+  it('defaults cudaLibraryPath to an empty string', () => {
+    expect(DEFAULT_PLUGIN_SETTINGS.cudaLibraryPath).toBe('');
+    expect(resolvePluginSettings({}).cudaLibraryPath).toBe('');
   });
 
-  it('falls back useGpu to default when persisted value is not a boolean', () => {
-    expect(resolvePluginSettings({ useGpu: 'yes' }).useGpu).toBe(false);
+  it('migrates legacy useGpu false to cpu_only', () => {
+    expect(resolvePluginSettings({ useGpu: false }).accelerationPreference).toBe('cpu_only');
+  });
+
+  it('migrates legacy useGpu true to auto', () => {
+    expect(resolvePluginSettings({ useGpu: true }).accelerationPreference).toBe('auto');
+  });
+
+  it('falls back accelerationPreference to auto when persisted value is invalid', () => {
+    expect(resolvePluginSettings({ accelerationPreference: 'gpu' }).accelerationPreference).toBe(
+      'auto',
+    );
   });
 
   it('uses the new one-sentence default mode with pause-while-processing enabled', () => {

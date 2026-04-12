@@ -227,11 +227,18 @@ export default class LocalSttPlugin extends Plugin {
   private async resolveSidecarLaunchSpec(): Promise<SidecarLaunchSpec> {
     const executablePath = await this.resolveSidecarExecutablePath();
     const catalogPath = await this.resolveModelCatalogPath();
+    const env =
+      Platform.isLinux && this.settings.cudaLibraryPath.length > 0
+        ? {
+            LD_LIBRARY_PATH: this.settings.cudaLibraryPath,
+          }
+        : undefined;
 
     return {
       args: ['--catalog-path', catalogPath, '--app-version', this.manifest.version],
       command: executablePath,
       cwd: dirname(executablePath),
+      ...(env ? { env } : {}),
     };
   }
 

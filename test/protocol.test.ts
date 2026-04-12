@@ -35,6 +35,7 @@ describe('sidecar protocol', () => {
 
   it('serializes start_session command with useGpu field', () => {
     const command = createStartSessionCommand({
+      accelerationPreference: 'auto',
       language: 'en',
       mode: 'always_on',
       modelSelection: { kind: 'external_file', engineId: 'whisper_cpp', filePath: '/tmp/m.bin' },
@@ -45,6 +46,7 @@ describe('sidecar protocol', () => {
     const frame = encodeJsonFrame(command);
     const payload = readPayload(frame) as Record<string, unknown>;
 
+    expect(payload.accelerationPreference).toBe('auto');
     expect(payload.useGpu).toBe(false);
     expect(payload.sessionId).toBe('session-gpu');
   });
@@ -64,6 +66,14 @@ describe('sidecar protocol', () => {
       compiledBackends: ['cpu', 'cuda'],
       compiledEngines: ['whisper_cpp', 'cohere_onnx'],
       protocolVersion: SIDECAR_PROTOCOL_VERSION,
+      runtimeCapabilities: [
+        {
+          available: true,
+          backend: 'cuda',
+          engine: 'whisper_cpp',
+          reason: null,
+        },
+      ],
       systemInfo: 'AVX = 1 | CUDA = 1',
       type: 'system_info',
     });
@@ -75,6 +85,39 @@ describe('sidecar protocol', () => {
         compiledBackends: ['cpu', 'cuda'],
         compiledEngines: ['whisper_cpp', 'cohere_onnx'],
         protocolVersion: SIDECAR_PROTOCOL_VERSION,
+        runtimeCapabilities: [
+          {
+            available: true,
+            backend: 'cuda',
+            engine: 'whisper_cpp',
+            reason: null,
+          },
+        ],
+        systemInfo: 'AVX = 1 | CUDA = 1',
+        type: 'system_info',
+      },
+      kind: JSON_FRAME_KIND,
+    });
+  });
+
+  it('defaults missing runtimeCapabilities to an empty list for backward compatibility', () => {
+    const parser = new FramedMessageParser(parseEventFrame);
+    const frame = encodeRawJsonFrame({
+      compiledBackends: ['cpu', 'cuda'],
+      compiledEngines: ['whisper_cpp'],
+      protocolVersion: SIDECAR_PROTOCOL_VERSION,
+      systemInfo: 'AVX = 1 | CUDA = 1',
+      type: 'system_info',
+    });
+    const parsed = parser.pushChunk(frame);
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toEqual({
+      envelope: {
+        compiledBackends: ['cpu', 'cuda'],
+        compiledEngines: ['whisper_cpp'],
+        protocolVersion: SIDECAR_PROTOCOL_VERSION,
+        runtimeCapabilities: [],
         systemInfo: 'AVX = 1 | CUDA = 1',
         type: 'system_info',
       },
@@ -126,4 +169,16 @@ function readPayload(frame: Uint8Array): unknown {
   const payloadBytes = frame.slice(5, 5 + payloadLength);
 
   return JSON.parse(new TextDecoder().decode(payloadBytes));
+}
+
+function encodeRawJsonFrame(payload: unknown): Uint8Array {
+  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
+  const frame = new Uint8Array(5 + payloadBytes.byteLength);
+  const view = new DataView(frame.buffer);
+
+  frame[0] = JSON_FRAME_KIND;
+  view.setUint32(1, payloadBytes.byteLength, true);
+  frame.set(payloadBytes, 5);
+
+  return frame;
 }

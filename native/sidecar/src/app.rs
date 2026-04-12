@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::capabilities::probe_runtime_capabilities;
 use crate::catalog::ModelCatalog;
 use crate::installer::{InstallRequest, ModelInstallManager};
 use crate::model_store::{
@@ -7,8 +8,9 @@ use crate::model_store::{
     scan_installed_models,
 };
 use crate::protocol::{
-    Command, EngineId, Event, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
-    SessionState, SessionStopReason, compiled_backends, compiled_engines, system_info_string,
+    AccelerationPreference, Command, EngineId, Event, ListeningMode, ModelInstallState,
+    ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
+    compiled_backends, compiled_engines, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
@@ -30,6 +32,7 @@ pub struct AppState {
     catalog: ModelCatalog,
     install_manager: ModelInstallManager,
     model_path_probe: ModelPathProbe,
+    runtime_capabilities: Vec<RuntimeCapability>,
     sidecar_version: String,
     transcription_worker: TranscriptionWorker,
 }
@@ -53,19 +56,26 @@ struct ResolvedModelSelection {
 
 impl AppState {
     pub fn new(sidecar_version: impl Into<String>, catalog: ModelCatalog) -> Self {
-        Self::with_model_path_probe(sidecar_version, catalog, probe_model_for_engine)
+        Self::with_model_path_probe_and_runtime_capabilities(
+            sidecar_version,
+            catalog,
+            probe_model_for_engine,
+            probe_runtime_capabilities(),
+        )
     }
 
-    fn with_model_path_probe(
+    fn with_model_path_probe_and_runtime_capabilities(
         sidecar_version: impl Into<String>,
         catalog: ModelCatalog,
         model_path_probe: ModelPathProbe,
+        runtime_capabilities: Vec<RuntimeCapability>,
     ) -> Self {
         Self {
             active_session: None,
             catalog,
             install_manager: ModelInstallManager::new(),
             model_path_probe,
+            runtime_capabilities,
             sidecar_version: sidecar_version.into(),
             transcription_worker: TranscriptionWorker::spawn(),
         }
@@ -290,15 +300,18 @@ impl AppState {
                 (ControlFlow::Continue, events)
             }
             Command::GetSystemInfo => {
-                events.push(Event::SystemInfo {
-                    compiled_backends: compiled_backends(),
-                    compiled_engines: compiled_engines(),
-                    system_info: system_info_string(),
-                });
+                events.push(self.build_system_info_event());
+
+                (ControlFlow::Continue, events)
+            }
+            Command::RefreshCapabilities => {
+                self.runtime_capabilities = probe_runtime_capabilities();
+                events.push(self.build_system_info_event());
 
                 (ControlFlow::Continue, events)
             }
             Command::StartSession {
+                acceleration_preference,
                 language,
                 mode,
                 model_selection,
@@ -319,6 +332,12 @@ impl AppState {
                     model_store_path_override.as_deref(),
                 ) {
                     Ok(resolved_model) => {
+                        let use_gpu = resolve_use_gpu(
+                            resolved_model.engine_id,
+                            acceleration_preference,
+                            use_gpu,
+                            &self.runtime_capabilities,
+                        );
                         let config = SessionConfig {
                             language: language.clone(),
                             mode,
@@ -444,6 +463,15 @@ impl AppState {
 
                 (ControlFlow::Shutdown, events)
             }
+        }
+    }
+
+    fn build_system_info_event(&self) -> Event {
+        Event::SystemInfo {
+            compiled_backends: compiled_backends(),
+            compiled_engines: compiled_engines(),
+            runtime_capabilities: self.runtime_capabilities.clone(),
+            system_info: system_info_string(),
         }
     }
 
@@ -909,6 +937,23 @@ fn invalid_gate_warning(session_id: Option<String>, message: &'static str) -> Ev
     }
 }
 
+fn resolve_use_gpu(
+    engine_id: EngineId,
+    acceleration_preference: Option<AccelerationPreference>,
+    legacy_use_gpu: bool,
+    runtime_capabilities: &[RuntimeCapability],
+) -> bool {
+    match acceleration_preference {
+        Some(AccelerationPreference::CpuOnly) => false,
+        Some(AccelerationPreference::Auto) => runtime_capabilities.iter().any(|capability| {
+            capability.engine == engine_id.as_str()
+                && capability.backend != "cpu"
+                && capability.available
+        }),
+        None => legacy_use_gpu,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::env::temp_dir;
@@ -921,15 +966,14 @@ mod tests {
         ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
     };
     use crate::protocol::{
-        Command, EngineId, Event, ListeningMode, ModelProbeStatus, SelectedModel, SessionState,
-        SessionStopReason,
+        AccelerationPreference, Command, EngineId, Event, ListeningMode, ModelProbeStatus,
+        RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
     };
     use crate::transcription::TranscriptionError;
 
     #[test]
     fn health_returns_ready_event() {
-        let (control_flow, events) =
-            AppState::new("0.1.0", sample_catalog()).handle_command(Command::Health);
+        let (control_flow, events) = test_app().handle_command(Command::Health);
 
         assert_eq!(control_flow, ControlFlow::Continue);
         assert_eq!(
@@ -943,8 +987,7 @@ mod tests {
 
     #[test]
     fn get_system_info_returns_compiled_backends() {
-        let (control_flow, events) =
-            AppState::new("0.1.0", sample_catalog()).handle_command(Command::GetSystemInfo);
+        let (control_flow, events) = test_app().handle_command(Command::GetSystemInfo);
 
         assert_eq!(control_flow, ControlFlow::Continue);
         assert_eq!(events.len(), 1);
@@ -952,10 +995,16 @@ mod tests {
             Event::SystemInfo {
                 compiled_backends,
                 compiled_engines,
+                runtime_capabilities,
                 system_info,
             } => {
                 assert!(compiled_backends.contains(&"cpu".to_string()));
                 assert!(compiled_engines.contains(&"whisper_cpp".to_string()));
+                assert!(runtime_capabilities.iter().any(|capability| {
+                    capability.engine == "whisper_cpp"
+                        && capability.backend == "cpu"
+                        && capability.available
+                }));
                 assert!(!system_info.is_empty());
             }
             other => panic!("expected SystemInfo event, got {other:?}"),
@@ -985,9 +1034,10 @@ mod tests {
 
     #[test]
     fn start_session_rejects_missing_model() {
-        let (_, events) = AppState::new("0.1.0", sample_catalog()).handle_command(
-            start_session_command("session-1", Path::new("/tmp/definitely-missing-model.bin")),
-        );
+        let (_, events) = test_app().handle_command(start_session_command(
+            "session-1",
+            Path::new("/tmp/definitely-missing-model.bin"),
+        ));
 
         assert!(
             matches!(events.first(), Some(Event::Error { code, .. }) if code == "missing_model_file")
@@ -996,20 +1046,72 @@ mod tests {
 
     #[test]
     fn probe_model_selection_reports_missing_managed_model() {
-        let (_, events) =
-            AppState::new("0.1.0", sample_catalog()).handle_command(Command::ProbeModelSelection {
-                model_selection: SelectedModel::CatalogModel {
-                    engine_id: EngineId::WhisperCpp,
-                    model_id: "small".to_string(),
-                },
-                model_store_path_override: Some(
-                    temp_dir().join("missing-model-store").display().to_string(),
-                ),
-            });
+        let (_, events) = test_app().handle_command(Command::ProbeModelSelection {
+            model_selection: SelectedModel::CatalogModel {
+                engine_id: EngineId::WhisperCpp,
+                model_id: "small".to_string(),
+            },
+            model_store_path_override: Some(
+                temp_dir().join("missing-model-store").display().to_string(),
+            ),
+        });
 
         assert!(matches!(
             events.first(),
             Some(Event::ModelProbeResult { status, .. }) if *status == ModelProbeStatus::Missing
+        ));
+    }
+
+    #[test]
+    fn auto_acceleration_uses_available_gpu_backend() {
+        assert!(super::resolve_use_gpu(
+            EngineId::WhisperCpp,
+            Some(AccelerationPreference::Auto),
+            false,
+            &[
+                RuntimeCapability {
+                    available: true,
+                    backend: "cpu".to_string(),
+                    engine: "whisper_cpp".to_string(),
+                    reason: None,
+                },
+                RuntimeCapability {
+                    available: true,
+                    backend: "cuda".to_string(),
+                    engine: "whisper_cpp".to_string(),
+                    reason: None,
+                },
+            ],
+        ));
+    }
+
+    #[test]
+    fn cpu_only_acceleration_disables_gpu_even_when_available() {
+        assert!(!super::resolve_use_gpu(
+            EngineId::WhisperCpp,
+            Some(AccelerationPreference::CpuOnly),
+            true,
+            &[RuntimeCapability {
+                available: true,
+                backend: "cuda".to_string(),
+                engine: "whisper_cpp".to_string(),
+                reason: None,
+            }],
+        ));
+    }
+
+    #[test]
+    fn legacy_use_gpu_is_used_when_acceleration_preference_is_missing() {
+        assert!(super::resolve_use_gpu(
+            EngineId::WhisperCpp,
+            None,
+            true,
+            &[RuntimeCapability {
+                available: false,
+                backend: "cuda".to_string(),
+                engine: "whisper_cpp".to_string(),
+                reason: Some("not available".to_string()),
+            }],
         ));
     }
 
@@ -1046,6 +1148,7 @@ mod tests {
 
     fn start_session_command(session_id: &str, model_file_path: &Path) -> Command {
         Command::StartSession {
+            acceleration_preference: None,
             language: "en".to_string(),
             mode: ListeningMode::AlwaysOn,
             model_selection: SelectedModel::ExternalFile {
@@ -1072,7 +1175,29 @@ mod tests {
     }
 
     fn test_app() -> AppState {
-        AppState::with_model_path_probe("0.1.0", sample_catalog(), probe_test_model_path)
+        AppState::with_model_path_probe_and_runtime_capabilities(
+            "0.1.0",
+            sample_catalog(),
+            probe_test_model_path,
+            sample_runtime_capabilities(),
+        )
+    }
+
+    fn sample_runtime_capabilities() -> Vec<RuntimeCapability> {
+        vec![
+            RuntimeCapability {
+                available: true,
+                backend: "cpu".to_string(),
+                engine: "whisper_cpp".to_string(),
+                reason: None,
+            },
+            RuntimeCapability {
+                available: true,
+                backend: "cpu".to_string(),
+                engine: "cohere_onnx".to_string(),
+                reason: None,
+            },
+        ]
     }
 
     fn probe_test_model_path(

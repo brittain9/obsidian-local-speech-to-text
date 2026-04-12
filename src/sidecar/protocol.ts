@@ -24,6 +24,7 @@ export const JSON_FRAME_KIND = 0x01;
 export const AUDIO_FRAME_KIND = 0x02;
 export const FRAME_HEADER_LENGTH = 5;
 
+export type AccelerationPreference = 'auto' | 'cpu_only';
 export type ListeningMode = 'always_on' | 'press_and_hold' | 'one_sentence';
 export type SessionState =
   | 'error'
@@ -54,6 +55,7 @@ interface EnvelopeBase<TType extends string> {
 export interface HealthCommand extends EnvelopeBase<'health'> {}
 
 export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
+  accelerationPreference?: AccelerationPreference;
   language: 'en';
   mode: ListeningMode;
   modelSelection: SelectedModel;
@@ -61,6 +63,13 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   pauseWhileProcessing: boolean;
   sessionId: string;
   useGpu?: boolean;
+}
+
+export interface RuntimeCapability {
+  available: boolean;
+  backend: string;
+  engine: string;
+  reason: string | null;
 }
 
 export interface GetModelStoreCommand extends EnvelopeBase<'get_model_store'> {
@@ -131,6 +140,7 @@ export interface HealthOkEvent extends EnvelopeBase<'health_ok'> {
 export interface SystemInfoEvent extends EnvelopeBase<'system_info'> {
   compiledBackends: string[];
   compiledEngines: string[];
+  runtimeCapabilities: RuntimeCapability[];
   systemInfo: string;
 }
 
@@ -460,6 +470,7 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         compiledBackends: readStringArray(parsedValue.compiledBackends, 'event.compiledBackends'),
         compiledEngines: readStringArray(parsedValue.compiledEngines, 'event.compiledEngines'),
         protocolVersion,
+        runtimeCapabilities: readRuntimeCapabilities(parsedValue.runtimeCapabilities),
         systemInfo: readString(parsedValue.systemInfo, 'event.systemInfo'),
         type,
       };
@@ -717,6 +728,23 @@ function readModelProbeStatus(value: unknown, fieldName: string): ModelProbeResu
   }
 
   throw new Error(`Unsupported model probe status: ${status}`);
+}
+
+function readRuntimeCapabilities(value: unknown): RuntimeCapability[] {
+  if (value === undefined) {
+    return [];
+  }
+
+  return readArray(value, 'event.runtimeCapabilities').map((capability, index) => {
+    const record = readRecord(capability, `event.runtimeCapabilities[${index}]`);
+
+    return {
+      available: readBoolean(record.available, `event.runtimeCapabilities[${index}].available`),
+      backend: readString(record.backend, `event.runtimeCapabilities[${index}].backend`),
+      engine: readString(record.engine, `event.runtimeCapabilities[${index}].engine`),
+      reason: readNullableString(record.reason, `event.runtimeCapabilities[${index}].reason`),
+    };
+  });
 }
 
 function readModelInstallState(value: unknown, fieldName: string): ModelInstallState {

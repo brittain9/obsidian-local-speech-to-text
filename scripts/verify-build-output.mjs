@@ -1,12 +1,15 @@
 import { access, readFile } from 'node:fs/promises';
 
+const args = new Set(process.argv.slice(2));
+const profile = args.has('--release') ? 'release' : 'debug';
+
 const MAIN_BUNDLE_PATH = 'main.js';
 const MODEL_CATALOG_PATH = 'config/model-catalog.json';
 const RECORDER_WORKLET_PATH = 'assets/pcm-recorder.worklet.js';
 const SIDECAR_BINARY_PATH =
   process.platform === 'win32'
-    ? 'native/sidecar/target/debug/obsidian-local-stt-sidecar.exe'
-    : 'native/sidecar/target/debug/obsidian-local-stt-sidecar';
+    ? `native/sidecar/target/${profile}/obsidian-local-stt-sidecar.exe`
+    : `native/sidecar/target/${profile}/obsidian-local-stt-sidecar`;
 
 async function main() {
   const mainBundle = await readFile(MAIN_BUNDLE_PATH, 'utf8');
@@ -21,7 +24,7 @@ async function main() {
   await access(RECORDER_WORKLET_PATH);
   await access(SIDECAR_BINARY_PATH);
   console.log(
-    '[verify-build-output] main bundle, model catalog, recorder worklet, and sidecar executable look valid',
+    `[verify-build-output] ${profile} profile: main bundle, model catalog, recorder worklet, and sidecar executable look valid`,
   );
 }
 

@@ -1,5 +1,6 @@
 #!/bin/sh
-# TODO: WE SHOULD FIND A BETTER WAY TO DO THIS, BUT THIS WORKS FOR NOW
+# Deprecated legacy fallback. Prefer the plugin's "CUDA library path" setting,
+# which now scopes LD_LIBRARY_PATH on the spawned sidecar process directly.
 # Wrapper that sets CUDA LD_LIBRARY_PATH only for the sidecar process.
 #
 # Inside a Flatpak sandbox, host /usr is mounted at /run/host/usr/ via

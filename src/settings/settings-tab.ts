@@ -1,5 +1,5 @@
 import type { App, Plugin } from 'obsidian';
-import { PluginSettingTab, Setting } from 'obsidian';
+import { Platform, PluginSettingTab, Setting } from 'obsidian';
 
 import {
   CurrentModelInfoModal,
@@ -11,7 +11,13 @@ import type {
   ModelManagementService,
   ModelManagementSnapshot,
 } from '../models/model-management-service';
+import { getEngineDisplayName, isEngineId } from '../models/model-management-types';
 import { formatErrorMessage, formatInstallProgress } from '../shared/format-utils';
+import type {
+  AccelerationPreference,
+  RuntimeCapability,
+  SystemInfoEvent,
+} from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import type { InsertionMode, PluginSettings } from './plugin-settings';
 
@@ -29,6 +35,10 @@ const INSERTION_MODE_OPTIONS: Array<{ label: string; value: InsertionMode }> = [
 ];
 
 function formatBackendLabel(backend: string): string {
+  if (backend === 'cpu') {
+    return 'CPU';
+  }
+
   if (backend === 'cuda') {
     return 'CUDA';
   }
@@ -37,7 +47,109 @@ function formatBackendLabel(backend: string): string {
     return 'Metal';
   }
 
+  if (backend === 'ort-cuda') {
+    return 'ORT CUDA';
+  }
+
   return backend.charAt(0).toUpperCase() + backend.slice(1);
+}
+
+function buildAccelerationSummary(systemInfo: SystemInfoEvent | null): string {
+  if (systemInfo === null) {
+    return 'Sidecar capability data is unavailable until the sidecar starts successfully.';
+  }
+
+  const gpuBackends = systemInfo.compiledBackends.filter((backend) => backend !== 'cpu');
+
+  if (gpuBackends.length === 0) {
+    return 'This sidecar build is CPU-only.';
+  }
+
+  return `Compiled GPU backends: ${gpuBackends.map(formatBackendLabel).join(', ')}.`;
+}
+
+function formatCapabilityReason(reason: string | null): string {
+  if (reason === null) {
+    return 'unknown reason';
+  }
+
+  const trimmed = reason.trim();
+  return trimmed.length > 0 ? trimmed : 'unknown reason';
+}
+
+function formatEngineName(engineId: string): string {
+  return isEngineId(engineId) ? getEngineDisplayName(engineId) : engineId;
+}
+
+function getBackendPriority(engineId: string, backend: string): number {
+  const preferredBackends =
+    engineId === 'whisper_cpp' ? ['metal', 'cuda'] : engineId === 'cohere_onnx' ? ['cuda'] : [];
+  const index = preferredBackends.indexOf(backend);
+
+  return index === -1 ? preferredBackends.length : index;
+}
+
+function getSortedGpuCapabilities(
+  capabilities: RuntimeCapability[],
+  engineId: string,
+): RuntimeCapability[] {
+  return capabilities
+    .filter((capability) => capability.engine === engineId && capability.backend !== 'cpu')
+    .sort((left, right) => {
+      const priorityDelta =
+        getBackendPriority(engineId, left.backend) - getBackendPriority(engineId, right.backend);
+
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+
+      return left.backend.localeCompare(right.backend);
+    });
+}
+
+function buildEffectiveBackendLines(
+  systemInfo: SystemInfoEvent | null,
+  accelerationPreference: AccelerationPreference,
+): string[] {
+  if (systemInfo === null) {
+    return [];
+  }
+
+  const engineIds = systemInfo.compiledEngines;
+
+  if (engineIds.length === 0) {
+    return [];
+  }
+
+  if (accelerationPreference === 'cpu_only') {
+    return engineIds.map((engineId) => `${formatEngineName(engineId)}: CPU (GPU disabled)`);
+  }
+
+  if (
+    systemInfo.runtimeCapabilities.length === 0 &&
+    systemInfo.compiledBackends.some((backend) => backend !== 'cpu')
+  ) {
+    return engineIds.map(
+      (engineId) => `${formatEngineName(engineId)}: CPU (runtime capability data unavailable)`,
+    );
+  }
+
+  return engineIds.map((engineId) => {
+    const gpuCapabilities = getSortedGpuCapabilities(systemInfo.runtimeCapabilities, engineId);
+    const availableGpu = gpuCapabilities.find((capability) => capability.available);
+
+    if (availableGpu !== undefined) {
+      return `${formatEngineName(engineId)}: ${formatBackendLabel(availableGpu.backend)}`;
+    }
+
+    const unavailableGpu = gpuCapabilities[0];
+
+    if (unavailableGpu !== undefined) {
+      return `${formatEngineName(engineId)}: CPU (${formatBackendLabel(unavailableGpu.backend)} unavailable: ${formatCapabilityReason(unavailableGpu.reason)})`;
+    }
+
+    return `${formatEngineName(engineId)}: CPU`;
+  });
 }
 
 export class LocalSttSettingTab extends PluginSettingTab {
@@ -145,6 +257,26 @@ export class LocalSttSettingTab extends PluginSettingTab {
         });
       });
 
+    if (Platform.isLinux) {
+      new Setting(advancedDetails)
+        .setName('CUDA library path')
+        .setDesc(
+          'Optional colon-separated library search path for the sidecar process only. Use this for Flatpak or custom CUDA installs without changing Obsidian’s global environment.',
+        )
+        .addText((text) => {
+          text.setPlaceholder(
+            '/run/host/usr/local/cuda-12.9/targets/x86_64-linux/lib:/run/host/usr/lib64',
+          );
+          text.setValue(settings.cudaLibraryPath);
+          text.onChange(async (value) => {
+            await this.persistSettings({
+              ...this.dependencies.getSettings(),
+              cudaLibraryPath: value.trim(),
+            });
+          });
+        });
+    }
+
     new Setting(advancedDetails)
       .setName('Startup timeout (ms)')
       .setDesc('Maximum time allowed for the startup health handshake.')
@@ -223,38 +355,50 @@ export class LocalSttSettingTab extends PluginSettingTab {
     });
   }
 
-  private async renderEngineOptions(containerEl: HTMLDivElement): Promise<void> {
-    let gpuBackends: string[] = [];
-
-    try {
-      const info = await this.dependencies.sidecarConnection.getSystemInfo();
-      gpuBackends = info.compiledBackends.filter((backend) => backend !== 'cpu');
-    } catch {
-      // Sidecar may not be running yet; show the fallback toggle without surfacing noise.
-    }
+  private async renderEngineOptions(
+    containerEl: HTMLDivElement,
+    cachedSystemInfo?: SystemInfoEvent | null,
+  ): Promise<void> {
+    const systemInfo =
+      cachedSystemInfo !== undefined ? cachedSystemInfo : await this.fetchSystemInfo();
 
     const settings = this.dependencies.getSettings();
-    const hasGpu = gpuBackends.length > 0;
-    const backendLabel = gpuBackends.map(formatBackendLabel).join(', ');
-    const description = hasGpu
-      ? `Use ${backendLabel} for transcription.`
-      : 'Not available in this build. Rebuild the sidecar with a GPU feature flag to enable.';
+    const detailLines = buildEffectiveBackendLines(systemInfo, settings.accelerationPreference);
 
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName('Hardware acceleration')
-      .setDesc(description)
-      .addToggle((toggle) => {
-        toggle.setValue(settings.useGpu && hasGpu);
-        toggle.setDisabled(!hasGpu);
-        toggle.onChange(async (value) => {
+      .setName('GPU acceleration')
+      .setDesc(
+        'Use GPU backends when available for the selected engine. Disabled forces every engine onto CPU.',
+      )
+      .addDropdown((dropdown) => {
+        dropdown.addOption('auto', 'Use when available');
+        dropdown.addOption('cpu_only', 'Disabled');
+        dropdown.setValue(settings.accelerationPreference);
+        dropdown.onChange(async (value) => {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            useGpu: value,
+            accelerationPreference: value === 'cpu_only' ? 'cpu_only' : 'auto',
           });
+          void this.renderEngineOptions(containerEl, systemInfo);
         });
       });
+
+    const descriptionEl = containerEl.createDiv({ cls: 'setting-item-description' });
+    descriptionEl.createDiv({ text: buildAccelerationSummary(systemInfo) });
+
+    for (const line of detailLines) {
+      descriptionEl.createDiv({ text: line });
+    }
+  }
+
+  private async fetchSystemInfo(): Promise<SystemInfoEvent | null> {
+    try {
+      return await this.dependencies.sidecarConnection.getSystemInfo();
+    } catch {
+      return null;
+    }
   }
 
   private async persistSettings(nextSettings: PluginSettings): Promise<void> {
