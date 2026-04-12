@@ -20,6 +20,7 @@ export type ResolveSidecarLaunchSpec = () => Promise<SidecarLaunchSpec>;
 export class SidecarProcess {
   private child: ChildProcessWithoutNullStreams | null = null;
   private stderrReader: ReadLineInterface | null = null;
+  private stdinDead = false;
 
   constructor(
     private readonly resolveLaunchSpec: ResolveSidecarLaunchSpec,
@@ -44,6 +45,15 @@ export class SidecarProcess {
     });
 
     await waitForSpawn(child);
+
+    this.stdinDead = false;
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      this.stdinDead = true;
+
+      if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED') {
+        throw error;
+      }
+    });
 
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: Uint8Array) => {
@@ -83,7 +93,7 @@ export class SidecarProcess {
   write(frameBytes: Uint8Array): void {
     const child = this.child;
 
-    if (child === null || !child.stdin.writable) {
+    if (child === null || this.stdinDead || !child.stdin.writable) {
       throw new Error('Sidecar process is not running.');
     }
 

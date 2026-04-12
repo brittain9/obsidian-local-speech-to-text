@@ -149,6 +149,119 @@ Hotkey-only command target:
 
 - `Local STT: Press-And-Hold Gate`
 
+## GPU Acceleration
+
+GPU acceleration is opt-in. The default sidecar is CPU-only and works everywhere. A GPU-enabled sidecar must be built separately and pointed to via the **Sidecar path override** setting.
+
+### Platform support
+
+| Platform | GPU support | Notes |
+|---|---|---|
+| Windows | CUDA | Native install; child processes inherit `CUDA_PATH` and DLL search path automatically |
+| macOS | Metal | Metal is a standard system framework; no separate install required |
+| Linux native (.AppImage / .deb / .rpm) | CUDA | Child process inherits host environment; RPATH in the CUDA binary resolves automatically |
+| Linux Flatpak | Not supported by default | Sandbox blocks host CUDA libraries; see advanced setup below |
+
+### Building a GPU sidecar (Linux CUDA)
+
+Requires the CUDA toolkit (`nvcc`) and NVIDIA drivers installed on the host.
+
+```sh
+bash scripts/linux_cuda_build.sh --no-clean
+```
+
+Produces two binaries:
+
+- `native/sidecar/target/debug/obsidian-local-stt-sidecar` — CPU build (default)
+- `native/sidecar/target-cuda/debug/obsidian-local-stt-sidecar` — CUDA build
+
+Add `--release` for optimized binaries (longer build, significantly faster inference).
+
+### Enabling GPU in the plugin
+
+1. Open `Settings -> Local STT -> Advanced`.
+2. Set **Sidecar path override** to the absolute path of the CUDA binary.
+3. Enable the **GPU acceleration** toggle.
+4. Restart the sidecar (`Local STT: Restart Sidecar` or restart Obsidian).
+
+### Linux Flatpak: advanced override (power user)
+
+Flatpak sandboxes child processes and hides host library paths. The CUDA sidecar links against `libcublas.so.13`, `libcudart.so.13`, `libcublasLt.so.13`, and `libcuda.so.1` — all invisible inside the sandbox by default.
+
+**Why this is non-trivial:** Flatpak always replaces `/usr` with its own runtime — `--filesystem=host` does not expose host CUDA libraries. The `--filesystem=host-os` permission mounts the host OS tree at `/run/host/usr/` instead. Additionally, `/usr/local/cuda` is typically a symlink chain (e.g. `/usr/local/cuda` → `/etc/alternatives/cuda` → `/usr/local/cuda-13.2`) and these absolute symlinks break inside the sandbox because `/etc/alternatives/` resolves to the sandbox's `/etc`, not the host's. You must use the **resolved real path** (e.g. `cuda-13.2`) in all overrides.
+
+#### Step 1: Find your CUDA paths
+
+```sh
+# Find the real CUDA toolkit path (not the symlink)
+readlink -f /usr/local/cuda
+# Example output: /usr/local/cuda-13.2
+
+# Confirm the toolkit libraries
+ls /usr/local/cuda-13.2/targets/x86_64-linux/lib/libcublas.so.*
+
+# libcuda.so.1 comes from the NVIDIA driver, not the toolkit — find it separately
+find /usr -name "libcuda.so.1" 2>/dev/null
+# Common locations: /usr/lib64/libcuda.so.1 or /usr/lib/x86_64-linux-gnu/libcuda.so.1
+```
+
+#### Step 2: Apply Flatpak overrides
+
+Replace `cuda-13.2` and `/usr/lib64` with the paths from step 1.
+
+```sh
+# Expose host OS tree at /run/host/usr/ inside the sandbox
+flatpak override --user --filesystem=host-os md.obsidian.Obsidian
+
+# Expose GPU device nodes (/dev/nvidia*, /dev/nvidiactl, /dev/nvidia-uvm)
+flatpak override --user --device=all md.obsidian.Obsidian
+
+# Point the dynamic linker at the real paths under /run/host/
+# Three paths: toolkit libs, toolkit lib64, and driver lib (libcuda.so.1)
+flatpak override --user \
+  --env=LD_LIBRARY_PATH=/run/host/usr/local/cuda-13.2/targets/x86_64-linux/lib:/run/host/usr/local/cuda-13.2/lib64:/run/host/usr/lib64 \
+  md.obsidian.Obsidian
+```
+
+#### Step 3: Verify inside the sandbox (before launching Obsidian)
+
+```sh
+# Open a shell inside the Obsidian sandbox
+flatpak run --command=sh md.obsidian.Obsidian
+
+# Check libraries are visible
+ls /run/host/usr/local/cuda-13.2/targets/x86_64-linux/lib/libcublas.so.13
+ls /run/host/usr/lib64/libcuda.so.1
+
+# Run ldd on the CUDA sidecar to confirm all dependencies resolve
+ldd /path/to/target-cuda/debug/obsidian-local-stt-sidecar | grep -E "cublas|cudart|cuda|not found"
+# All four should show resolved paths under /run/host/. Zero "not found".
+```
+
+#### Step 4: Configure the plugin
+
+1. Fully quit and reopen Obsidian (overrides only take effect on a fresh launch).
+2. Open `Settings → Local STT → Advanced`.
+3. Set **Sidecar path override** to the absolute path of the CUDA binary.
+4. Set **GPU acceleration** to the appropriate backend.
+5. Run `Local STT: Check Sidecar Health` from the command palette.
+
+#### Why LD_LIBRARY_PATH works
+
+The CUDA sidecar has a `RUNPATH` (not `RPATH`) baked into the ELF header at compile time, pointing to the host path (e.g. `/usr/local/cuda/targets/x86_64-linux/lib`). This path doesn't exist inside the sandbox. However, `LD_LIBRARY_PATH` is searched **before** `RUNPATH` in the dynamic linker search order, so the `/run/host/...` paths in the environment override win.
+
+#### Reverting
+
+```sh
+flatpak override --user --reset md.obsidian.Obsidian
+```
+
+#### If it doesn't work
+
+- Exit code 127 = the dynamic linker can't find a library. Recheck the `ldd` output from step 3.
+- `cuInit` failure at runtime = driver version mismatch. Run `nvidia-smi` to check your driver version and confirm it matches the CUDA toolkit version you built against.
+- If overrides are too fragile, switch to a native Obsidian install (.AppImage or distribution package). On a native install, the CUDA sidecar works without any overrides.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

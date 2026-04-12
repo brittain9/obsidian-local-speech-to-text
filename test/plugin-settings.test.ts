@@ -37,7 +37,7 @@ describe('resolvePluginSettings', () => {
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
-      useGpu: true,
+      useGpu: false,
     });
   });
 
@@ -62,9 +62,9 @@ describe('resolvePluginSettings', () => {
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);
   });
 
-  it('defaults useGpu to true', () => {
-    expect(DEFAULT_PLUGIN_SETTINGS.useGpu).toBe(true);
-    expect(resolvePluginSettings({}).useGpu).toBe(true);
+  it('defaults useGpu to false', () => {
+    expect(DEFAULT_PLUGIN_SETTINGS.useGpu).toBe(false);
+    expect(resolvePluginSettings({}).useGpu).toBe(false);
   });
 
   it('persists useGpu false when explicitly set', () => {
@@ -72,7 +72,7 @@ describe('resolvePluginSettings', () => {
   });
 
   it('falls back useGpu to default when persisted value is not a boolean', () => {
-    expect(resolvePluginSettings({ useGpu: 'yes' }).useGpu).toBe(true);
+    expect(resolvePluginSettings({ useGpu: 'yes' }).useGpu).toBe(false);
   });
 
   it('uses the new one-sentence default mode with pause-while-processing enabled', () => {

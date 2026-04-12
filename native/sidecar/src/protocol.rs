@@ -395,7 +395,7 @@ pub fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> 
 }
 
 fn default_use_gpu() -> bool {
-    true
+    false
 }
 
 pub fn compiled_backends() -> Vec<String> {
@@ -470,7 +470,7 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
-                use_gpu: true,
+                use_gpu: false,
             })
         );
     }

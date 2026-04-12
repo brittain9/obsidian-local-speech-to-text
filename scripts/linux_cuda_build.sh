@@ -6,12 +6,13 @@ usage() {
   cat <<'EOF'
 Usage: bash scripts/linux_cuda_build.sh [--release] [--no-clean] [--jobs N]
 
-Build the Linux CUDA-enabled native sidecar with the linker and CMake settings
-required for the current whisper-rs / whisper.cpp dependency stack.
+Build both the CPU and CUDA-enabled native sidecars. The CPU binary is written
+to the default target/ directory. The CUDA binary is written to target-cuda/ so
+it never overwrites the CPU binary.
 
 Options:
-  --release   Build the release binary instead of debug.
-  --no-clean  Skip the initial cargo clean.
+  --release   Build release binaries instead of debug.
+  --no-clean  Skip the initial cargo clean of both target directories.
   --jobs N    Override the parallel build job count (default: 4).
   --help      Show this help text.
 
@@ -107,10 +108,15 @@ required_kb=$((min_free_gb * 1024 * 1024))
 host_triple=$(rustc -vV | sed -n 's/^host: //p')
 [[ -n "$host_triple" ]] || die "failed to detect Rust host triple"
 
+cuda_root=$(dirname "$(dirname "$CUDACXX")")
+cuda_arch="$(uname -m)-linux"
+cuda_lib_path="${CUDA_LIB_PATH:-${cuda_root}/targets/${cuda_arch}/lib}"
+[[ -d "$cuda_lib_path" ]] || die "CUDA lib directory not found: $cuda_lib_path (override with CUDA_LIB_PATH)"
+
 host_linker_config="host.linker=\"${CC}\""
 host_rustflags_config='host.rustflags=["-C","link-arg=-fuse-ld=bfd"]'
 target_linker_config="target.${host_triple}.linker=\"${CC}\""
-target_rustflags_config="target.${host_triple}.rustflags=[\"-C\",\"link-arg=-fuse-ld=bfd\"]"
+target_rustflags_config="target.${host_triple}.rustflags=[\"-C\",\"link-arg=-fuse-ld=bfd\",\"-C\",\"link-arg=-Wl,-rpath,${cuda_lib_path}\"]"
 
 printf 'Linux CUDA sidecar build\n'
 printf '  repo: %s\n' "$REPO_ROOT"
@@ -121,6 +127,7 @@ printf '  cc: %s\n' "$CC"
 printf '  cxx: %s\n' "$CXX"
 printf '  cuda host cxx: %s\n' "$CUDAHOSTCXX"
 printf '  nvcc: %s\n' "$CUDACXX"
+printf '  cuda lib rpath: %s\n' "$cuda_lib_path"
 printf '  free space: %s\n' "$(df -h "$REPO_ROOT" | awk 'NR==2 { print $4 " free on " $1 }')"
 printf '\n'
 
@@ -128,15 +135,43 @@ printf '\n'
 "$CUDACXX" --version | sed -n '1,4p'
 printf '\n'
 
+cpu_target_dir="$REPO_ROOT/native/sidecar/target"
+cuda_target_dir="$REPO_ROOT/native/sidecar/target-cuda"
+
 if (( skip_clean == 0 )); then
-  printf 'Cleaning sidecar target directory...\n'
+  printf 'Cleaning CPU target directory...\n'
   cargo clean --manifest-path "$SIDECAR_MANIFEST"
+  printf 'Cleaning CUDA target directory...\n'
+  cargo clean --manifest-path "$SIDECAR_MANIFEST" --target-dir "$cuda_target_dir"
   printf '\n'
 fi
 
-cargo_args=(
+run_build() {
+  local label=$1
+  shift
+
+  printf 'Building %s sidecar:\n  cargo' "$label"
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n\n'
+
+  (
+    cd "$REPO_ROOT"
+    cargo "$@"
+  )
+}
+
+cpu_args=(
   build
   --manifest-path "$SIDECAR_MANIFEST"
+  -j "$jobs"
+)
+
+cuda_args=(
+  build
+  --manifest-path "$SIDECAR_MANIFEST"
+  --target-dir "$cuda_target_dir"
   --features gpu-cuda
   -j "$jobs"
   --config "$host_linker_config"
@@ -146,22 +181,16 @@ cargo_args=(
 )
 
 if [[ "$build_profile" == "release" ]]; then
-  cargo_args+=(--release)
+  cpu_args+=(--release)
+  cuda_args+=(--release)
 fi
 
-printf 'Running cargo command:\n'
-printf '  cargo'
-for arg in "${cargo_args[@]}"; do
-  printf ' %q' "$arg"
-done
-printf '\n\n'
+run_build CPU "${cpu_args[@]}"
+cpu_artifact="$cpu_target_dir/$build_profile/obsidian-local-stt-sidecar"
+[[ -f "$cpu_artifact" ]] || die "CPU build completed but expected sidecar binary was not found at $cpu_artifact"
+printf 'CPU build complete:\n  %s\n\n' "$cpu_artifact"
 
-(
-  cd "$REPO_ROOT"
-  cargo "${cargo_args[@]}"
-)
-
-artifact_path="$REPO_ROOT/native/sidecar/target/$build_profile/obsidian-local-stt-sidecar"
-[[ -f "$artifact_path" ]] || die "build completed but expected sidecar binary was not found at $artifact_path"
-
-printf '\nBuild complete:\n  %s\n' "$artifact_path"
+run_build CUDA "${cuda_args[@]}"
+cuda_artifact="$cuda_target_dir/$build_profile/obsidian-local-stt-sidecar"
+[[ -f "$cuda_artifact" ]] || die "CUDA build completed but expected sidecar binary was not found at $cuda_artifact"
+printf 'CUDA build complete:\n  %s\n' "$cuda_artifact"
