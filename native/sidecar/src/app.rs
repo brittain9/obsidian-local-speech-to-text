@@ -8,16 +8,16 @@ use crate::model_store::{
 };
 use crate::protocol::{
     Command, EngineId, Event, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
-    SessionState, SessionStopReason, compiled_backends,
+    SessionState, SessionStopReason, compiled_backends, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
 };
-use crate::transcription::{GpuConfig, TranscriptionError, probe_model_path};
+use crate::transcription::{GpuConfig, TranscriptionError, probe_model_for_engine};
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
-type ModelPathProbe = fn(&Path) -> Result<u64, TranscriptionError>;
+type ModelPathProbe = fn(EngineId, &Path) -> Result<(), TranscriptionError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {
@@ -53,7 +53,7 @@ struct ResolvedModelSelection {
 
 impl AppState {
     pub fn new(sidecar_version: impl Into<String>, catalog: ModelCatalog) -> Self {
-        Self::with_model_path_probe(sidecar_version, catalog, probe_model_path)
+        Self::with_model_path_probe(sidecar_version, catalog, probe_model_for_engine)
     }
 
     fn with_model_path_probe(
@@ -292,7 +292,7 @@ impl AppState {
             Command::GetSystemInfo => {
                 events.push(Event::SystemInfo {
                     compiled_backends: compiled_backends(),
-                    system_info: whisper_rs::print_system_info().to_string(),
+                    system_info: system_info_string(),
                 });
 
                 (ControlFlow::Continue, events)
@@ -329,6 +329,7 @@ impl AppState {
                         if self
                             .transcription_worker
                             .send(WorkerCommand::BeginSession(SessionMetadata {
+                                engine_id: resolved_model.engine_id,
                                 gpu_config: GpuConfig { use_gpu },
                                 language,
                                 model_file_path: resolved_model.resolved_path.clone(),
@@ -737,7 +738,7 @@ impl AppState {
                         status: ModelProbeStatus::Missing,
                     })
                 })?;
-                let size_bytes = (self.model_path_probe)(&resolved_path).map_err(|error| {
+                (self.model_path_probe)(*engine_id, &resolved_path).map_err(|error| {
                     Box::new(Event::ModelProbeResult {
                         available: false,
                         details: error.details,
@@ -752,6 +753,7 @@ impl AppState {
                         status: ModelProbeStatus::Invalid,
                     })
                 })?;
+                let size_bytes = file_size(&resolved_path);
 
                 Ok(ResolvedModelSelection {
                     display_name: model.display_name,
@@ -803,7 +805,7 @@ impl AppState {
                     }));
                 }
 
-                let size_bytes = (self.model_path_probe)(model_path).map_err(|error| {
+                (self.model_path_probe)(*engine_id, model_path).map_err(|error| {
                     Box::new(Event::ModelProbeResult {
                         available: false,
                         details: error.details,
@@ -822,6 +824,7 @@ impl AppState {
                         },
                     })
                 })?;
+                let size_bytes = file_size(model_path);
 
                 Ok(ResolvedModelSelection {
                     display_name: file_name_or_path(model_path),
@@ -874,6 +877,10 @@ fn derive_session_state(
         SessionBaseState::Listening => SessionState::Listening,
         SessionBaseState::SpeechDetected => SessionState::SpeechDetected,
     }
+}
+
+fn file_size(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 fn file_name_or_path(path: &Path) -> String {
@@ -955,7 +962,8 @@ mod tests {
     #[test]
     fn start_session_returns_started_and_state_events() {
         let model_file_path = create_model_file();
-        let (_, events) = test_app().handle_command(start_session_command("session-1", &model_file_path));
+        let (_, events) =
+            test_app().handle_command(start_session_command("session-1", &model_file_path));
 
         assert_eq!(
             events,
@@ -974,8 +982,9 @@ mod tests {
 
     #[test]
     fn start_session_rejects_missing_model() {
-        let (_, events) = AppState::new("0.1.0", sample_catalog())
-            .handle_command(start_session_command("session-1", Path::new("/tmp/definitely-missing-model.bin")));
+        let (_, events) = AppState::new("0.1.0", sample_catalog()).handle_command(
+            start_session_command("session-1", Path::new("/tmp/definitely-missing-model.bin")),
+        );
 
         assert!(
             matches!(events.first(), Some(Event::Error { code, .. }) if code == "missing_model_file")
@@ -1063,7 +1072,10 @@ mod tests {
         AppState::with_model_path_probe("0.1.0", sample_catalog(), probe_test_model_path)
     }
 
-    fn probe_test_model_path(model_file_path: &Path) -> Result<u64, TranscriptionError> {
+    fn probe_test_model_path(
+        _engine_id: EngineId,
+        model_file_path: &Path,
+    ) -> Result<(), TranscriptionError> {
         if !model_file_path.is_file() {
             return Err(TranscriptionError {
                 code: "missing_model_file",
@@ -1072,15 +1084,7 @@ mod tests {
             });
         }
 
-        let size_bytes = std::fs::metadata(model_file_path)
-            .map_err(|error| TranscriptionError {
-                code: "invalid_model_file",
-                message: "Model file is missing, unreadable, or unsupported.",
-                details: Some(error.to_string()),
-            })?
-            .len();
-
-        Ok(size_bytes)
+        Ok(())
     }
 
     fn sample_catalog() -> ModelCatalog {

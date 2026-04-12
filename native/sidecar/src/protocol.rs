@@ -21,12 +21,14 @@ pub const PCM_BYTES_PER_FRAME: usize = PCM_SAMPLES_PER_FRAME * PCM_CHANNEL_COUNT
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineId {
+    CohereOnnx,
     WhisperCpp,
 }
 
 impl EngineId {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::CohereOnnx => "cohere_onnx",
             Self::WhisperCpp => "whisper_cpp",
         }
     }
@@ -404,7 +406,25 @@ pub fn compiled_backends() -> Vec<String> {
     #[cfg(feature = "gpu-cuda")]
     backends.push("cuda".to_string());
 
+    #[cfg(feature = "engine-cohere")]
+    backends.push("cohere-onnx".to_string());
+
+    #[cfg(feature = "gpu-ort-cuda")]
+    backends.push("ort-cuda".to_string());
+
     backends
+}
+
+/// Collect system info from all compiled engines into a single string.
+pub fn system_info_string() -> String {
+    let mut parts = Vec::new();
+
+    parts.push(format!("whisper.cpp: {}", whisper_rs::print_system_info()));
+
+    #[cfg(feature = "engine-cohere")]
+    parts.push("cohere-onnx: enabled".to_string());
+
+    parts.join(" | ")
 }
 
 fn read_exact_or_eof<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize> {

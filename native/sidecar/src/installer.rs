@@ -17,9 +17,9 @@ use crate::model_store::{
     create_install_metadata, resolve_model_install_dir, write_install_metadata,
 };
 use crate::protocol::{EngineId, Event, ModelInstallState};
-use crate::transcription::{TranscriptionError, probe_model_path};
+use crate::transcription::{TranscriptionError, probe_model_for_engine};
 
-type ModelProbe = fn(&Path) -> Result<u64, TranscriptionError>;
+type ModelProbe = fn(EngineId, &Path) -> Result<(), TranscriptionError>;
 
 #[derive(Debug, Clone)]
 pub struct InstallRequest {
@@ -59,12 +59,12 @@ impl ModelInstallManager {
 
     pub fn cancel_install(&mut self, install_id: &str) -> Option<Event> {
         let Some(active_install) = self.active_install.as_ref() else {
-            return Some(failed_update(
-                install_id,
-                EngineId::WhisperCpp,
-                "",
-                "There is no active model install to cancel.",
-            ));
+            return Some(Event::Warning {
+                code: "no_active_install".to_string(),
+                details: Some(install_id.to_string()),
+                message: "There is no active model install to cancel.".to_string(),
+                session_id: None,
+            });
         };
 
         if active_install.install_id != install_id {
@@ -218,7 +218,7 @@ fn run_install(request: InstallRequest, cancel_flag: Arc<AtomicBool>, event_tx: 
         cancel_flag,
         &reporter,
         &downloader,
-        probe_model_path,
+        probe_model_for_engine,
     ) {
         match error {
             InstallError::Cancelled => {}
@@ -504,7 +504,7 @@ fn install_model_with_downloader(
         )
         .map_err(|error| InstallError::Failed(error.to_string()))?;
 
-    model_probe(&runtime_path).map_err(|error| {
+    model_probe(request.engine_id, &runtime_path).map_err(|error| {
         cleanup(&stage_dir);
         InstallError::Failed(error.to_string())
     })?;
@@ -592,7 +592,7 @@ mod tests {
     use crate::protocol::{EngineId, Event, ModelInstallState};
     use crate::transcription::TranscriptionError;
 
-    fn test_probe(path: &Path) -> Result<u64, TranscriptionError> {
+    fn test_probe(_engine_id: EngineId, path: &Path) -> Result<(), TranscriptionError> {
         if !path.is_file() {
             return Err(TranscriptionError {
                 code: "missing_model_file",
@@ -600,13 +600,7 @@ mod tests {
                 details: Some(path.display().to_string()),
             });
         }
-        Ok(std::fs::metadata(path)
-            .map_err(|e| TranscriptionError {
-                code: "invalid_model_file",
-                message: "Cannot read model file.",
-                details: Some(e.to_string()),
-            })?
-            .len())
+        Ok(())
     }
 
     #[test]

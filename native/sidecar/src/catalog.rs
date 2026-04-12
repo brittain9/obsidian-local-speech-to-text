@@ -81,6 +81,7 @@ pub struct ModelArtifact {
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactRole {
     PunctuationModel,
+    SupportingFile,
     TranscriptionModel,
 }
 

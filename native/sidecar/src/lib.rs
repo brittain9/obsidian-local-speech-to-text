@@ -1,5 +1,7 @@
 pub mod app;
 pub mod catalog;
+#[cfg(feature = "engine-cohere")]
+pub mod cohere;
 pub mod installer;
 pub mod model_store;
 pub mod protocol;

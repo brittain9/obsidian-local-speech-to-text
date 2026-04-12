@@ -1,6 +1,6 @@
 import { isRecord } from '../shared/type-guards';
 
-export const ENGINE_IDS = ['whisper_cpp'] as const;
+export const ENGINE_IDS = ['cohere_onnx', 'whisper_cpp'] as const;
 
 export type EngineId = (typeof ENGINE_IDS)[number];
 
@@ -18,7 +18,7 @@ export interface ExternalFileModelSelection {
 
 export type SelectedModel = CatalogModelSelection | ExternalFileModelSelection;
 
-export type ModelArtifactRole = 'punctuation_model' | 'transcription_model';
+export type ModelArtifactRole = 'punctuation_model' | 'supporting_file' | 'transcription_model';
 
 export interface ModelArtifactRecord {
   artifactId: string;
@@ -127,6 +127,8 @@ export interface ModelRemovedRecord {
 
 export function getEngineDisplayName(engineId: EngineId): string {
   switch (engineId) {
+    case 'cohere_onnx':
+      return 'Cohere Transcribe';
     case 'whisper_cpp':
       return 'Whisper.cpp';
   }

@@ -3,12 +3,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
-use whisper_rs::convert_integer_to_float_audio;
-
-use crate::transcription::{GpuConfig, Transcript, TranscriptionEngine, TranscriptionRequest};
+use crate::protocol::EngineId;
+use crate::transcription::{
+    GpuConfig, Transcript, TranscriptionBackend, TranscriptionRequest, WhisperBackend,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMetadata {
+    pub engine_id: EngineId,
     pub gpu_config: GpuConfig,
     pub language: String,
     pub model_file_path: PathBuf,
@@ -72,13 +74,37 @@ impl TranscriptionWorker {
     }
 }
 
+fn create_backend(engine_id: EngineId) -> Box<dyn TranscriptionBackend> {
+    match engine_id {
+        EngineId::WhisperCpp => Box::new(WhisperBackend::default()),
+        EngineId::CohereOnnx => {
+            #[cfg(feature = "engine-cohere")]
+            {
+                Box::new(crate::cohere::CohereBackend::default())
+            }
+            #[cfg(not(feature = "engine-cohere"))]
+            {
+                panic!(
+                    "CohereOnnx engine requested but engine-cohere feature is not compiled in. \
+                     This is a bug — probe_model_for_engine should have rejected this upstream."
+                );
+            }
+        }
+    }
+}
+
 fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent>) {
-    let mut engine = TranscriptionEngine::default();
+    let mut engine: Box<dyn TranscriptionBackend> = Box::new(WhisperBackend::default());
+    let mut active_engine_id = EngineId::WhisperCpp;
     let mut active_session: Option<SessionMetadata> = None;
 
     while let Ok(command) = command_rx.recv() {
         match command {
             WorkerCommand::BeginSession(metadata) => {
+                if metadata.engine_id != active_engine_id {
+                    engine = create_backend(metadata.engine_id);
+                    active_engine_id = metadata.engine_id;
+                }
                 active_session = Some(metadata);
             }
             WorkerCommand::EndSession { session_id } => {
@@ -104,17 +130,10 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
                     continue;
                 }
 
-                let mut audio_samples = vec![0.0_f32; samples.len()];
-
-                if let Err(error) = convert_integer_to_float_audio(&samples, &mut audio_samples) {
-                    let _ = event_tx.send(WorkerEvent::SessionError {
-                        code: "invalid_audio_buffer".to_string(),
-                        details: Some(error.to_string()),
-                        message: "Failed to convert PCM audio into whisper input.".to_string(),
-                        session_id,
-                    });
-                    continue;
-                }
+                let audio_samples: Vec<f32> = samples
+                    .iter()
+                    .map(|&sample| sample as f32 / 32768.0)
+                    .collect();
 
                 let started_at = Instant::now();
                 let result = engine.transcribe(&TranscriptionRequest {

@@ -3,25 +3,13 @@ use std::path::{Path, PathBuf};
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use crate::protocol::TranscriptSegment;
+use crate::protocol::{EngineId, TranscriptSegment};
 
 const SUPPORTED_LANGUAGE: &str = "en";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GpuConfig {
     pub use_gpu: bool,
-}
-
-#[derive(Debug, Default)]
-pub struct TranscriptionEngine {
-    loaded_model: Option<LoadedModel>,
-}
-
-#[derive(Debug)]
-struct LoadedModel {
-    context: WhisperContext,
-    gpu_config: GpuConfig,
-    model_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,8 +45,63 @@ impl Display for TranscriptionError {
 
 impl std::error::Error for TranscriptionError {}
 
-impl TranscriptionEngine {
-    pub fn transcribe(
+// ---------------------------------------------------------------------------
+// Backend trait
+// ---------------------------------------------------------------------------
+
+pub trait TranscriptionBackend {
+    fn transcribe(
+        &mut self,
+        request: &TranscriptionRequest,
+    ) -> Result<Transcript, TranscriptionError>;
+
+    /// Validate that a model directory (identified by its primary artifact path)
+    /// contains the files needed to run inference.
+    fn probe_model(path: &Path) -> Result<(), TranscriptionError>
+    where
+        Self: Sized;
+}
+
+/// Probe a model's primary artifact path using the backend for `engine_id`.
+pub fn probe_model_for_engine(engine_id: EngineId, path: &Path) -> Result<(), TranscriptionError> {
+    match engine_id {
+        EngineId::WhisperCpp => WhisperBackend::probe_model(path),
+        EngineId::CohereOnnx => {
+            #[cfg(feature = "engine-cohere")]
+            {
+                crate::cohere::CohereBackend::probe_model(path)
+            }
+            #[cfg(not(feature = "engine-cohere"))]
+            {
+                let _ = path;
+                Err(TranscriptionError {
+                    code: "unsupported_engine",
+                    message: "The Cohere ONNX engine is not available in this build.",
+                    details: None,
+                })
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Whisper backend
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct WhisperBackend {
+    loaded_model: Option<LoadedWhisperModel>,
+}
+
+#[derive(Debug)]
+struct LoadedWhisperModel {
+    context: WhisperContext,
+    gpu_config: GpuConfig,
+    model_path: PathBuf,
+}
+
+impl TranscriptionBackend for WhisperBackend {
+    fn transcribe(
         &mut self,
         request: &TranscriptionRequest,
     ) -> Result<Transcript, TranscriptionError> {
@@ -104,6 +147,14 @@ impl TranscriptionEngine {
         })
     }
 
+    fn probe_model(path: &Path) -> Result<(), TranscriptionError> {
+        validate_model_path(path)?;
+        let _ = load_whisper_context(path, &GpuConfig { use_gpu: false })?;
+        Ok(())
+    }
+}
+
+impl WhisperBackend {
     fn load_or_reuse_model(
         &mut self,
         model_file_path: &Path,
@@ -118,8 +169,8 @@ impl TranscriptionEngine {
             .unwrap_or(true);
 
         if should_reload {
-            self.loaded_model = Some(LoadedModel {
-                context: load_model_context(model_file_path, &gpu_config)?,
+            self.loaded_model = Some(LoadedWhisperModel {
+                context: load_whisper_context(model_file_path, &gpu_config)?,
                 gpu_config,
                 model_path: model_file_path.to_path_buf(),
             });
@@ -133,17 +184,11 @@ impl TranscriptionEngine {
     }
 }
 
-pub fn probe_model_path(model_file_path: &Path) -> Result<u64, TranscriptionError> {
-    validate_model_path(model_file_path)?;
-    let _ = load_model_context(model_file_path, &GpuConfig { use_gpu: false })?;
-    let size_bytes = std::fs::metadata(model_file_path)
-        .map_err(|error| TranscriptionError::invalid_model_with_details(error.to_string()))?
-        .len();
+// ---------------------------------------------------------------------------
+// Shared validation helpers
+// ---------------------------------------------------------------------------
 
-    Ok(size_bytes)
-}
-
-fn validate_audio_samples(audio_samples: &[f32]) -> Result<(), TranscriptionError> {
+pub(crate) fn validate_audio_samples(audio_samples: &[f32]) -> Result<(), TranscriptionError> {
     if audio_samples.is_empty() {
         return Err(TranscriptionError {
             code: "invalid_audio_buffer",
@@ -155,7 +200,7 @@ fn validate_audio_samples(audio_samples: &[f32]) -> Result<(), TranscriptionErro
     Ok(())
 }
 
-fn validate_model_path(model_file_path: &Path) -> Result<(), TranscriptionError> {
+pub(crate) fn validate_model_path(model_file_path: &Path) -> Result<(), TranscriptionError> {
     if !model_file_path.is_file() {
         return Err(TranscriptionError {
             code: "missing_model_file",
@@ -173,7 +218,23 @@ fn validate_model_path(model_file_path: &Path) -> Result<(), TranscriptionError>
     Ok(())
 }
 
-fn load_model_context(
+pub(crate) fn validate_language(language: &str) -> Result<(), TranscriptionError> {
+    if language == SUPPORTED_LANGUAGE {
+        return Ok(());
+    }
+
+    Err(TranscriptionError {
+        code: "unsupported_language",
+        message: "Only English dictation is supported in this build.",
+        details: Some(language.to_string()),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Whisper-specific helpers
+// ---------------------------------------------------------------------------
+
+fn load_whisper_context(
     model_file_path: &Path,
     gpu_config: &GpuConfig,
 ) -> Result<WhisperContext, TranscriptionError> {
@@ -189,18 +250,6 @@ fn load_model_context(
         .map_err(|error| TranscriptionError::invalid_model_with_details(error.to_string()))
 }
 
-fn validate_language(language: &str) -> Result<(), TranscriptionError> {
-    if language == SUPPORTED_LANGUAGE {
-        return Ok(());
-    }
-
-    Err(TranscriptionError {
-        code: "unsupported_language",
-        message: "Only English dictation is supported in this build.",
-        details: Some(language.to_string()),
-    })
-}
-
 fn recommended_thread_count() -> i32 {
     std::thread::available_parallelism()
         .map(|value| value.get())
@@ -213,7 +262,7 @@ fn whisper_timestamp_to_millis(timestamp: i64) -> u64 {
 }
 
 impl TranscriptionError {
-    fn invalid_model(details: &'static str) -> Self {
+    pub(crate) fn invalid_model(details: &'static str) -> Self {
         Self {
             code: "invalid_model_file",
             message: "Model file is missing, unreadable, or unsupported.",
@@ -221,7 +270,7 @@ impl TranscriptionError {
         }
     }
 
-    fn invalid_model_with_details(details: String) -> Self {
+    pub(crate) fn invalid_model_with_details(details: String) -> Self {
         Self {
             code: "invalid_model_file",
             message: "Model file is missing, unreadable, or unsupported.",
@@ -229,11 +278,11 @@ impl TranscriptionError {
         }
     }
 
-    fn transcription_failure(details: &'static str, error: impl Display) -> Self {
+    pub(crate) fn transcription_failure(context: &str, error: impl Display) -> Self {
         Self {
             code: "transcription_failure",
             message: "Local transcription failed.",
-            details: Some(format!("{details}: {error}")),
+            details: Some(format!("{context}: {error}")),
         }
     }
 }
@@ -242,11 +291,11 @@ impl TranscriptionError {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{GpuConfig, TranscriptionEngine, TranscriptionRequest};
+    use super::{GpuConfig, TranscriptionBackend, TranscriptionRequest, WhisperBackend};
 
     #[test]
     fn transcribe_rejects_unsupported_language() {
-        let mut engine = TranscriptionEngine::default();
+        let mut engine = WhisperBackend::default();
         let error = engine
             .transcribe(&TranscriptionRequest {
                 audio_samples: vec![0.0, 0.1],
@@ -261,7 +310,7 @@ mod tests {
 
     #[test]
     fn transcribe_rejects_empty_audio() {
-        let mut engine = TranscriptionEngine::default();
+        let mut engine = WhisperBackend::default();
         let error = engine
             .transcribe(&TranscriptionRequest {
                 audio_samples: Vec::new(),
