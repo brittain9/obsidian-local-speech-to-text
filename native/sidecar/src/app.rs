@@ -955,18 +955,7 @@ mod tests {
     #[test]
     fn start_session_returns_started_and_state_events() {
         let model_file_path = create_model_file();
-        let (_, events) = test_app().handle_command(Command::StartSession {
-            language: "en".to_string(),
-            mode: ListeningMode::AlwaysOn,
-            model_selection: SelectedModel::ExternalFile {
-                engine_id: EngineId::WhisperCpp,
-                file_path: model_file_path.display().to_string(),
-            },
-            model_store_path_override: None,
-            pause_while_processing: true,
-            session_id: "session-1".to_string(),
-            use_gpu: true,
-        });
+        let (_, events) = test_app().handle_command(start_session_command("session-1", &model_file_path));
 
         assert_eq!(
             events,
@@ -985,19 +974,8 @@ mod tests {
 
     #[test]
     fn start_session_rejects_missing_model() {
-        let (_, events) =
-            AppState::new("0.1.0", sample_catalog()).handle_command(Command::StartSession {
-                language: "en".to_string(),
-                mode: ListeningMode::AlwaysOn,
-                model_selection: SelectedModel::ExternalFile {
-                    engine_id: EngineId::WhisperCpp,
-                    file_path: "/tmp/definitely-missing-model.bin".to_string(),
-                },
-                model_store_path_override: None,
-                pause_while_processing: true,
-                session_id: "session-1".to_string(),
-                use_gpu: true,
-            });
+        let (_, events) = AppState::new("0.1.0", sample_catalog())
+            .handle_command(start_session_command("session-1", Path::new("/tmp/definitely-missing-model.bin")));
 
         assert!(
             matches!(events.first(), Some(Event::Error { code, .. }) if code == "missing_model_file")
@@ -1027,31 +1005,9 @@ mod tests {
     fn replacing_a_session_emits_session_replaced_stop() {
         let model_file_path = create_model_file();
         let mut app = test_app();
-        let _ = app.handle_command(Command::StartSession {
-            language: "en".to_string(),
-            mode: ListeningMode::AlwaysOn,
-            model_selection: SelectedModel::ExternalFile {
-                engine_id: EngineId::WhisperCpp,
-                file_path: model_file_path.display().to_string(),
-            },
-            model_store_path_override: None,
-            pause_while_processing: true,
-            session_id: "session-1".to_string(),
-            use_gpu: true,
-        });
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
 
-        let (_, events) = app.handle_command(Command::StartSession {
-            language: "en".to_string(),
-            mode: ListeningMode::OneSentence,
-            model_selection: SelectedModel::ExternalFile {
-                engine_id: EngineId::WhisperCpp,
-                file_path: model_file_path.display().to_string(),
-            },
-            model_store_path_override: None,
-            pause_while_processing: true,
-            session_id: "session-2".to_string(),
-            use_gpu: true,
-        });
+        let (_, events) = app.handle_command(start_session_command("session-2", &model_file_path));
 
         assert!(events.contains(&Event::SessionStopped {
             reason: SessionStopReason::SessionReplaced,
@@ -1063,18 +1019,7 @@ mod tests {
     fn stop_session_emits_stopped_event() {
         let model_file_path = create_model_file();
         let mut app = test_app();
-        let _ = app.handle_command(Command::StartSession {
-            language: "en".to_string(),
-            mode: ListeningMode::AlwaysOn,
-            model_selection: SelectedModel::ExternalFile {
-                engine_id: EngineId::WhisperCpp,
-                file_path: model_file_path.display().to_string(),
-            },
-            model_store_path_override: None,
-            pause_while_processing: true,
-            session_id: "session-1".to_string(),
-            use_gpu: true,
-        });
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
 
         let (_, events) = app.handle_command(Command::StopSession);
 
@@ -1085,6 +1030,21 @@ mod tests {
                 session_id: "session-1".to_string(),
             }]
         );
+    }
+
+    fn start_session_command(session_id: &str, model_file_path: &Path) -> Command {
+        Command::StartSession {
+            language: "en".to_string(),
+            mode: ListeningMode::AlwaysOn,
+            model_selection: SelectedModel::ExternalFile {
+                engine_id: EngineId::WhisperCpp,
+                file_path: model_file_path.display().to_string(),
+            },
+            model_store_path_override: None,
+            pause_while_processing: true,
+            session_id: session_id.to_string(),
+            use_gpu: false,
+        }
     }
 
     fn create_model_file() -> PathBuf {

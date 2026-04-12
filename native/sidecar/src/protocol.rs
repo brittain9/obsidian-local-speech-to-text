@@ -140,7 +140,7 @@ pub enum Command {
         pause_while_processing: bool,
         #[serde(rename = "sessionId")]
         session_id: String,
-        #[serde(rename = "useGpu", default = "default_use_gpu")]
+        #[serde(rename = "useGpu", default)]
         use_gpu: bool,
     },
     GetSystemInfo,
@@ -392,10 +392,6 @@ pub fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> 
     writer.flush().context("failed to flush frame payload")?;
 
     Ok(())
-}
-
-fn default_use_gpu() -> bool {
-    false
 }
 
 pub fn compiled_backends() -> Vec<String> {

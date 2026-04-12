@@ -51,7 +51,7 @@ export class SidecarProcess {
       this.stdinDead = true;
 
       if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED') {
-        throw error;
+        this.handlers.onStderrLine(`stdin error: ${error.message} (${error.code})`);
       }
     });
 

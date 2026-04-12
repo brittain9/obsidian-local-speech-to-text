@@ -13,6 +13,7 @@
       "!node_modules",
       "!package-lock.json",
       "!native/sidecar/target",
+      "!native/sidecar/target-cuda",
       "!references",
       "!tasks"
     ]

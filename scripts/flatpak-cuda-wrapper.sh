@@ -1,5 +1,5 @@
 #!/bin/sh
-#
+# TODO: WE SHOULD FIND A BETTER WAY TO DO THIS, BUT THIS WORKS FOR NOW
 # Wrapper that sets CUDA LD_LIBRARY_PATH only for the sidecar process.
 #
 # Inside a Flatpak sandbox, host /usr is mounted at /run/host/usr/ via
