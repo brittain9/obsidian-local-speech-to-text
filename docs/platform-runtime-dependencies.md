@@ -6,11 +6,11 @@ This document describes the runtime dependency contract for each platform and si
 
 The sidecar ships as a single native binary per platform. Three build flavors exist, each enabling different Cargo feature sets:
 
-| Flavor | Script | Cargo features | Engines |
+| Flavor | Command | Cargo features | Engines |
 |---|---|---|---|
-| CPU | `scripts/build-cpu.sh` | `engine-cohere` | Whisper (CPU), Cohere (CPU) |
-| Metal | `scripts/build-metal.sh` | `engine-cohere,gpu-metal` | Whisper (Metal GPU), Cohere (CPU) |
-| CUDA | `scripts/build-cuda.sh` | `engine-cohere,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere (CUDA GPU) |
+| CPU | `npm run build:sidecar` (Linux) | `engine-cohere` | Whisper (CPU), Cohere (CPU) |
+| Metal | `npm run build:sidecar` (macOS) | `engine-cohere,gpu-metal` | Whisper (Metal GPU), Cohere (CPU) |
+| CUDA | `npm run build:sidecar:cuda` | `engine-cohere,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere (CUDA GPU) |
 
 The CPU flavor is the default everywhere. GPU flavors are additive — they include all CPU capabilities plus GPU acceleration for the engines listed.
 
@@ -40,7 +40,7 @@ These are sidecar-owned artifacts produced during the build. They travel with th
 | **GPU driver** | None — Metal is a system framework |
 | **GPU libraries** | None — linked at build time |
 | **CUDA / cuDNN** | Not applicable — no CUDA on macOS |
-| **User configuration** | None for GPU. Cohere runs CPU-only by design (D-017) |
+| **User configuration** | None for GPU. Cohere runs CPU-only on macOS by design (D-004) |
 
 macOS is the cleanest platform. Whisper uses Metal for GPU acceleration through `whisper-rs/metal`, which links against the system Metal framework at compile time. No runtime library discovery, no user path configuration, no sandbox issues.
 
@@ -58,7 +58,7 @@ Cohere is CPU-only on macOS. The ONNX Runtime CUDA execution provider is Linux/W
 
 Windows has no sandbox. The sidecar inherits the host environment directly, so CUDA and cuDNN libraries found on `PATH` or in standard install locations resolve without manual path configuration.
 
-The intended packaging model bundles the sidecar-owned ONNX provider DLLs next to the executable. Users should not need to hand-edit paths. The Windows build and release flow is not yet productized in this repo — CPU and Metal are the current automated CI release targets (D-019).
+The intended packaging model bundles the sidecar-owned ONNX provider DLLs next to the executable. Users should not need to hand-edit paths. The Windows build and release flow is not yet productized in this repo.
 
 ### Linux (native install)
 
@@ -141,12 +141,12 @@ The Cohere probe is stronger — it catches missing userspace libraries, driver 
 
 Automated release artifacts (via `workflow_dispatch`) currently cover:
 
-| Artifact | Runner | Build script |
+| Artifact | Runner | Build command |
 |---|---|---|
-| `sidecar-linux-x86_64` | `ubuntu-latest` | `scripts/build-cpu.sh --release` |
-| `sidecar-macos-arm64` | `macos-15` | `scripts/build-metal.sh --release` |
+| `sidecar-linux-x86_64` | `ubuntu-latest` | `npm run build:sidecar:release` |
+| `sidecar-macos-arm64` | `macos-15` | `npm run build:sidecar:release` |
 
-CUDA release artifacts are not yet automated. Producing them requires a CUDA-capable runner or a self-hosted packaging flow (D-019). The CUDA build script (`scripts/build-cuda.sh`) is production-ready but must be run on a machine with the CUDA toolkit installed.
+CUDA release artifacts are not yet automated. Producing them requires a CUDA-capable runner or a self-hosted packaging flow. The CUDA build script (`scripts/build-cuda.sh`) is production-ready but must be run on a machine with the CUDA toolkit installed.
 
 ## Redistribution Considerations
 

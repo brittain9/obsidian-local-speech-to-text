@@ -57,7 +57,7 @@ jobs:
 
       - name: Build macOS Metal sidecar
         if: matrix.build_metal
-        run: bash scripts/build-metal.sh
+        run: npm run build:sidecar
 
       - name: Run quality gates
         run: npm run check
@@ -70,6 +70,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.14.1
 
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake
@@ -86,7 +91,7 @@ jobs:
           shared-key: release-linux-cpu
 
       - name: Build Linux CPU sidecar
-        run: bash scripts/build-cpu.sh --release
+        run: npm run build:sidecar:release
 
       - id: arch
         name: Detect architecture
@@ -113,6 +118,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.14.1
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -125,7 +135,7 @@ jobs:
           shared-key: release-macos-gpu-metal
 
       - name: Build macOS Metal sidecar
-        run: bash scripts/build-metal.sh --release
+        run: npm run build:sidecar:release
 
       - id: arch
         name: Detect architecture
