@@ -6,44 +6,21 @@ Scope: 24 files, +896 / -416. CI matrix, Rust sidecar runtime capabilities, TS p
 
 Verified: `npm run typecheck` clean, 46 TS tests pass, 62 Rust tests pass, `cargo fmt --check` clean. GitHub Actions versions (`checkout@v6`, `setup-node@v6`) confirmed current.
 
-### New Findings
+### Resolved Findings
 
-#### N-1. Correctness: Legacy migration inverts the intended default for most users
+#### N-1. ~~Correctness: Legacy migration inverts the intended default for most users~~ RESOLVED
 
-`src/settings/plugin-settings.ts:83`:
-```ts
-return legacyUseGpu === false ? 'cpu_only' : DEFAULT_PLUGIN_SETTINGS.accelerationPreference;
-```
+Fixed: removed the `legacyUseGpu === false ? 'cpu_only'` branch. All legacy `useGpu` values now map to the `auto` default. `useGpu: false` was the old default, not a deliberate user choice (D-014: GPU was dev-first, never shipped as a user toggle).
 
-When `accelerationPreference` is absent and `useGpu` is also absent (fresh install, or settings with neither field), `legacyUseGpu` is `undefined`, which is not `=== false`, so this falls through to `'auto'`. That's correct for fresh installs.
+#### N-2. ~~Correctness: CI release job references `build-cpu.sh --release` without verification~~ RESOLVED
 
-But every existing user who never touched the old GPU toggle has `useGpu: false` in persisted settings (it was the default). This migrates them to `cpu_only`, which is a behavior change: the old `false` meant "GPU wasn't available yet" (not "I deliberately chose CPU"). These users now get locked to `cpu_only` instead of the new `auto` default.
+Verified: `build-cpu.sh` line 9 accepts `--release` and produces `target/release/obsidian-local-stt-sidecar`. No fix needed.
 
-Suggested fix: Only preserve `cpu_only` when the user had `useGpu: true` (a deliberate opt-in to GPU implies awareness of the setting). Treat `useGpu: false` and absent the same way: use the new default `'auto'`. If the current behavior is intentional, document the rationale in `tasks/decisions.md`.
+#### N-3. ~~Low: `upload-artifact@v4` is outdated~~ RESOLVED
 
-Affected files:
-- `src/settings/plugin-settings.ts`
-- `test/plugin-settings.test.ts`
+Bumped `actions/upload-artifact` to current stable in both release jobs.
 
-#### N-2. Correctness: CI release job references `build-cpu.sh --release` without verification
-
-`ci.yml:85`:
-```yaml
-run: bash scripts/build-cpu.sh --release
-```
-
-`build-cpu.sh` exists but was not modified in this diff. Confirm it accepts `--release` and produces a binary at `native/sidecar/target/release/obsidian-local-stt-sidecar`. If it only supports debug builds, the release workflow silently produces a debug binary or fails.
-
-Affected files:
-- `.github/workflows/ci.yml`
-- `scripts/build-cpu.sh`
-
-#### N-3. Low: `upload-artifact@v4` is outdated
-
-The CI uses `actions/upload-artifact@v4`. The current major is v7 (April 2026). v4 still works but is deprecated and will eventually stop running on newer runners. Since checkout and setup-node were already bumped to v6, upload-artifact should be bumped for consistency. v6 is the minimum to match the node24 runner requirement.
-
-Affected files:
-- `.github/workflows/ci.yml`
+### Open Findings
 
 #### N-4. Low: Whisper CUDA probe is weaker than Cohere CUDA probe
 

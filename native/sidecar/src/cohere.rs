@@ -500,7 +500,13 @@ fn autoregressive_decode(
                 .iter()
                 .find(|o| o.name().starts_with("past_key_values."))
                 .is_some_and(|o| {
-                    matches!(o.dtype(), ValueType::Tensor { ty: TensorElementType::Float16, .. })
+                    matches!(
+                        o.dtype(),
+                        ValueType::Tensor {
+                            ty: TensorElementType::Float16,
+                            ..
+                        }
+                    )
                 });
 
             for name in &cache_names {

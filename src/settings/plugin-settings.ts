@@ -46,7 +46,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
   const raw = isRecord(data) ? data : {};
 
   return {
-    accelerationPreference: readAccelerationPreference(raw.accelerationPreference, raw.useGpu),
+    accelerationPreference: readAccelerationPreference(raw.accelerationPreference),
     cudaLibraryPath: readString(raw.cudaLibraryPath, DEFAULT_PLUGIN_SETTINGS.cudaLibraryPath),
     developerMode: readBoolean(raw.developerMode, DEFAULT_PLUGIN_SETTINGS.developerMode),
     insertionMode: readInsertionMode(raw.insertionMode),
@@ -75,12 +75,12 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
   };
 }
 
-function readAccelerationPreference(value: unknown, legacyUseGpu: unknown): AccelerationPreference {
+function readAccelerationPreference(value: unknown): AccelerationPreference {
   if (value === 'auto' || value === 'cpu_only') {
     return value;
   }
 
-  return legacyUseGpu === false ? 'cpu_only' : DEFAULT_PLUGIN_SETTINGS.accelerationPreference;
+  return DEFAULT_PLUGIN_SETTINGS.accelerationPreference;
 }
 
 function readBoolean(value: unknown, fallback: boolean): boolean {

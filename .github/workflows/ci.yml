@@ -16,7 +16,7 @@ jobs:
           - os: ubuntu-latest
             build_metal: false
             rust_cache_key: engine-cohere
-          - os: macos-14
+          - os: macos-15
             build_metal: true
             rust_cache_key: engine-cohere-gpu-metal
 
@@ -48,7 +48,9 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          workspaces: native/sidecar -> target
           shared-key: ${{ matrix.rust_cache_key }}
+          cache-on-failure: true
 
       - name: Install JavaScript dependencies
         run: npm ci
@@ -80,6 +82,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          workspaces: native/sidecar -> target
           shared-key: release-linux-cpu
 
       - name: Build Linux CPU sidecar
@@ -104,7 +107,7 @@ jobs:
   build-release-macos:
     if: github.event_name == 'workflow_dispatch'
     needs: quality
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout
@@ -118,6 +121,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          workspaces: native/sidecar -> target
           shared-key: release-macos-gpu-metal
 
       - name: Build macOS Metal sidecar
@@ -132,6 +136,9 @@ jobs:
           mkdir -p dist
           cp native/sidecar/target/release/obsidian-local-stt-sidecar \
             dist/sidecar-macos-${{ steps.arch.outputs.value }}
+
+      - name: Ad-hoc sign macOS binary
+        run: codesign --force --sign - dist/sidecar-macos-${{ steps.arch.outputs.value }}
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4

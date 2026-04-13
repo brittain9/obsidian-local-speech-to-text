@@ -75,11 +75,11 @@ describe('resolvePluginSettings', () => {
     expect(resolvePluginSettings({}).cudaLibraryPath).toBe('');
   });
 
-  it('migrates legacy useGpu false to cpu_only', () => {
-    expect(resolvePluginSettings({ useGpu: false }).accelerationPreference).toBe('cpu_only');
+  it('ignores legacy useGpu false and defaults to auto', () => {
+    expect(resolvePluginSettings({ useGpu: false }).accelerationPreference).toBe('auto');
   });
 
-  it('migrates legacy useGpu true to auto', () => {
+  it('ignores legacy useGpu true and defaults to auto', () => {
     expect(resolvePluginSettings({ useGpu: true }).accelerationPreference).toBe('auto');
   });
 
