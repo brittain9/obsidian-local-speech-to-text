@@ -146,6 +146,71 @@
   font-weight: 600;
 }
 
+.local-stt-model-row .setting-item-description {
+  width: 100%;
+}
+
+/* --- Install progress --------------------------------------------- */
+
+.local-stt-install-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border, rgba(128, 128, 128, 0.18));
+  border-radius: var(--radius-s, 6px);
+  background: var(--background-secondary-alt, rgba(128, 128, 128, 0.06));
+}
+
+.local-stt-install-progress__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.local-stt-install-progress__status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-stt-install-progress__bytes {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-smallest);
+  font-variant-numeric: tabular-nums;
+}
+
+.local-stt-install-progress__track {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--background-modifier-border-hover, rgba(128, 128, 128, 0.18));
+}
+
+.local-stt-install-progress__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--interactive-accent, #7c3aed);
+  transition: width 140ms ease;
+}
+
+.local-stt-install-progress__details {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+}
+
+.local-stt-install-progress--cancelling .local-stt-install-progress__fill {
+  opacity: 0.7;
+}
+
 /* --- Empty state -------------------------------------------------- */
 
 .local-stt-empty-state {
@@ -210,6 +275,11 @@
 .local-stt-artifact-table td {
   padding: 3px 8px 3px 0;
   vertical-align: top;
+}
+
+.local-stt-artifact-table th:last-child,
+.local-stt-artifact-table td:last-child {
+  width: 96px;
 }
 
 .local-stt-artifact-table tr:not(:last-child) td {

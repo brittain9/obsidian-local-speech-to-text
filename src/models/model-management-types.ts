@@ -180,6 +180,22 @@ export function getTotalModelSize(model: CatalogModelRecord): number {
   return model.artifacts.reduce((sum, a) => sum + a.sizeBytes, 0);
 }
 
+export function selectedModelEquals(left: SelectedModel, right: SelectedModel): boolean {
+  if (left.kind !== right.kind || left.engineId !== right.engineId) {
+    return false;
+  }
+
+  if (left.kind === 'catalog_model' && right.kind === 'catalog_model') {
+    return left.modelId === right.modelId;
+  }
+
+  if (left.kind === 'external_file' && right.kind === 'external_file') {
+    return left.filePath === right.filePath;
+  }
+
+  return false;
+}
+
 export function getPrimaryArtifact(model: CatalogModelRecord): ModelArtifactRecord | null {
   return (
     model.artifacts.find(

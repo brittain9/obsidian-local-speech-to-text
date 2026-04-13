@@ -232,7 +232,9 @@ export default class LocalSttPlugin extends Plugin {
     const env =
       Platform.isLinux && this.settings.cudaLibraryPath.length > 0
         ? {
-            LD_LIBRARY_PATH: this.settings.cudaLibraryPath,
+            LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH
+              ? `${this.settings.cudaLibraryPath}:${process.env.LD_LIBRARY_PATH}`
+              : this.settings.cudaLibraryPath,
           }
         : undefined;
 

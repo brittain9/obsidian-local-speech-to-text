@@ -1,7 +1,9 @@
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::future::Future;
+use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -9,8 +11,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use reqwest::blocking::Client;
+use futures_util::{Stream, StreamExt};
+use reqwest::Client;
 use sha2::{Digest, Sha256};
+use tokio::runtime::Builder;
+use tokio::sync::Notify;
 
 use crate::catalog::{CatalogModel, ModelArtifact, ModelCatalog};
 use crate::model_store::{
@@ -19,7 +24,7 @@ use crate::model_store::{
 use crate::protocol::{EngineId, Event, ModelInstallState};
 use crate::transcription::{TranscriptionError, probe_model_for_engine};
 
-type ModelProbe = fn(EngineId, &Path) -> Result<(), TranscriptionError>;
+type ModelProbe = dyn Fn(EngineId, &Path) -> Result<(), TranscriptionError>;
 
 #[derive(Debug, Clone)]
 pub struct InstallRequest {
@@ -33,7 +38,7 @@ pub struct InstallRequest {
 
 #[derive(Debug)]
 struct ActiveInstall {
-    cancel_flag: Arc<AtomicBool>,
+    cancel_handle: Arc<InstallCancellation>,
     engine_id: EngineId,
     install_id: String,
     join_handle: JoinHandle<()>,
@@ -76,7 +81,7 @@ impl ModelInstallManager {
             ));
         }
 
-        active_install.cancel_flag.store(true, Ordering::SeqCst);
+        active_install.cancel_handle.cancel();
         None
     }
 
@@ -131,8 +136,8 @@ impl ModelInstallManager {
             );
         }
 
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let thread_cancel_flag = Arc::clone(&cancel_flag);
+        let cancel_handle = Arc::new(InstallCancellation::new());
+        let thread_cancel_handle = Arc::clone(&cancel_handle);
         let engine_id = request.engine_id;
         let active_install_id = request.install_id.clone();
         let active_model_id = request.model_id.clone();
@@ -143,7 +148,7 @@ impl ModelInstallManager {
             let panic_model_id = request.model_id.clone();
             let panic_tx = thread_event_tx.clone();
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                run_install(request, thread_cancel_flag, thread_event_tx);
+                run_install(request, thread_cancel_handle, thread_event_tx);
             }));
 
             if let Err(panic_payload) = result {
@@ -164,7 +169,7 @@ impl ModelInstallManager {
         });
 
         self.active_install = Some(ActiveInstall {
-            cancel_flag,
+            cancel_handle,
             engine_id,
             install_id: active_install_id.clone(),
             join_handle,
@@ -190,7 +195,50 @@ impl Default for ModelInstallManager {
     }
 }
 
-fn run_install(request: InstallRequest, cancel_flag: Arc<AtomicBool>, event_tx: Sender<Event>) {
+#[derive(Debug)]
+struct InstallCancellation {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl InstallCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+
+        if self.is_cancelled() {
+            return;
+        }
+
+        notified.await;
+    }
+}
+
+fn run_install(
+    request: InstallRequest,
+    cancel_handle: Arc<InstallCancellation>,
+    event_tx: Sender<Event>,
+) {
     let reporter = InstallReporter {
         engine_id: request.engine_id,
         install_id: request.install_id.clone(),
@@ -206,28 +254,45 @@ fn run_install(request: InstallRequest, cancel_flag: Arc<AtomicBool>, event_tx: 
                 ModelInstallState::Failed,
                 Some(message),
                 None,
-                reporter.total_bytes,
+                0,
                 Some(reporter.total_bytes),
             );
             return;
         }
     };
 
-    if let Err(error) = install_model_with_downloader(
+    let runtime = match Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = reporter.send(
+                ModelInstallState::Failed,
+                Some(format!("Failed to create installer runtime: {error}")),
+                None,
+                0,
+                Some(reporter.total_bytes),
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = runtime.block_on(install_model_with_downloader(
         &request,
-        cancel_flag,
+        cancel_handle,
         &reporter,
         &downloader,
-        probe_model_for_engine,
-    ) {
+        &probe_model_for_engine,
+    )) {
         match error {
             InstallError::Cancelled => {}
-            InstallError::Failed(message) => {
+            InstallError::Failed {
+                downloaded_bytes,
+                message,
+            } => {
                 let _ = reporter.send(
                     ModelInstallState::Failed,
                     Some(message),
                     None,
-                    reporter.total_bytes,
+                    downloaded_bytes,
                     Some(reporter.total_bytes),
                 );
             }
@@ -235,13 +300,16 @@ fn run_install(request: InstallRequest, cancel_flag: Arc<AtomicBool>, event_tx: 
     }
 }
 
+type DownloadChunk = Vec<u8>;
+type DownloadChunkStream = Pin<Box<dyn Stream<Item = Result<DownloadChunk>> + Send>>;
+type DownloadFuture<'a> = Pin<Box<dyn Future<Output = Result<DownloadStream>> + Send + 'a>>;
+
 trait DownloadSource {
-    fn open(&self, artifact: &ModelArtifact) -> Result<DownloadStream>;
+    fn open<'a>(&'a self, artifact: &'a ModelArtifact) -> DownloadFuture<'a>;
 }
 
 struct DownloadStream {
-    reader: Box<dyn Read + Send>,
-    total_bytes: Option<u64>,
+    chunks: DownloadChunkStream,
 }
 
 struct HttpDownloadSource {
@@ -252,7 +320,6 @@ impl HttpDownloadSource {
     fn new() -> Result<Self, String> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(60))
             .build()
             .map_err(|error| format!("Failed to create HTTP client: {error}"))?;
 
@@ -261,33 +328,40 @@ impl HttpDownloadSource {
 }
 
 impl DownloadSource for HttpDownloadSource {
-    fn open(&self, artifact: &ModelArtifact) -> Result<DownloadStream> {
-        let response = self
-            .client
-            .get(&artifact.download_url)
-            .send()
-            .with_context(|| {
-                format!(
-                    "Failed to start download for {} from {}.",
-                    artifact.filename, artifact.download_url
-                )
-            })?;
-        let status = response.status();
+    fn open<'a>(&'a self, artifact: &'a ModelArtifact) -> DownloadFuture<'a> {
+        Box::pin(async move {
+            let response = self
+                .client
+                .get(&artifact.download_url)
+                .send()
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to start download for {} from {}.",
+                        artifact.filename, artifact.download_url
+                    )
+                })?;
+            let status = response.status();
 
-        if !status.is_success() {
-            return Err(anyhow!(
-                "Download request for {} returned HTTP {} from {}.",
-                artifact.filename,
-                status,
-                artifact.download_url
-            ));
-        }
+            if !status.is_success() {
+                return Err(anyhow!(
+                    "Download request for {} returned HTTP {} from {}.",
+                    artifact.filename,
+                    status,
+                    artifact.download_url
+                ));
+            }
 
-        let total_bytes = response.content_length();
+            let filename = artifact.filename.clone();
+            let chunks = response.bytes_stream().map(move |chunk| {
+                chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
+                    anyhow!("Failed to read download stream for {filename}: {error}")
+                })
+            });
 
-        Ok(DownloadStream {
-            reader: Box::new(response),
-            total_bytes,
+            Ok(DownloadStream {
+                chunks: Box::pin(chunks),
+            })
         })
     }
 }
@@ -295,7 +369,10 @@ impl DownloadSource for HttpDownloadSource {
 #[derive(Debug)]
 enum InstallError {
     Cancelled,
-    Failed(String),
+    Failed {
+        downloaded_bytes: u64,
+        message: String,
+    },
 }
 
 struct InstallReporter {
@@ -307,6 +384,10 @@ struct InstallReporter {
 }
 
 impl InstallReporter {
+    // UI contract for install updates:
+    // - `message` is the primary status line shown to the user.
+    // - `details` is secondary context such as "File 2 of 3".
+    // - `downloaded_bytes` and `total_bytes` are aggregate bytes for the full install.
     fn send(
         &self,
         state: ModelInstallState,
@@ -330,12 +411,12 @@ impl InstallReporter {
     }
 }
 
-fn install_model_with_downloader(
+async fn install_model_with_downloader(
     request: &InstallRequest,
-    cancel_flag: Arc<AtomicBool>,
+    cancel_handle: Arc<InstallCancellation>,
     reporter: &InstallReporter,
     downloader: &dyn DownloadSource,
-    model_probe: ModelProbe,
+    model_probe: &ModelProbe,
 ) -> Result<(), InstallError> {
     let engine_root = request.store_root.join(request.engine_id.as_str());
     let target_dir =
@@ -345,16 +426,9 @@ fn install_model_with_downloader(
         request.model_id, request.install_id
     ));
 
-    let cleanup = |path: &Path| {
-        if path.exists() {
-            let _ = fs::remove_dir_all(path);
-        }
-    };
-
-    cleanup(&stage_dir);
-    fs::create_dir_all(&stage_dir).map_err(|error| {
-        InstallError::Failed(format!("Failed to create staging directory: {error}"))
-    })?;
+    cleanup_stage_dir(&stage_dir);
+    fs::create_dir_all(&stage_dir)
+        .map_err(|error| fail_install(0, format!("Failed to create staging directory: {error}")))?;
 
     let required_artifacts: Vec<&ModelArtifact> = request
         .model
@@ -362,136 +436,158 @@ fn install_model_with_downloader(
         .iter()
         .filter(|artifact| artifact.required)
         .collect();
+    let artifact_count = required_artifacts.len();
     let mut downloaded_total = 0_u64;
 
-    for artifact in required_artifacts {
-        if cancel_flag.load(Ordering::SeqCst) {
-            cleanup(&stage_dir);
-            let _ = reporter.send(
-                ModelInstallState::Cancelled,
-                Some("Model install cancelled.".to_string()),
-                None,
-                downloaded_total,
-                Some(reporter.total_bytes),
-            );
-            return Err(InstallError::Cancelled);
-        }
+    for (artifact_index, artifact) in required_artifacts.iter().enumerate() {
+        check_for_cancel(
+            cancel_handle.as_ref(),
+            reporter,
+            &stage_dir,
+            downloaded_total,
+        )?;
 
         let artifact_path = stage_dir.join(&artifact.filename);
         let temp_path = artifact_path.with_extension("part");
+        let artifact_details = build_artifact_details(artifact_index, artifact_count);
 
         if let Some(parent) = artifact_path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
-                InstallError::Failed(format!(
-                    "Failed to create artifact staging directory {}: {error}",
-                    parent.display()
-                ))
+                fail_install(
+                    downloaded_total,
+                    format!(
+                        "Failed to create artifact staging directory {}: {error}",
+                        parent.display()
+                    ),
+                )
             })?;
         }
 
         reporter
             .send(
                 ModelInstallState::Downloading,
-                Some(format!("Downloading {}.", artifact.filename)),
-                None,
+                Some(format!("Downloading {}", artifact.filename)),
+                artifact_details.clone(),
                 downloaded_total,
                 Some(reporter.total_bytes),
             )
-            .map_err(|error| InstallError::Failed(error.to_string()))?;
+            .map_err(|error| fail_install(downloaded_total, error.to_string()))?;
 
-        let stream = downloader.open(artifact).map_err(|error| {
-            cleanup(&stage_dir);
-            InstallError::Failed(format!("{error:#}"))
+        let mut stream = downloader.open(artifact).await.map_err(|error| {
+            cleanup_stage_dir(&stage_dir);
+            fail_install(downloaded_total, format!("{error:#}"))
         })?;
         let mut output = File::create(&temp_path).map_err(|error| {
-            cleanup(&stage_dir);
-            InstallError::Failed(format!("Failed to create {}: {error}", temp_path.display()))
+            cleanup_stage_dir(&stage_dir);
+            fail_install(
+                downloaded_total,
+                format!("Failed to create {}: {error}", temp_path.display()),
+            )
         })?;
-        let mut reader = stream.reader;
         let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
         let mut artifact_downloaded = 0_u64;
 
         loop {
-            if cancel_flag.load(Ordering::SeqCst) {
-                cleanup(&stage_dir);
-                let _ = reporter.send(
-                    ModelInstallState::Cancelled,
-                    Some("Model install cancelled.".to_string()),
-                    None,
-                    downloaded_total + artifact_downloaded,
-                    Some(reporter.total_bytes),
-                );
-                return Err(InstallError::Cancelled);
-            }
+            let next_chunk = tokio::select! {
+                _ = cancel_handle.cancelled() => {
+                    return Err(cancel_install(
+                        reporter,
+                        &stage_dir,
+                        downloaded_total + artifact_downloaded,
+                    ));
+                }
+                next_chunk = stream.chunks.next() => next_chunk,
+            };
 
-            let read_count = reader.read(&mut buffer).map_err(|error| {
-                cleanup(&stage_dir);
-                InstallError::Failed(format!("Failed to read download stream: {error}"))
-            })?;
-
-            if read_count == 0 {
+            let Some(chunk) = next_chunk else {
                 break;
-            }
-
-            output.write_all(&buffer[..read_count]).map_err(|error| {
-                cleanup(&stage_dir);
-                InstallError::Failed(format!("Failed to write {}: {error}", temp_path.display()))
+            };
+            let chunk = chunk.map_err(|error| {
+                cleanup_stage_dir(&stage_dir);
+                fail_install(downloaded_total + artifact_downloaded, format!("{error:#}"))
             })?;
-            hasher.update(&buffer[..read_count]);
-            artifact_downloaded += read_count as u64;
+
+            output.write_all(&chunk).map_err(|error| {
+                cleanup_stage_dir(&stage_dir);
+                fail_install(
+                    downloaded_total + artifact_downloaded,
+                    format!("Failed to write {}: {error}", temp_path.display()),
+                )
+            })?;
+            hasher.update(&chunk);
+            artifact_downloaded += chunk.len() as u64;
 
             reporter
                 .send(
                     ModelInstallState::Downloading,
-                    Some(format!("Downloading {}.", artifact.filename)),
-                    None,
+                    Some(format!("Downloading {}", artifact.filename)),
+                    artifact_details.clone(),
                     downloaded_total + artifact_downloaded,
-                    stream.total_bytes.or(Some(reporter.total_bytes)),
+                    Some(reporter.total_bytes),
                 )
-                .map_err(|error| InstallError::Failed(error.to_string()))?;
+                .map_err(|error| {
+                    fail_install(downloaded_total + artifact_downloaded, error.to_string())
+                })?;
         }
 
         reporter
             .send(
                 ModelInstallState::Verifying,
-                Some(format!("Verifying {}.", artifact.filename)),
-                None,
+                Some(format!("Verifying {}", artifact.filename)),
+                artifact_details,
                 downloaded_total + artifact_downloaded,
                 Some(reporter.total_bytes),
             )
-            .map_err(|error| InstallError::Failed(error.to_string()))?;
+            .map_err(|error| {
+                fail_install(downloaded_total + artifact_downloaded, error.to_string())
+            })?;
 
         if artifact_downloaded != artifact.size_bytes {
-            cleanup(&stage_dir);
-            return Err(InstallError::Failed(format!(
-                "Downloaded size for {} did not match the catalog (expected {}, got {}).",
-                artifact.filename, artifact.size_bytes, artifact_downloaded
-            )));
+            cleanup_stage_dir(&stage_dir);
+            return Err(fail_install(
+                downloaded_total + artifact_downloaded,
+                format!(
+                    "Downloaded size for {} did not match the catalog (expected {}, got {}).",
+                    artifact.filename, artifact.size_bytes, artifact_downloaded
+                ),
+            ));
         }
 
         let digest = format!("{:x}", hasher.finalize());
 
         if digest != artifact.sha256 {
-            cleanup(&stage_dir);
-            return Err(InstallError::Failed(format!(
-                "SHA-256 verification failed for {}.",
-                artifact.filename
-            )));
+            cleanup_stage_dir(&stage_dir);
+            return Err(fail_install(
+                downloaded_total + artifact_downloaded,
+                format!("SHA-256 verification failed for {}.", artifact.filename),
+            ));
         }
 
         fs::rename(&temp_path, &artifact_path).map_err(|error| {
-            cleanup(&stage_dir);
-            InstallError::Failed(format!(
-                "Failed to finalize staged artifact {}: {error}",
-                artifact_path.display()
-            ))
+            cleanup_stage_dir(&stage_dir);
+            fail_install(
+                downloaded_total + artifact_downloaded,
+                format!(
+                    "Failed to finalize staged artifact {}: {error}",
+                    artifact_path.display()
+                ),
+            )
         })?;
         downloaded_total += artifact_downloaded;
     }
 
+    check_for_cancel(
+        cancel_handle.as_ref(),
+        reporter,
+        &stage_dir,
+        downloaded_total,
+    )?;
+
     let runtime_artifact = request.model.primary_artifact().ok_or_else(|| {
-        InstallError::Failed("Model is missing a transcription artifact.".to_string())
+        fail_install(
+            downloaded_total,
+            "Model is missing a transcription artifact.".to_string(),
+        )
     })?;
     let runtime_path = stage_dir.join(&runtime_artifact.filename);
 
@@ -503,46 +599,75 @@ fn install_model_with_downloader(
             downloaded_total,
             Some(reporter.total_bytes),
         )
-        .map_err(|error| InstallError::Failed(error.to_string()))?;
+        .map_err(|error| fail_install(downloaded_total, error.to_string()))?;
 
     model_probe(request.engine_id, &runtime_path).map_err(|error| {
-        cleanup(&stage_dir);
-        InstallError::Failed(error.to_string())
+        cleanup_stage_dir(&stage_dir);
+        fail_install(
+            downloaded_total,
+            format!(
+                "Failed to probe the installed model {}: {error}",
+                runtime_artifact.filename
+            ),
+        )
     })?;
+
+    check_for_cancel(
+        cancel_handle.as_ref(),
+        reporter,
+        &stage_dir,
+        downloaded_total,
+    )?;
 
     let metadata = create_install_metadata(&request.catalog, request.engine_id, &request.model_id)
         .map_err(|error| {
-            cleanup(&stage_dir);
-            InstallError::Failed(format!("{error:#}"))
+            cleanup_stage_dir(&stage_dir);
+            fail_install(downloaded_total, format!("{error:#}"))
         })?;
     write_install_metadata(&stage_dir, &metadata).map_err(|error| {
-        cleanup(&stage_dir);
-        InstallError::Failed(format!("{error:#}"))
+        cleanup_stage_dir(&stage_dir);
+        fail_install(downloaded_total, format!("{error:#}"))
     })?;
+
+    check_for_cancel(
+        cancel_handle.as_ref(),
+        reporter,
+        &stage_dir,
+        downloaded_total,
+    )?;
 
     if target_dir.exists() {
         fs::remove_dir_all(&target_dir).map_err(|error| {
-            cleanup(&stage_dir);
-            InstallError::Failed(format!(
-                "Failed to replace existing install {}: {error}",
-                target_dir.display()
-            ))
+            cleanup_stage_dir(&stage_dir);
+            fail_install(
+                downloaded_total,
+                format!(
+                    "Failed to replace existing install {}: {error}",
+                    target_dir.display()
+                ),
+            )
         })?;
     }
 
     fs::create_dir_all(&engine_root).map_err(|error| {
-        cleanup(&stage_dir);
-        InstallError::Failed(format!(
-            "Failed to create engine directory {}: {error}",
-            engine_root.display()
-        ))
+        cleanup_stage_dir(&stage_dir);
+        fail_install(
+            downloaded_total,
+            format!(
+                "Failed to create engine directory {}: {error}",
+                engine_root.display()
+            ),
+        )
     })?;
     fs::rename(&stage_dir, &target_dir).map_err(|error| {
-        cleanup(&stage_dir);
-        InstallError::Failed(format!(
-            "Failed to move staged install into place {}: {error}",
-            target_dir.display()
-        ))
+        cleanup_stage_dir(&stage_dir);
+        fail_install(
+            downloaded_total,
+            format!(
+                "Failed to move staged install into place {}: {error}",
+                target_dir.display()
+            ),
+        )
     })?;
 
     reporter
@@ -553,8 +678,58 @@ fn install_model_with_downloader(
             downloaded_total,
             Some(reporter.total_bytes),
         )
-        .map_err(|error| InstallError::Failed(error.to_string()))?;
+        .map_err(|error| fail_install(downloaded_total, error.to_string()))?;
     Ok(())
+}
+
+fn build_artifact_details(artifact_index: usize, artifact_count: usize) -> Option<String> {
+    if artifact_count <= 1 {
+        return None;
+    }
+
+    Some(format!("File {} of {}", artifact_index + 1, artifact_count))
+}
+
+fn cancel_install(
+    reporter: &InstallReporter,
+    stage_dir: &Path,
+    downloaded_total: u64,
+) -> InstallError {
+    cleanup_stage_dir(stage_dir);
+    let _ = reporter.send(
+        ModelInstallState::Cancelled,
+        Some("Model install cancelled.".to_string()),
+        None,
+        downloaded_total,
+        Some(reporter.total_bytes),
+    );
+    InstallError::Cancelled
+}
+
+fn fail_install(downloaded_bytes: u64, message: String) -> InstallError {
+    InstallError::Failed {
+        downloaded_bytes,
+        message,
+    }
+}
+
+fn check_for_cancel(
+    cancel_handle: &InstallCancellation,
+    reporter: &InstallReporter,
+    stage_dir: &Path,
+    downloaded_total: u64,
+) -> Result<(), InstallError> {
+    if cancel_handle.is_cancelled() {
+        return Err(cancel_install(reporter, stage_dir, downloaded_total));
+    }
+
+    Ok(())
+}
+
+fn cleanup_stage_dir(stage_dir: &Path) {
+    if stage_dir.exists() {
+        let _ = fs::remove_dir_all(stage_dir);
+    }
 }
 
 fn failed_update(install_id: &str, engine_id: EngineId, model_id: &str, message: &str) -> Event {
@@ -574,24 +749,28 @@ fn failed_update(install_id: &str, engine_id: EngineId, model_id: &str, message:
 mod tests {
     use std::collections::HashMap;
     use std::fs;
-    use std::io::Cursor;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use anyhow::{Result, anyhow};
+    use futures_util::stream;
+    use tokio::runtime::Builder;
 
     use std::path::Path;
 
     use super::{
-        DownloadSource, DownloadStream, InstallError, InstallReporter, InstallRequest,
-        ModelInstallManager, install_model_with_downloader,
+        DownloadChunk, DownloadFuture, DownloadSource, DownloadStream, InstallCancellation,
+        InstallError, InstallReporter, InstallRequest, ModelInstallManager, ModelProbe,
+        install_model_with_downloader,
     };
     use crate::catalog::{
         ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
     };
     use crate::protocol::{EngineId, Event, ModelInstallState};
     use crate::transcription::TranscriptionError;
+    use sha2::{Digest, Sha256};
 
     fn test_probe(_engine_id: EngineId, path: &Path) -> Result<(), TranscriptionError> {
         if !path.is_file() {
@@ -607,30 +786,18 @@ mod tests {
     #[test]
     fn install_cleans_up_staging_directory_on_checksum_mismatch() {
         let request = sample_request();
-        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_handle = Arc::new(InstallCancellation::new());
         let (tx, _rx) = mpsc::channel();
-        let reporter = InstallReporter {
-            engine_id: request.engine_id,
-            install_id: request.install_id.clone(),
-            model_id: request.model_id.clone(),
-            total_bytes: 4,
-            tx,
-        };
+        let reporter = sample_reporter(&request, tx);
         let downloader = MemoryDownloadSource::new([(
             "https://example.com/model.bin".to_string(),
             b"oops".to_vec(),
         )]);
 
-        let error = install_model_with_downloader(
-            &request,
-            cancel_flag,
-            &reporter,
-            &downloader,
-            test_probe,
-        )
-        .expect_err("install should fail");
+        let error = run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
+            .expect_err("install should fail");
 
-        assert!(matches!(error, InstallError::Failed(_)));
+        assert!(matches!(error, InstallError::Failed { .. }));
         assert!(
             !request
                 .store_root
@@ -643,28 +810,17 @@ mod tests {
     #[test]
     fn install_cleans_up_staging_directory_on_cancel() {
         let request = sample_request();
-        let cancel_flag = Arc::new(AtomicBool::new(true));
+        let cancel_handle = Arc::new(InstallCancellation::new());
+        cancel_handle.cancel();
         let (tx, _rx) = mpsc::channel();
-        let reporter = InstallReporter {
-            engine_id: request.engine_id,
-            install_id: request.install_id.clone(),
-            model_id: request.model_id.clone(),
-            total_bytes: 4,
-            tx,
-        };
+        let reporter = sample_reporter(&request, tx);
         let downloader = MemoryDownloadSource::new([(
             "https://example.com/model.bin".to_string(),
             b"test".to_vec(),
         )]);
 
-        let error = install_model_with_downloader(
-            &request,
-            cancel_flag,
-            &reporter,
-            &downloader,
-            test_probe,
-        )
-        .expect_err("install should cancel");
+        let error = run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
+            .expect_err("install should cancel");
 
         assert!(matches!(error, InstallError::Cancelled));
         assert!(
@@ -679,30 +835,22 @@ mod tests {
     #[test]
     fn install_surfaces_download_source_failures_cleanly() {
         let request = sample_request();
-        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_handle = Arc::new(InstallCancellation::new());
         let (tx, _rx) = mpsc::channel();
-        let reporter = InstallReporter {
-            engine_id: request.engine_id,
-            install_id: request.install_id.clone(),
-            model_id: request.model_id.clone(),
-            total_bytes: 4,
-            tx,
-        };
+        let reporter = sample_reporter(&request, tx);
         let downloader = FailingDownloadSource::new(anyhow!(
             "Download request for model.bin returned HTTP 404 Not Found from https://example.com/model.bin."
         ));
 
-        let error = install_model_with_downloader(
-            &request,
-            cancel_flag,
-            &reporter,
-            &downloader,
-            test_probe,
-        )
-        .expect_err("install should fail");
+        let error = run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
+            .expect_err("install should fail");
 
         match error {
-            InstallError::Failed(message) => {
+            InstallError::Failed {
+                downloaded_bytes,
+                message,
+            } => {
+                assert_eq!(downloaded_bytes, 0);
                 assert!(message.contains("HTTP 404 Not Found"));
                 assert!(message.contains("model.bin"));
             }
@@ -713,21 +861,15 @@ mod tests {
     #[test]
     fn happy_path_install_creates_model_file_and_metadata() {
         let request = sample_request();
-        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_handle = Arc::new(InstallCancellation::new());
         let (tx, rx) = mpsc::channel();
-        let reporter = InstallReporter {
-            engine_id: request.engine_id,
-            install_id: request.install_id.clone(),
-            model_id: request.model_id.clone(),
-            total_bytes: 4,
-            tx,
-        };
+        let reporter = sample_reporter(&request, tx);
         let downloader = MemoryDownloadSource::new([(
             "https://example.com/model.bin".to_string(),
             b"test".to_vec(),
         )]);
 
-        install_model_with_downloader(&request, cancel_flag, &reporter, &downloader, test_probe)
+        run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
             .expect("install should succeed");
 
         let target_dir = request.store_root.join("whisper_cpp").join("small");
@@ -741,20 +883,219 @@ mod tests {
             "install metadata should exist"
         );
 
-        // Verify we got a completed event
-        let mut saw_completed = false;
-        while let Ok(event) = rx.try_recv() {
-            if matches!(
+        let events = collect_install_events(rx);
+        assert!(
+            events.iter().any(|event| matches!(
                 event,
                 Event::ModelInstallUpdate {
                     state: ModelInstallState::Completed,
+                    downloaded_bytes: Some(4),
+                    total_bytes: Some(4),
                     ..
                 }
-            ) {
-                saw_completed = true;
-            }
-        }
-        assert!(saw_completed, "should have received a completed event");
+            )),
+            "should have received a completed event with aggregate totals"
+        );
+    }
+
+    #[test]
+    fn multi_artifact_install_emits_aggregate_totals_consistently() {
+        let vocab_bytes = b"ok".to_vec();
+        let model_bytes = b"test".to_vec();
+        let request = sample_request_with_artifacts(
+            "multi",
+            vec![
+                build_artifact(
+                    "model.bin",
+                    "https://example.com/model.bin",
+                    &model_bytes,
+                    ArtifactRole::TranscriptionModel,
+                ),
+                build_artifact(
+                    "vocab.json",
+                    "https://example.com/vocab.json",
+                    &vocab_bytes,
+                    ArtifactRole::SupportingFile,
+                ),
+            ],
+        );
+        let cancel_handle = Arc::new(InstallCancellation::new());
+        let (tx, rx) = mpsc::channel();
+        let reporter = sample_reporter(&request, tx);
+        let downloader = MemoryDownloadSource::new([
+            ("https://example.com/model.bin".to_string(), model_bytes),
+            ("https://example.com/vocab.json".to_string(), vocab_bytes),
+        ]);
+
+        run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
+            .expect("install should succeed");
+
+        let total_bytes = request.model.required_download_bytes();
+        let events = collect_install_events(rx);
+        let install_updates: Vec<&Event> = events
+            .iter()
+            .filter(|event| matches!(event, Event::ModelInstallUpdate { .. }))
+            .collect();
+
+        assert!(
+            install_updates.iter().all(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    downloaded_bytes: Some(downloaded_bytes),
+                    total_bytes: Some(event_total_bytes),
+                    ..
+                } if *downloaded_bytes <= total_bytes && *event_total_bytes == total_bytes
+            )),
+            "all install events should use aggregate downloaded/total byte counts"
+        );
+        assert!(
+            install_updates.iter().any(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    state: ModelInstallState::Downloading,
+                    details: Some(details),
+                    ..
+                } if details == "File 1 of 2"
+            )),
+            "first artifact should include file-position details"
+        );
+        assert!(
+            install_updates.iter().any(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    state: ModelInstallState::Downloading,
+                    details: Some(details),
+                    ..
+                } if details == "File 2 of 2"
+            )),
+            "second artifact should include file-position details"
+        );
+        assert!(
+            install_updates.iter().any(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    state: ModelInstallState::Completed,
+                    downloaded_bytes: Some(downloaded_bytes),
+                    total_bytes: Some(event_total_bytes),
+                    ..
+                } if *downloaded_bytes == total_bytes && *event_total_bytes == total_bytes
+            )),
+            "completed event should report aggregate totals"
+        );
+    }
+
+    #[test]
+    fn cancel_during_active_stream_download_exits_promptly_and_cleans_staging() {
+        let request = sample_request();
+        let cancel_handle = Arc::new(InstallCancellation::new());
+        let cancel_trigger = Arc::clone(&cancel_handle);
+        let (tx, rx) = mpsc::channel();
+        let reporter = sample_reporter(&request, tx);
+        let downloader = PendingDownloadSource;
+
+        let cancellation_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            cancel_trigger.cancel();
+        });
+
+        let started_at = Instant::now();
+        let error = run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
+            .expect_err("install should cancel");
+        cancellation_thread
+            .join()
+            .expect("cancellation helper thread should join");
+
+        assert!(matches!(error, InstallError::Cancelled));
+        assert!(
+            started_at.elapsed() < Duration::from_secs(1),
+            "cancel should unblock the stalled stream promptly"
+        );
+        assert!(
+            !request
+                .store_root
+                .join("whisper_cpp")
+                .join(".staging-small-install-1")
+                .exists()
+        );
+
+        let events = collect_install_events(rx);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    state: ModelInstallState::Cancelled,
+                    downloaded_bytes: Some(0),
+                    total_bytes: Some(4),
+                    ..
+                }
+            )),
+            "cancelled event should preserve aggregate totals even without completed chunks"
+        );
+    }
+
+    #[test]
+    fn cancel_after_final_download_but_before_promotion_cancels_cleanly() {
+        let request = sample_request();
+        let cancel_handle = Arc::new(InstallCancellation::new());
+        let probe_cancel_handle = Arc::clone(&cancel_handle);
+        let (tx, rx) = mpsc::channel();
+        let reporter = sample_reporter(&request, tx);
+        let downloader = MemoryDownloadSource::new([(
+            "https://example.com/model.bin".to_string(),
+            b"test".to_vec(),
+        )]);
+        let probe = move |engine_id: EngineId, path: &Path| -> Result<(), TranscriptionError> {
+            test_probe(engine_id, path)?;
+            probe_cancel_handle.cancel();
+            Ok(())
+        };
+
+        let error = run_install_test(&request, cancel_handle, &reporter, &downloader, &probe)
+            .expect_err("install should cancel after probe");
+
+        assert!(matches!(error, InstallError::Cancelled));
+        assert!(
+            !request
+                .store_root
+                .join("whisper_cpp")
+                .join("small")
+                .exists(),
+            "target directory should not become visible after cancellation"
+        );
+        assert!(
+            !request
+                .store_root
+                .join("whisper_cpp")
+                .join(".staging-small-install-1")
+                .exists(),
+            "staging directory should be removed after cancellation"
+        );
+
+        let events = collect_install_events(rx);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    state: ModelInstallState::Probing,
+                    downloaded_bytes: Some(4),
+                    total_bytes: Some(4),
+                    ..
+                }
+            )),
+            "probe phase should run before the cancellation checkpoint"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    state: ModelInstallState::Cancelled,
+                    downloaded_bytes: Some(4),
+                    total_bytes: Some(4),
+                    ..
+                }
+            )),
+            "cancelled event should keep the aggregate byte counters"
+        );
     }
 
     #[test]
@@ -803,28 +1144,31 @@ mod tests {
     }
 
     struct MemoryDownloadSource {
-        payloads: HashMap<String, Vec<u8>>,
+        payloads: HashMap<String, Vec<Vec<u8>>>,
     }
 
     impl MemoryDownloadSource {
         fn new<const N: usize>(entries: [(String, Vec<u8>); N]) -> Self {
             Self {
-                payloads: HashMap::from(entries),
+                payloads: HashMap::from(entries.map(|(url, bytes)| (url, vec![bytes]))),
             }
         }
     }
 
     impl DownloadSource for MemoryDownloadSource {
-        fn open(&self, artifact: &ModelArtifact) -> Result<DownloadStream> {
-            let bytes = self
-                .payloads
-                .get(&artifact.download_url)
-                .ok_or_else(|| anyhow!("missing payload"))?
-                .clone();
+        fn open<'a>(&'a self, artifact: &'a ModelArtifact) -> DownloadFuture<'a> {
+            Box::pin(async move {
+                let chunks = self
+                    .payloads
+                    .get(&artifact.download_url)
+                    .ok_or_else(|| anyhow!("missing payload"))?
+                    .clone()
+                    .into_iter()
+                    .map(Ok::<DownloadChunk, anyhow::Error>);
 
-            Ok(DownloadStream {
-                total_bytes: Some(bytes.len() as u64),
-                reader: Box::new(Cursor::new(bytes)),
+                Ok(DownloadStream {
+                    chunks: Box::pin(stream::iter(chunks)),
+                })
             })
         }
     }
@@ -840,12 +1184,73 @@ mod tests {
     }
 
     impl DownloadSource for FailingDownloadSource {
-        fn open(&self, _artifact: &ModelArtifact) -> Result<DownloadStream> {
-            Err(anyhow!("{}", self.error))
+        fn open<'a>(&'a self, _artifact: &'a ModelArtifact) -> DownloadFuture<'a> {
+            Box::pin(async move { Err(anyhow!("{}", self.error)) })
+        }
+    }
+
+    struct PendingDownloadSource;
+
+    impl DownloadSource for PendingDownloadSource {
+        fn open<'a>(&'a self, _artifact: &'a ModelArtifact) -> DownloadFuture<'a> {
+            Box::pin(async {
+                Ok(DownloadStream {
+                    chunks: Box::pin(stream::pending()),
+                })
+            })
+        }
+    }
+
+    fn run_install_test(
+        request: &InstallRequest,
+        cancel_handle: Arc<InstallCancellation>,
+        reporter: &InstallReporter,
+        downloader: &dyn DownloadSource,
+        model_probe: &ModelProbe,
+    ) -> Result<(), InstallError> {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(install_model_with_downloader(
+                request,
+                cancel_handle,
+                reporter,
+                downloader,
+                model_probe,
+            ))
+    }
+
+    fn collect_install_events(receiver: mpsc::Receiver<Event>) -> Vec<Event> {
+        receiver.try_iter().collect()
+    }
+
+    fn sample_reporter(request: &InstallRequest, tx: mpsc::Sender<Event>) -> InstallReporter {
+        InstallReporter {
+            engine_id: request.engine_id,
+            install_id: request.install_id.clone(),
+            model_id: request.model_id.clone(),
+            total_bytes: request.model.required_download_bytes(),
+            tx,
         }
     }
 
     fn sample_request() -> InstallRequest {
+        sample_request_with_artifacts(
+            "small",
+            vec![build_artifact(
+                "model.bin",
+                "https://example.com/model.bin",
+                b"test",
+                ArtifactRole::TranscriptionModel,
+            )],
+        )
+    }
+
+    fn sample_request_with_artifacts(
+        model_id: &str,
+        artifacts: Vec<ModelArtifact>,
+    ) -> InstallRequest {
         let store_root = std::env::temp_dir().join(format!(
             "obsidian-local-stt-install-test-{}",
             std::time::SystemTime::now()
@@ -856,16 +1261,7 @@ mod tests {
         fs::create_dir_all(&store_root).expect("temp dir should create");
 
         let model = CatalogModel {
-            artifacts: vec![ModelArtifact {
-                artifact_id: "transcription".to_string(),
-                download_url: "https://example.com/model.bin".to_string(),
-                filename: "model.bin".to_string(),
-                required: true,
-                role: ArtifactRole::TranscriptionModel,
-                sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-                    .to_string(),
-                size_bytes: 4,
-            }],
+            artifacts,
             capability_flags: vec![],
             collection_id: "english".to_string(),
             display_name: "Model".to_string(),
@@ -874,7 +1270,7 @@ mod tests {
             license_label: "MIT".to_string(),
             license_url: "https://example.com/license".to_string(),
             model_card_url: None,
-            model_id: "small".to_string(),
+            model_id: model_id.to_string(),
             notes: vec![],
             recommended: true,
             source_url: "https://example.com".to_string(),
@@ -901,8 +1297,31 @@ mod tests {
             engine_id: EngineId::WhisperCpp,
             install_id: "install-1".to_string(),
             model,
-            model_id: "small".to_string(),
+            model_id: model_id.to_string(),
             store_root,
         }
+    }
+
+    fn build_artifact(
+        filename: &str,
+        download_url: &str,
+        bytes: &[u8],
+        role: ArtifactRole,
+    ) -> ModelArtifact {
+        ModelArtifact {
+            artifact_id: filename.to_string(),
+            download_url: download_url.to_string(),
+            filename: filename.to_string(),
+            required: true,
+            role,
+            sha256: sha256_hex(bytes),
+            size_bytes: bytes.len() as u64,
+        }
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
     }
 }

@@ -23,9 +23,10 @@ import {
   type ModelProbeResultRecord,
   type ModelStoreRecord,
   type SelectedModel,
+  selectedModelEquals,
 } from './model-management-types';
 
-type InstallUpdateListener = (event: ModelInstallUpdateEvent) => void;
+type InstallStateListener = () => void;
 
 interface ModelManagementServiceDependencies {
   getSettings: () => PluginSettings;
@@ -57,14 +58,19 @@ export interface CurrentModelCardState {
 }
 
 export interface CatalogExplorerRowState {
-  installUpdate: ModelInstallUpdateRecord | null;
+  installState: ActiveInstallState | null;
   installedModel: InstalledModelRecord | null;
   isSelected: boolean;
   model: CatalogModelRecord;
 }
 
+export interface ActiveInstallState {
+  installUpdate: ModelInstallUpdateRecord;
+  isCancelling: boolean;
+}
+
 export interface ModelManagementSnapshot {
-  activeInstall: ModelInstallUpdateRecord | null;
+  activeInstall: ActiveInstallState | null;
   catalog: ModelCatalogRecord;
   currentModel: CurrentModelCardState;
   currentSelection: SelectedModel | null;
@@ -75,8 +81,10 @@ export interface ModelManagementSnapshot {
 }
 
 export class ModelManagementService {
-  private activeInstall: ModelInstallUpdateRecord | null = null;
-  private readonly installUpdateListeners = new Set<InstallUpdateListener>();
+  private activeInstall: ActiveInstallState | null = null;
+  private cachedSnapshot: ModelManagementSnapshot | null = null;
+  private cancelForceTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private readonly installStateListeners = new Set<InstallStateListener>();
   private lastLoggedInstallStateKey: string | null = null;
   private readonly releaseSidecarSubscription: () => void;
 
@@ -86,7 +94,7 @@ export class ModelManagementService {
         return;
       }
 
-      this.activeInstall = isTerminalInstallState(event.state) ? null : event;
+      this.activeInstall = resolveNextActiveInstallState(this.activeInstall, event);
       const installStateKey = `${event.installId}:${event.state}`;
 
       if (installStateKey !== this.lastLoggedInstallStateKey) {
@@ -98,24 +106,33 @@ export class ModelManagementService {
       }
 
       this.lastLoggedInstallStateKey = isTerminalInstallState(event.state) ? null : installStateKey;
-
-      for (const listener of this.installUpdateListeners) {
-        listener(event);
-      }
+      this.notifyInstallStateChanged();
     });
   }
 
   dispose(): void {
+    if (this.cancelForceTimer !== null) {
+      globalThis.clearTimeout(this.cancelForceTimer);
+    }
+
     this.releaseSidecarSubscription();
-    this.installUpdateListeners.clear();
+    this.installStateListeners.clear();
   }
 
-  subscribeToInstallUpdates(listener: InstallUpdateListener): () => void {
-    this.installUpdateListeners.add(listener);
+  subscribeToInstallUpdates(listener: InstallStateListener): () => void {
+    this.installStateListeners.add(listener);
 
     return () => {
-      this.installUpdateListeners.delete(listener);
+      this.installStateListeners.delete(listener);
     };
+  }
+
+  getActiveInstallState(): ActiveInstallState | null {
+    return this.activeInstall;
+  }
+
+  getCachedSnapshot(): ModelManagementSnapshot | null {
+    return this.cachedSnapshot;
   }
 
   async getSnapshot(): Promise<ModelManagementSnapshot> {
@@ -132,7 +149,7 @@ export class ModelManagementService {
         this.fetchSupportedEngineIds(),
       ]);
 
-    return buildModelManagementSnapshot({
+    const snapshot = buildModelManagementSnapshot({
       activeInstall: this.activeInstall,
       catalog: catalogEvent,
       currentSelection: settings.selectedModel,
@@ -141,38 +158,90 @@ export class ModelManagementService {
       probeResult,
       supportedEngineIds,
     });
+    this.cachedSnapshot = snapshot;
+    return snapshot;
   }
 
   async installCatalogModel(selection: CatalogModelSelection): Promise<ModelInstallUpdateEvent> {
+    if (this.activeInstall !== null) {
+      throw new Error('Another model is already being installed.');
+    }
+
     this.dependencies.logger?.debug(
       'model',
       `initiating install for ${selection.engineId}:${selection.modelId}`,
     );
-    const update = await this.dependencies.sidecarConnection.installModel({
+    return this.dependencies.sidecarConnection.installModel({
       engineId: selection.engineId,
       installId: createInstallId(),
       modelId: selection.modelId,
       ...createModelStoreOverridePayload(this.dependencies.getSettings().modelStorePathOverride),
     });
-
-    if (update.state !== 'failed') {
-      this.activeInstall = update;
-    }
-
-    return update;
   }
 
-  async cancelActiveInstall(): Promise<ModelInstallUpdateEvent | null> {
+  async cancelActiveInstall(): Promise<void> {
     const activeInstall = this.activeInstall;
 
-    if (activeInstall === null) {
-      return null;
+    if (activeInstall === null || activeInstall.isCancelling) {
+      return;
     }
 
-    return this.dependencies.sidecarConnection.cancelModelInstall(activeInstall.installId);
+    if (this.cancelForceTimer !== null) {
+      globalThis.clearTimeout(this.cancelForceTimer);
+      this.cancelForceTimer = null;
+    }
+
+    this.activeInstall = {
+      ...activeInstall,
+      isCancelling: true,
+    };
+    this.notifyInstallStateChanged();
+
+    try {
+      await this.dependencies.sidecarConnection.cancelModelInstall(
+        activeInstall.installUpdate.installId,
+      );
+    } catch (error) {
+      if (
+        this.activeInstall !== null &&
+        this.activeInstall.installUpdate.installId === activeInstall.installUpdate.installId
+      ) {
+        this.activeInstall = {
+          ...this.activeInstall,
+          isCancelling: false,
+        };
+        this.notifyInstallStateChanged();
+      }
+
+      throw error;
+    }
+
+    const cancelledInstallId = activeInstall.installUpdate.installId;
+    this.cancelForceTimer = globalThis.setTimeout(() => {
+      if (
+        this.activeInstall !== null &&
+        this.activeInstall.installUpdate.installId === cancelledInstallId &&
+        this.activeInstall.isCancelling
+      ) {
+        this.dependencies.logger?.warn(
+          'model',
+          `force-clearing stale cancel state for ${cancelledInstallId}`,
+        );
+        this.activeInstall = null;
+        this.notifyInstallStateChanged();
+      }
+    }, 30_000);
   }
 
   async removeCatalogModel(selection: CatalogModelSelection): Promise<void> {
+    if (
+      this.activeInstall !== null &&
+      this.activeInstall.installUpdate.engineId === selection.engineId &&
+      this.activeInstall.installUpdate.modelId === selection.modelId
+    ) {
+      throw new Error('This model is currently being installed and cannot be removed.');
+    }
+
     this.dependencies.logger?.debug('model', `removing ${selection.engineId}:${selection.modelId}`);
     const event = await this.dependencies.sidecarConnection.removeModel({
       engineId: selection.engineId,
@@ -259,10 +328,16 @@ export class ModelManagementService {
       ...patch,
     });
   }
+
+  private notifyInstallStateChanged(): void {
+    for (const listener of this.installStateListeners) {
+      listener();
+    }
+  }
 }
 
 export function buildModelManagementSnapshot(input: {
-  activeInstall: ModelInstallUpdateRecord | null;
+  activeInstall: ActiveInstallState | null;
   catalog: ModelCatalogEvent;
   currentSelection: SelectedModel | null;
   installedModels: InstalledModelsEvent['models'];
@@ -316,26 +391,31 @@ export function createInstallLifecycleLogMessage(
   }
 }
 
-export function applyInstallUpdateToSnapshot(
+export function applyActiveInstallStateToSnapshot(
   snapshot: ModelManagementSnapshot,
-  installUpdate: ModelInstallUpdateRecord,
+  activeInstall: ActiveInstallState,
 ): ModelManagementSnapshot {
-  const nextActiveInstall = isTerminalInstallState(installUpdate.state) ? null : installUpdate;
+  const previousInstall = snapshot.activeInstall?.installUpdate ?? null;
+  const nextInstall = activeInstall.installUpdate;
 
   return {
     ...snapshot,
-    activeInstall: nextActiveInstall,
+    activeInstall,
     rows: snapshot.rows.map((row) => {
-      if (
-        row.model.engineId !== installUpdate.engineId ||
-        row.model.modelId !== installUpdate.modelId
-      ) {
+      const matchesNextInstall =
+        row.model.engineId === nextInstall.engineId && row.model.modelId === nextInstall.modelId;
+      const matchesPreviousInstall =
+        previousInstall !== null &&
+        row.model.engineId === previousInstall.engineId &&
+        row.model.modelId === previousInstall.modelId;
+
+      if (!matchesNextInstall && !matchesPreviousInstall) {
         return row;
       }
 
       return {
         ...row,
-        installUpdate: nextActiveInstall,
+        installState: matchesNextInstall ? activeInstall : null,
       };
     }),
   };
@@ -345,13 +425,13 @@ export function buildCatalogExplorerRows(
   catalog: ModelCatalogRecord,
   installedModels: InstalledModelRecord[],
   currentSelection: SelectedModel | null,
-  activeInstall: ModelInstallUpdateRecord | null,
+  activeInstall: ActiveInstallState | null,
 ): CatalogExplorerRowState[] {
   return [...catalog.models].sort(compareCatalogModels).map((model) => ({
-    installUpdate:
+    installState:
       activeInstall !== null &&
-      activeInstall.engineId === model.engineId &&
-      activeInstall.modelId === model.modelId
+      activeInstall.installUpdate.engineId === model.engineId &&
+      activeInstall.installUpdate.modelId === model.modelId
         ? activeInstall
         : null,
     installedModel:
@@ -386,8 +466,13 @@ export function buildCurrentModelCardState(
     };
   }
 
+  const matchedProbe =
+    probeResult !== null && selectedModelEquals(probeResult.selection, currentSelection)
+      ? probeResult
+      : null;
+
   const displayName =
-    probeResult?.displayName ?? resolveSelectionDisplayName(currentSelection, catalog);
+    matchedProbe?.displayName ?? resolveSelectionDisplayName(currentSelection, catalog);
   const installedModel =
     currentSelection.kind === 'catalog_model'
       ? (installedModels.find(
@@ -405,17 +490,17 @@ export function buildCurrentModelCardState(
         ) ?? null)
       : null;
   const sizeBytes =
-    probeResult?.sizeBytes ??
+    matchedProbe?.sizeBytes ??
     installedModel?.totalSizeBytes ??
     (catalogEntry !== null ? getTotalModelSize(catalogEntry) : null);
 
   return {
-    detail: probeResult?.message ?? defaultSelectionDetail(currentSelection),
+    detail: matchedProbe?.message ?? defaultSelectionDetail(currentSelection),
     displayName,
     engineLabel: getEngineDisplayName(currentSelection.engineId),
     installLocation: installedModel?.installPath ?? null,
-    installedLabel: resolveInstalledLabel(currentSelection, probeResult, installedModel),
-    resolvedPath: probeResult?.resolvedPath ?? installedModel?.runtimePath ?? null,
+    installedLabel: resolveInstalledLabel(currentSelection, matchedProbe, installedModel),
+    resolvedPath: matchedProbe?.resolvedPath ?? installedModel?.runtimePath ?? null,
     sizeBytes,
     sourceLabel: currentSelection.kind === 'catalog_model' ? 'Managed download' : 'External file',
   };
@@ -423,6 +508,22 @@ export function buildCurrentModelCardState(
 
 function compareCatalogModels(left: CatalogModelRecord, right: CatalogModelRecord): number {
   return getTotalModelSize(left) - getTotalModelSize(right);
+}
+
+function resolveNextActiveInstallState(
+  currentState: ActiveInstallState | null,
+  installUpdate: ModelInstallUpdateEvent,
+): ActiveInstallState | null {
+  if (isTerminalInstallState(installUpdate.state)) {
+    return null;
+  }
+
+  return {
+    installUpdate,
+    isCancelling:
+      currentState?.installUpdate.installId === installUpdate.installId &&
+      currentState.isCancelling,
+  };
 }
 
 function createModelStoreOverridePayload(modelStorePathOverride: string | undefined): {

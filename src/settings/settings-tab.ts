@@ -1,6 +1,9 @@
 import type { App, Plugin } from 'obsidian';
 import { Platform, PluginSettingTab, Setting } from 'obsidian';
-
+import {
+  createInstallProgressElement,
+  updateInstallProgressElement,
+} from '../models/model-install-progress';
 import {
   CurrentModelInfoModal,
   ExternalModelFileModal,
@@ -12,7 +15,7 @@ import type {
   ModelManagementSnapshot,
 } from '../models/model-management-service';
 import { getEngineDisplayName, isEngineId } from '../models/model-management-types';
-import { formatErrorMessage, formatInstallProgress } from '../shared/format-utils';
+import { formatErrorMessage } from '../shared/format-utils';
 import type {
   AccelerationPreference,
   RuntimeCapability,
@@ -157,6 +160,10 @@ function buildEffectiveBackendLines(
 }
 
 export class LocalSttSettingTab extends PluginSettingTab {
+  private installProgressEl: HTMLDivElement | null = null;
+  private modelSectionEl: HTMLDivElement | null = null;
+  private releaseInstallSubscription: (() => void) | null = null;
+
   constructor(
     app: App,
     plugin: Plugin,
@@ -166,6 +173,8 @@ export class LocalSttSettingTab extends PluginSettingTab {
   }
 
   override display(): void {
+    this.tearDownInstallSubscription();
+
     const { containerEl } = this;
     const settings = this.dependencies.getSettings();
 
@@ -178,7 +187,13 @@ export class LocalSttSettingTab extends PluginSettingTab {
     // --- Model ---
     new Setting(containerEl).setName('Model').setHeading();
     const modelSection = containerEl.createDiv();
+    this.modelSectionEl = modelSection;
     void this.renderModelSection(modelSection);
+
+    this.releaseInstallSubscription =
+      this.dependencies.modelManagementService.subscribeToInstallUpdates(() => {
+        this.handleInstallUpdate();
+      });
 
     // --- Transcription ---
     new Setting(containerEl).setName('Transcription').setHeading();
@@ -359,6 +374,33 @@ export class LocalSttSettingTab extends PluginSettingTab {
     });
   }
 
+  override hide(): void {
+    this.tearDownInstallSubscription();
+  }
+
+  private tearDownInstallSubscription(): void {
+    this.releaseInstallSubscription?.();
+    this.releaseInstallSubscription = null;
+    this.installProgressEl = null;
+    this.modelSectionEl = null;
+  }
+
+  private handleInstallUpdate(): void {
+    const activeInstall = this.dependencies.modelManagementService.getActiveInstallState();
+
+    if (activeInstall !== null && this.installProgressEl !== null) {
+      updateInstallProgressElement(this.installProgressEl, {
+        ...activeInstall.installUpdate,
+        isCancelling: activeInstall.isCancelling,
+      });
+      return;
+    }
+
+    if (this.modelSectionEl !== null) {
+      void this.renderModelSection(this.modelSectionEl);
+    }
+  }
+
   private async renderEngineOptions(
     containerEl: HTMLDivElement,
     cachedSystemInfo?: SystemInfoEvent | null,
@@ -455,9 +497,22 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     if (snapshot.activeInstall !== null) {
       const { activeInstall } = snapshot;
-      new Setting(containerEl)
-        .setName(`Installing: ${activeInstall.modelId}`)
-        .setDesc(formatInstallProgress(activeInstall));
+      const activeInstallDisplayName =
+        snapshot.rows.find(
+          (row) =>
+            row.model.engineId === activeInstall.installUpdate.engineId &&
+            row.model.modelId === activeInstall.installUpdate.modelId,
+        )?.model.displayName ?? activeInstall.installUpdate.modelId;
+      const progressEl = createInstallProgressElement({
+        ...activeInstall.installUpdate,
+        isCancelling: activeInstall.isCancelling,
+      });
+      this.installProgressEl = progressEl;
+      const fragment = document.createDocumentFragment();
+      fragment.append(progressEl);
+      new Setting(containerEl).setName(`Installing: ${activeInstallDisplayName}`).setDesc(fragment);
+    } else {
+      this.installProgressEl = null;
     }
   }
 

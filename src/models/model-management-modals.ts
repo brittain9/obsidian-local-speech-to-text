@@ -1,20 +1,20 @@
 import type { App } from 'obsidian';
 import { Modal, Notice, Setting } from 'obsidian';
 
-import { formatBytes, formatErrorMessage, formatInstallProgress } from '../shared/format-utils';
+import { formatBytes, formatErrorMessage } from '../shared/format-utils';
+import { createInstallProgressFragment } from './model-install-progress';
 import type {
+  ActiveInstallState,
   CatalogExplorerRowState,
   CurrentModelCardState,
   ModelManagementService,
   ModelManagementSnapshot,
 } from './model-management-service';
-import { applyInstallUpdateToSnapshot, isTerminalInstallState } from './model-management-service';
+import { applyActiveInstallStateToSnapshot } from './model-management-service';
 import {
   type CatalogModelRecord,
   type EngineId,
-  getEngineDisplayName,
   getTotalModelSize,
-  type ModelInstallUpdateRecord,
 } from './model-management-types';
 
 interface ModelModalDependencies {
@@ -23,6 +23,7 @@ interface ModelModalDependencies {
 }
 
 export class ModelExplorerModal extends Modal {
+  private actionInProgress = false;
   private activeEngineId: EngineId | null = null;
   private listContainer: HTMLDivElement | null = null;
   private loadSequence = 0;
@@ -61,10 +62,12 @@ export class ModelExplorerModal extends Modal {
     this.listContainer = this.contentEl.createDiv({ cls: 'local-stt-model-list' });
     searchInput.focus();
     this.releaseInstallUpdateSubscription = this.dependencies.service.subscribeToInstallUpdates(
-      (event) => {
-        if (this.snapshot !== null && !isTerminalInstallState(event.state)) {
-          this.snapshot = applyInstallUpdateToSnapshot(this.snapshot, event);
-          this.updateVisibleInstallRow(event);
+      () => {
+        const activeInstall = this.dependencies.service.getActiveInstallState();
+
+        if (this.snapshot !== null && activeInstall !== null) {
+          this.snapshot = applyActiveInstallStateToSnapshot(this.snapshot, activeInstall);
+          this.updateVisibleInstallRow(activeInstall);
           return;
         }
 
@@ -77,6 +80,7 @@ export class ModelExplorerModal extends Modal {
   override onClose(): void {
     this.releaseInstallUpdateSubscription?.();
     this.releaseInstallUpdateSubscription = null;
+    this.actionInProgress = false;
     this.listContainer = null;
     this.snapshot = null;
     this.tabBarEl = null;
@@ -91,32 +95,61 @@ export class ModelExplorerModal extends Modal {
     }
 
     const loadSequence = ++this.loadSequence;
-    this.listContainer.empty();
-    this.listContainer.createEl('p', { text: 'Loading model catalog\u2026' });
 
-    try {
-      const snapshot = await this.dependencies.service.getSnapshot();
+    if (this.snapshot === null) {
+      const cached = this.dependencies.service.getCachedSnapshot();
 
-      if (this.listContainer === null || loadSequence !== this.loadSequence) {
+      if (cached !== null) {
+        this.applySnapshot(cached, loadSequence);
+        void this.fetchAndApplySnapshot(loadSequence);
         return;
       }
 
-      this.snapshot = snapshot;
+      this.listContainer.empty();
+      this.listContainer.createEl('p', { text: 'Loading model catalog\u2026' });
+    }
 
-      // Initialize active engine to first supported, preserving current tab across reloads
-      const supportedEngines = snapshot.catalog.engines.filter((e) =>
-        snapshot.supportedEngineIds.includes(e.engineId),
-      );
+    await this.fetchAndApplySnapshot(loadSequence);
+  }
 
-      if (
-        this.activeEngineId === null ||
-        !supportedEngines.some((e) => e.engineId === this.activeEngineId)
-      ) {
-        this.activeEngineId = supportedEngines[0]?.engineId ?? null;
-      }
+  private applySnapshot(snapshot: ModelManagementSnapshot, loadSequence: number): void {
+    if (this.listContainer === null || loadSequence !== this.loadSequence) {
+      return;
+    }
 
-      this.renderTabs();
-      this.renderFromCache();
+    const activeInstall = this.dependencies.service.getActiveInstallState();
+
+    if (activeInstall !== null) {
+      this.snapshot = applyActiveInstallStateToSnapshot(snapshot, activeInstall);
+    } else {
+      this.snapshot = {
+        ...snapshot,
+        activeInstall: null,
+        rows: snapshot.rows.map((row) =>
+          row.installState !== null ? { ...row, installState: null } : row,
+        ),
+      };
+    }
+
+    const supportedEngines = this.snapshot.catalog.engines.filter((e) =>
+      this.snapshot?.supportedEngineIds.includes(e.engineId),
+    );
+
+    if (
+      this.activeEngineId === null ||
+      !supportedEngines.some((e) => e.engineId === this.activeEngineId)
+    ) {
+      this.activeEngineId = supportedEngines[0]?.engineId ?? null;
+    }
+
+    this.renderTabs();
+    this.renderFromCache();
+  }
+
+  private async fetchAndApplySnapshot(loadSequence: number): Promise<void> {
+    try {
+      const snapshot = await this.dependencies.service.getSnapshot();
+      this.applySnapshot(snapshot, loadSequence);
     } catch (error) {
       if (this.listContainer !== null && loadSequence === this.loadSequence) {
         this.listContainer.empty();
@@ -197,19 +230,19 @@ export class ModelExplorerModal extends Modal {
     }
   }
 
-  private updateVisibleInstallRow(installUpdate: ModelInstallUpdateRecord): void {
+  private updateVisibleInstallRow(activeInstall: ActiveInstallState): void {
     if (this.snapshot === null || this.activeEngineId === null) {
       return;
     }
 
-    if (installUpdate.engineId !== this.activeEngineId) {
+    if (activeInstall.installUpdate.engineId !== this.activeEngineId) {
       return;
     }
 
     const row = this.snapshot.rows.find(
       (candidate) =>
-        candidate.model.engineId === installUpdate.engineId &&
-        candidate.model.modelId === installUpdate.modelId,
+        candidate.model.engineId === activeInstall.installUpdate.engineId &&
+        candidate.model.modelId === activeInstall.installUpdate.modelId,
     );
 
     if (row === undefined || !matchesQuery(row, this.searchQuery)) {
@@ -217,7 +250,7 @@ export class ModelExplorerModal extends Modal {
     }
 
     const rowContainer = this.rowContainers.get(
-      getRowKey(installUpdate.engineId, installUpdate.modelId),
+      getRowKey(activeInstall.installUpdate.engineId, activeInstall.installUpdate.modelId),
     );
 
     if (rowContainer === undefined) {
@@ -238,8 +271,14 @@ export class ModelExplorerModal extends Modal {
     setting.setName(row.model.displayName);
 
     // Description: tags + size pill, or install progress
-    if (row.installUpdate !== null) {
-      setting.setDesc(formatInstallProgress(row.installUpdate));
+    if (row.installState !== null) {
+      const installState = row.installState;
+      setting.setDesc(
+        createInstallProgressFragment({
+          ...installState.installUpdate,
+          isCancelling: installState.isCancelling,
+        }),
+      );
     } else {
       const frag = document.createDocumentFragment();
       const tagsContainer = frag.createEl('span', { cls: 'local-stt-tags' });
@@ -263,18 +302,33 @@ export class ModelExplorerModal extends Modal {
     }
 
     // Action buttons
-    if (row.installUpdate !== null) {
+    const anotherModelInstalling =
+      this.snapshot?.activeInstall !== null && row.installState === null;
+
+    if (row.installState !== null) {
+      const installState = row.installState;
       setting.addButton((button) => {
+        if (!installState.isCancelling) {
+          button.setCta();
+        }
         button
-          .setCta()
-          .setButtonText('Cancel')
+          .setButtonText(installState.isCancelling ? 'Cancelling…' : 'Cancel')
+          .setDisabled(installState.isCancelling || this.actionInProgress)
           .onClick(async () => {
-            await this.dependencies.service.cancelActiveInstall();
+            try {
+              await this.dependencies.service.cancelActiveInstall();
+              await this.dependencies.onChanged();
+            } catch (error) {
+              new Notice(
+                `Local STT: ${formatErrorMessage(error, 'Failed to cancel the model install.')}`,
+              );
+            }
           });
       });
     } else if (row.installedModel !== null) {
       setting.addButton((button) => {
-        button.setButtonText(row.isSelected ? 'Selected' : 'Use').setDisabled(row.isSelected);
+        const disabled = row.isSelected || this.actionInProgress;
+        button.setButtonText(row.isSelected ? 'Selected' : 'Use').setDisabled(disabled);
         if (!row.isSelected) {
           button.setCta();
         }
@@ -296,6 +350,7 @@ export class ModelExplorerModal extends Modal {
         button
           .setWarning()
           .setButtonText('Remove')
+          .setDisabled(this.actionInProgress)
           .onClick(async () => {
             await this.runAction(async () => {
               await this.dependencies.service.removeCatalogModel({
@@ -311,6 +366,7 @@ export class ModelExplorerModal extends Modal {
         button
           .setCta()
           .setButtonText('Install')
+          .setDisabled(anotherModelInstalling || this.actionInProgress)
           .onClick(async () => {
             await this.runAction(async () => {
               await this.dependencies.service.installCatalogModel({
@@ -339,6 +395,13 @@ export class ModelExplorerModal extends Modal {
   }
 
   private async runAction(action: () => Promise<void>, successMessage: string): Promise<boolean> {
+    if (this.actionInProgress) {
+      return false;
+    }
+
+    this.actionInProgress = true;
+    this.renderFromCache();
+
     try {
       await action();
       new Notice(`Local STT: ${successMessage}`);
@@ -348,6 +411,9 @@ export class ModelExplorerModal extends Modal {
     } catch (error) {
       new Notice(`Local STT: ${formatErrorMessage(error, 'The model action failed.')}`);
       return false;
+    } finally {
+      this.actionInProgress = false;
+      this.renderFromCache();
     }
   }
 }
@@ -419,9 +485,6 @@ class ModelDetailsModal extends Modal {
 
     const dl = this.contentEl.createEl('dl', { cls: 'local-stt-details-grid' });
 
-    dl.createEl('dt', { text: 'Engine' });
-    dl.createEl('dd', { text: getEngineDisplayName(this.model.engineId) });
-
     const totalSize = getTotalModelSize(this.model);
     if (totalSize > 0) {
       dl.createEl('dt', { text: 'Total size' });
@@ -429,19 +492,14 @@ class ModelDetailsModal extends Modal {
     }
 
     dl.createEl('dt', { text: 'Source' });
-    dl.createEl('dd', { text: this.model.sourceUrl, cls: 'local-stt-mono' });
+    appendDetailsLink(dl.createEl('dd'), this.model.sourceUrl, this.model.sourceUrl, true);
 
     dl.createEl('dt', { text: 'License' });
-    dl.createEl('dd', { text: `${this.model.licenseLabel} (${this.model.licenseUrl})` });
+    appendDetailsLink(dl.createEl('dd'), this.model.licenseLabel, this.model.licenseUrl);
 
     if (this.installPath !== null) {
       dl.createEl('dt', { text: 'Install path' });
       dl.createEl('dd', { text: this.installPath, cls: 'local-stt-mono' });
-    }
-
-    if (this.model.notes.length > 0) {
-      dl.createEl('dt', { text: 'Notes' });
-      dl.createEl('dd', { text: this.model.notes.join(' ') });
     }
 
     // Artifact table — all files, not just primary
@@ -456,29 +514,14 @@ class ModelDetailsModal extends Modal {
       const headerRow = thead.createEl('tr');
       headerRow.createEl('th', { text: 'File' });
       headerRow.createEl('th', { text: 'Size' });
-      headerRow.createEl('th', { text: 'Role' });
 
       const tbody = table.createEl('tbody');
       for (const artifact of this.model.artifacts) {
         const tr = tbody.createEl('tr');
         tr.createEl('td', { text: artifact.filename, cls: 'local-stt-mono' });
         tr.createEl('td', { text: formatBytes(artifact.sizeBytes) });
-        tr.createEl('td', { text: formatArtifactRole(artifact.role) });
       }
     }
-  }
-}
-
-function formatArtifactRole(role: string): string {
-  switch (role) {
-    case 'transcription_model':
-      return 'Model';
-    case 'supporting_file':
-      return 'Supporting';
-    case 'punctuation_model':
-      return 'Punctuation';
-    default:
-      return role;
   }
 }
 
@@ -538,7 +581,6 @@ function matchesQuery(row: CatalogExplorerRowState, query: string): boolean {
   const haystack = [
     row.model.displayName,
     row.model.summary,
-    ...row.model.notes,
     ...row.model.uxTags,
     ...row.model.languageTags,
   ]
@@ -550,4 +592,22 @@ function matchesQuery(row: CatalogExplorerRowState, query: string): boolean {
 
 function getRowKey(engineId: EngineId, modelId: string): string {
   return `${engineId}:${modelId}`;
+}
+
+function appendDetailsLink(
+  container: HTMLElement,
+  label: string,
+  href: string,
+  monospace = false,
+): void {
+  const link = container.createEl('a', {
+    href,
+    text: label,
+  });
+
+  link.setAttr('target', '_blank');
+  link.setAttr('rel', 'noopener noreferrer');
+  if (monospace) {
+    link.addClass('local-stt-mono');
+  }
 }

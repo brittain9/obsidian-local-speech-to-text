@@ -1,3 +1,4 @@
+import { selectedModelEquals } from '../models/model-management-types';
 import { asError } from '../shared/error-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import {
@@ -165,7 +166,9 @@ export class SidecarConnection {
   ): Promise<ModelProbeResultEvent> {
     return this.sendCommandAndWait(
       createProbeModelSelectionCommand(payload),
-      (event): event is ModelProbeResultEvent => event.type === 'model_probe_result',
+      (event): event is ModelProbeResultEvent =>
+        event.type === 'model_probe_result' &&
+        selectedModelEquals(event.selection, payload.modelSelection),
       'model_probe_result',
       timeoutMs,
     );
@@ -202,20 +205,8 @@ export class SidecarConnection {
     );
   }
 
-  async cancelModelInstall(
-    installId: string,
-    timeoutMs = this.options.getRequestTimeoutMs(),
-  ): Promise<ModelInstallUpdateEvent> {
-    return this.sendCommandAndWait(
-      createCancelModelInstallCommand(installId),
-      (event): event is ModelInstallUpdateEvent =>
-        event.type === 'model_install_update' &&
-        event.installId === installId &&
-        (event.state === 'cancelled' || event.state === 'failed'),
-      `model_install_update:${installId}`,
-      timeoutMs,
-      (event) => event.sessionId === undefined,
-    );
+  async cancelModelInstall(installId: string): Promise<void> {
+    await this.sendCommand(createCancelModelInstallCommand(installId));
   }
 
   async startSession(
@@ -283,8 +274,7 @@ export class SidecarConnection {
   }
 
   async setGate(open: boolean): Promise<void> {
-    await this.ensureStarted();
-    this.process.write(encodeJsonFrame(createSetGateCommand(open)));
+    await this.sendCommand(createSetGateCommand(open));
   }
 
   dispose(): void {
@@ -329,6 +319,16 @@ export class SidecarConnection {
         reject(asError(error, `Failed to write sidecar command: ${command.type}`));
       }
     });
+  }
+
+  private async sendCommand(command: SidecarCommand): Promise<void> {
+    await this.ensureStarted();
+
+    try {
+      this.process.write(encodeJsonFrame(command));
+    } catch (error) {
+      throw asError(error, `Failed to write sidecar command: ${command.type}`);
+    }
   }
 
   private createPendingWaiter(
