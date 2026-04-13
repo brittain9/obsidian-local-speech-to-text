@@ -4,12 +4,13 @@ use std::path::Path;
 use crate::protocol::RuntimeCapability;
 
 pub fn probe_runtime_capabilities() -> Vec<RuntimeCapability> {
-    let mut capabilities = vec![RuntimeCapability {
+    let mut capabilities = Vec::with_capacity(4);
+    capabilities.push(RuntimeCapability {
         available: true,
         backend: "cpu".to_string(),
         engine: "whisper_cpp".to_string(),
         reason: None,
-    }];
+    });
 
     #[cfg(all(feature = "gpu-metal", target_os = "macos"))]
     capabilities.push(probe_whisper_metal());

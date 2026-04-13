@@ -8,9 +8,9 @@ use crate::model_store::{
     scan_installed_models,
 };
 use crate::protocol::{
-    AccelerationPreference, Command, EngineId, Event, ListeningMode, ModelInstallState,
-    ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
-    compiled_backends, compiled_engines, system_info_string,
+    AccelerationPreference, Command, EngineId, Event, HealthStatus, ListeningMode,
+    ModelInstallState, ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState,
+    SessionStopReason, compiled_backends, compiled_engines, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
@@ -164,7 +164,7 @@ impl AppState {
             Command::Health => {
                 events.push(Event::HealthOk {
                     sidecar_version: self.sidecar_version.clone(),
-                    status: "ready".to_string(),
+                    status: HealthStatus::Ready,
                 });
 
                 (ControlFlow::Continue, events)
@@ -318,7 +318,6 @@ impl AppState {
                 model_store_path_override,
                 pause_while_processing,
                 session_id,
-                use_gpu,
             } => {
                 if let Some(replaced_events) =
                     self.finish_active_session(SessionStopReason::SessionReplaced)
@@ -335,7 +334,6 @@ impl AppState {
                         let use_gpu = resolve_use_gpu(
                             resolved_model.engine_id,
                             acceleration_preference,
-                            use_gpu,
                             &self.runtime_capabilities,
                         );
                         let config = SessionConfig {
@@ -939,18 +937,16 @@ fn invalid_gate_warning(session_id: Option<String>, message: &'static str) -> Ev
 
 fn resolve_use_gpu(
     engine_id: EngineId,
-    acceleration_preference: Option<AccelerationPreference>,
-    legacy_use_gpu: bool,
+    acceleration_preference: AccelerationPreference,
     runtime_capabilities: &[RuntimeCapability],
 ) -> bool {
     match acceleration_preference {
-        Some(AccelerationPreference::CpuOnly) => false,
-        Some(AccelerationPreference::Auto) => runtime_capabilities.iter().any(|capability| {
+        AccelerationPreference::CpuOnly => false,
+        AccelerationPreference::Auto => runtime_capabilities.iter().any(|capability| {
             capability.engine == engine_id.as_str()
                 && capability.backend != "cpu"
                 && capability.available
         }),
-        None => legacy_use_gpu,
     }
 }
 
@@ -966,8 +962,8 @@ mod tests {
         ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
     };
     use crate::protocol::{
-        AccelerationPreference, Command, EngineId, Event, ListeningMode, ModelProbeStatus,
-        RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
+        AccelerationPreference, Command, EngineId, Event, HealthStatus, ListeningMode,
+        ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
     };
     use crate::transcription::TranscriptionError;
 
@@ -980,7 +976,7 @@ mod tests {
             events,
             vec![Event::HealthOk {
                 sidecar_version: "0.1.0".to_string(),
-                status: "ready".to_string(),
+                status: HealthStatus::Ready,
             }]
         );
     }
@@ -1066,8 +1062,7 @@ mod tests {
     fn auto_acceleration_uses_available_gpu_backend() {
         assert!(super::resolve_use_gpu(
             EngineId::WhisperCpp,
-            Some(AccelerationPreference::Auto),
-            false,
+            AccelerationPreference::Auto,
             &[
                 RuntimeCapability {
                     available: true,
@@ -1089,28 +1084,12 @@ mod tests {
     fn cpu_only_acceleration_disables_gpu_even_when_available() {
         assert!(!super::resolve_use_gpu(
             EngineId::WhisperCpp,
-            Some(AccelerationPreference::CpuOnly),
-            true,
+            AccelerationPreference::CpuOnly,
             &[RuntimeCapability {
                 available: true,
                 backend: "cuda".to_string(),
                 engine: "whisper_cpp".to_string(),
                 reason: None,
-            }],
-        ));
-    }
-
-    #[test]
-    fn legacy_use_gpu_is_used_when_acceleration_preference_is_missing() {
-        assert!(super::resolve_use_gpu(
-            EngineId::WhisperCpp,
-            None,
-            true,
-            &[RuntimeCapability {
-                available: false,
-                backend: "cuda".to_string(),
-                engine: "whisper_cpp".to_string(),
-                reason: Some("not available".to_string()),
             }],
         ));
     }
@@ -1148,7 +1127,7 @@ mod tests {
 
     fn start_session_command(session_id: &str, model_file_path: &Path) -> Command {
         Command::StartSession {
-            acceleration_preference: None,
+            acceleration_preference: AccelerationPreference::Auto,
             language: "en".to_string(),
             mode: ListeningMode::AlwaysOn,
             model_selection: SelectedModel::ExternalFile {
@@ -1158,7 +1137,6 @@ mod tests {
             model_store_path_override: None,
             pause_while_processing: true,
             session_id: session_id.to_string(),
-            use_gpu: false,
         }
     }
 

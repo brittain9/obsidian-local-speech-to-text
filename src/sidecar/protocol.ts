@@ -55,14 +55,13 @@ interface EnvelopeBase<TType extends string> {
 export interface HealthCommand extends EnvelopeBase<'health'> {}
 
 export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
-  accelerationPreference?: AccelerationPreference;
+  accelerationPreference: AccelerationPreference;
   language: 'en';
   mode: ListeningMode;
   modelSelection: SelectedModel;
   modelStorePathOverride?: string;
   pauseWhileProcessing: boolean;
   sessionId: string;
-  useGpu?: boolean;
 }
 
 export interface RuntimeCapability {
@@ -335,6 +334,10 @@ export class FramedMessageParser<TEnvelope> {
   private buffered: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
 
   constructor(private readonly parseJsonEnvelope: (jsonText: string) => TEnvelope) {}
+
+  reset(): void {
+    this.buffered = new Uint8Array(0);
+  }
 
   pushChunk(chunk: Uint8Array<ArrayBufferLike>): ParsedFrame<TEnvelope>[] {
     this.buffered = concatBytes(this.buffered, chunk);

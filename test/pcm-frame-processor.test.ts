@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  clearChannels,
-  mixChannelsToMono,
-  PcmFrameProcessor,
-} from '../src/audio/pcm-frame-processor';
+import { mixChannelsToMono, PcmFrameProcessor } from '../src/audio/pcm-frame-processor';
 import { PCM_SAMPLES_PER_FRAME } from '../src/shared/pcm-format';
 
 describe('PcmFrameProcessor', () => {
@@ -22,14 +18,5 @@ describe('PcmFrameProcessor', () => {
     const mono = mixChannelsToMono([new Float32Array([1, 0, -1]), new Float32Array([0, 1, -1])]);
 
     expect(Array.from(mono)).toEqual([0.5, 0.5, -1]);
-  });
-
-  it('clears output channels in place', () => {
-    const channels = [new Float32Array([1, 2]), new Float32Array([3, 4])];
-
-    clearChannels(channels);
-
-    expect(Array.from(channels[0] ?? [])).toEqual([0, 0]);
-    expect(Array.from(channels[1] ?? [])).toEqual([0, 0]);
   });
 });

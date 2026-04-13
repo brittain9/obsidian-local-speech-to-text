@@ -19,7 +19,7 @@ import type {
   SystemInfoEvent,
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
-import type { InsertionMode, PluginSettings } from './plugin-settings';
+import { INSERTION_MODES, type InsertionMode, type PluginSettings } from './plugin-settings';
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
@@ -52,6 +52,10 @@ function formatBackendLabel(backend: string): string {
   }
 
   return backend.charAt(0).toUpperCase() + backend.slice(1);
+}
+
+function isInsertionMode(value: string): value is InsertionMode {
+  return (INSERTION_MODES as readonly string[]).includes(value);
 }
 
 function buildAccelerationSummary(systemInfo: SystemInfoEvent | null): string {
@@ -229,7 +233,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
         dropdown.onChange(async (value) => {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            insertionMode: value as InsertionMode,
+            insertionMode: isInsertionMode(value) ? value : INSERTION_MODES[0],
           });
         });
       });

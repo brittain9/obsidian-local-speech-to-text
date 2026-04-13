@@ -10,6 +10,7 @@ pub const PROTOCOL_VERSION: &str = "v3";
 pub const JSON_FRAME_KIND: u8 = 0x01;
 pub const AUDIO_FRAME_KIND: u8 = 0x02;
 pub const FRAME_HEADER_LENGTH: usize = 5;
+pub const MAX_FRAME_PAYLOAD: usize = 16 * 1024 * 1024;
 
 pub const PCM_SAMPLE_RATE_HZ: usize = 16_000;
 pub const PCM_CHANNEL_COUNT: usize = 1;
@@ -74,6 +75,18 @@ pub enum ListeningMode {
 pub enum AccelerationPreference {
     Auto,
     CpuOnly,
+}
+
+impl Default for AccelerationPreference {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    Ready,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,7 +162,7 @@ pub enum Command {
     Health,
     StartSession {
         #[serde(rename = "accelerationPreference", default)]
-        acceleration_preference: Option<AccelerationPreference>,
+        acceleration_preference: AccelerationPreference,
         language: String,
         mode: ListeningMode,
         #[serde(rename = "modelSelection")]
@@ -160,10 +173,9 @@ pub enum Command {
         pause_while_processing: bool,
         #[serde(rename = "sessionId")]
         session_id: String,
-        #[serde(rename = "useGpu", default)]
-        use_gpu: bool,
     },
     GetSystemInfo,
+    /// Internal-only. Not exposed to the plugin protocol.
     RefreshCapabilities,
     GetModelStore {
         #[serde(rename = "modelStorePathOverride", default)]
@@ -224,7 +236,7 @@ pub enum Event {
     HealthOk {
         #[serde(rename = "sidecarVersion")]
         sidecar_version: String,
-        status: String,
+        status: HealthStatus,
     },
     ModelStore {
         #[serde(rename = "overridePath", skip_serializing_if = "Option::is_none")]
@@ -380,6 +392,10 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Option<IncomingFrame>> {
 
     let frame_kind = header[0];
     let payload_length = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
+    ensure!(
+        payload_length <= MAX_FRAME_PAYLOAD,
+        "frame payload exceeds maximum supported size: {payload_length} > {MAX_FRAME_PAYLOAD}"
+    );
     let mut payload = vec![0_u8; payload_length];
     reader
         .read_exact(&mut payload)
@@ -480,9 +496,9 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize
 mod tests {
     use super::{
         AUDIO_FRAME_KIND, AccelerationPreference, Command, EngineId, Event, EventEnvelope,
-        FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, PCM_BYTES_PER_FRAME,
-        PROTOCOL_VERSION, RuntimeCapability, SelectedModel, compiled_backends, compiled_engines,
-        read_frame, write_event_frame, write_frame,
+        FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, MAX_FRAME_PAYLOAD,
+        PCM_BYTES_PER_FRAME, PROTOCOL_VERSION, RuntimeCapability, SelectedModel, compiled_backends,
+        compiled_engines, read_frame, write_event_frame, write_frame,
     };
 
     #[test]
@@ -511,7 +527,7 @@ mod tests {
         assert_eq!(
             parsed,
             IncomingFrame::Command(Command::StartSession {
-                acceleration_preference: None,
+                acceleration_preference: AccelerationPreference::Auto,
                 language: "en".to_string(),
                 mode: ListeningMode::AlwaysOn,
                 model_selection: SelectedModel::ExternalFile {
@@ -521,49 +537,6 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
-                use_gpu: false,
-            })
-        );
-    }
-
-    #[test]
-    fn start_session_with_explicit_use_gpu_false() {
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "type": "start_session",
-            "sessionId": "session-2",
-            "mode": "one_sentence",
-            "modelSelection": {
-                "kind": "external_file",
-                "engineId": "whisper_cpp",
-                "filePath": "/tmp/model.bin"
-            },
-            "language": "en",
-            "pauseWhileProcessing": false,
-            "useGpu": false
-        }))
-        .expect("payload should serialize");
-        let mut framed = Vec::new();
-        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
-
-        let parsed = read_frame(&mut framed.as_slice())
-            .expect("frame should parse")
-            .expect("frame should exist");
-
-        assert_eq!(
-            parsed,
-            IncomingFrame::Command(Command::StartSession {
-                acceleration_preference: None,
-                language: "en".to_string(),
-                mode: ListeningMode::OneSentence,
-                model_selection: SelectedModel::ExternalFile {
-                    engine_id: EngineId::WhisperCpp,
-                    file_path: "/tmp/model.bin".to_string(),
-                },
-                model_store_path_override: None,
-                pause_while_processing: false,
-                session_id: "session-2".to_string(),
-                use_gpu: false,
             })
         );
     }
@@ -582,8 +555,7 @@ mod tests {
             },
             "language": "en",
             "pauseWhileProcessing": true,
-            "accelerationPreference": "auto",
-            "useGpu": true
+            "accelerationPreference": "auto"
         }))
         .expect("payload should serialize");
         let mut framed = Vec::new();
@@ -596,7 +568,7 @@ mod tests {
         assert_eq!(
             parsed,
             IncomingFrame::Command(Command::StartSession {
-                acceleration_preference: Some(AccelerationPreference::Auto),
+                acceleration_preference: AccelerationPreference::Auto,
                 language: "en".to_string(),
                 mode: ListeningMode::AlwaysOn,
                 model_selection: SelectedModel::ExternalFile {
@@ -606,7 +578,6 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-3".to_string(),
-                use_gpu: true,
             })
         );
     }
@@ -679,5 +650,20 @@ mod tests {
             .expect("frame should exist");
 
         assert_eq!(parsed, IncomingFrame::Audio(payload));
+    }
+
+    #[test]
+    fn oversized_frame_payload_is_rejected_before_allocation() {
+        let mut framed = Vec::new();
+        framed.push(JSON_FRAME_KIND);
+        framed.extend_from_slice(&((MAX_FRAME_PAYLOAD + 1) as u32).to_le_bytes());
+
+        let error = read_frame(&mut framed.as_slice()).expect_err("frame should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("frame payload exceeds maximum supported size")
+        );
     }
 }

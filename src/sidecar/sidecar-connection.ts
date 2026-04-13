@@ -198,6 +198,7 @@ export class SidecarConnection {
         (event.state === 'failed' || event.state === 'queued'),
       `model_install_update:${payload.installId}`,
       timeoutMs,
+      (event) => event.sessionId === undefined,
     );
   }
 
@@ -213,6 +214,7 @@ export class SidecarConnection {
         (event.state === 'cancelled' || event.state === 'failed'),
       `model_install_update:${installId}`,
       timeoutMs,
+      (event) => event.sessionId === undefined,
     );
   }
 
@@ -226,36 +228,45 @@ export class SidecarConnection {
         event.type === 'session_started' && event.sessionId === payload.sessionId,
       `session_started:${payload.sessionId}`,
       timeoutMs,
+      (event) => !('sessionId' in event) || event.sessionId === payload.sessionId,
     );
   }
 
-  async stopSession(timeoutMs = this.options.getRequestTimeoutMs()): Promise<SessionStoppedEvent> {
+  async stopSession(
+    sessionId: string,
+    timeoutMs = this.options.getRequestTimeoutMs(),
+  ): Promise<SessionStoppedEvent> {
     return this.sendCommandAndWait(
       createStopSessionCommand(),
-      (event): event is SessionStoppedEvent => event.type === 'session_stopped',
-      'session_stopped',
+      (event): event is SessionStoppedEvent =>
+        event.type === 'session_stopped' && event.sessionId === sessionId,
+      `session_stopped:${sessionId}`,
       timeoutMs,
+      (event) => event.sessionId === undefined || event.sessionId === sessionId,
     );
   }
 
   async cancelSession(
+    sessionId: string,
     timeoutMs = this.options.getRequestTimeoutMs(),
   ): Promise<SessionStoppedEvent> {
     return this.sendCommandAndWait(
       createCancelSessionCommand(),
-      (event): event is SessionStoppedEvent => event.type === 'session_stopped',
-      'session_stopped',
+      (event): event is SessionStoppedEvent =>
+        event.type === 'session_stopped' && event.sessionId === sessionId,
+      `session_stopped:${sessionId}`,
       timeoutMs,
+      (event) => event.sessionId === undefined || event.sessionId === sessionId,
     );
   }
 
   async restart(startupTimeoutMs = this.options.getRequestTimeoutMs()): Promise<HealthOkEvent> {
-    await this.shutdown(startupTimeoutMs);
+    await this.shutdown();
     await this.ensureStarted();
     return this.healthCheck(startupTimeoutMs);
   }
 
-  async shutdown(_timeoutMs = this.options.getRequestTimeoutMs()): Promise<void> {
+  async shutdown(): Promise<void> {
     if (!this.process.isRunning()) {
       return;
     }
@@ -276,6 +287,11 @@ export class SidecarConnection {
     this.process.write(encodeJsonFrame(createSetGateCommand(open)));
   }
 
+  dispose(): void {
+    this.eventListeners.clear();
+    this.rejectPendingWaiters(new Error('SidecarConnection disposed'));
+  }
+
   subscribe(listener: SidecarEventListener): () => void {
     this.eventListeners.add(listener);
 
@@ -289,6 +305,7 @@ export class SidecarConnection {
     matches: (event: SidecarEvent) => event is TEvent,
     description: string,
     timeoutMs: number,
+    rejectOnError?: (event: ErrorEvent) => boolean,
   ): Promise<TEvent> {
     await this.ensureStarted();
 
@@ -301,6 +318,7 @@ export class SidecarConnection {
           resolve(event as TEvent);
         },
         reject,
+        rejectOnError,
       );
 
       try {
@@ -319,12 +337,13 @@ export class SidecarConnection {
     timeoutMs: number,
     resolve: (event: SidecarEvent) => void,
     reject: (error: Error) => void,
+    rejectOnError?: (event: ErrorEvent) => boolean,
   ): PendingEventWaiter {
     const waiter: PendingEventWaiter = {
       description,
       matches,
       reject,
-      rejectOnError: () => true,
+      rejectOnError: rejectOnError ?? (() => true),
       resolve,
       timeoutHandle: globalThis.setTimeout(() => {
         this.pendingWaiters.delete(waiter);
@@ -343,6 +362,7 @@ export class SidecarConnection {
       parsedFrames = this.frameParser.pushChunk(chunk);
     } catch (error) {
       this.options.logger?.warn('protocol', 'failed to parse sidecar stdout chunk', error);
+      this.frameParser.reset();
       return;
     }
 

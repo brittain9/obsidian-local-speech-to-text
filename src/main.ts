@@ -137,9 +137,11 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     try {
-      await this.sidecarConnection?.shutdown(this.settings.sidecarStartupTimeoutMs);
+      await this.sidecarConnection?.shutdown();
     } catch (error) {
       this.logger.error('sidecar', 'failed to shut down sidecar cleanly', error);
+    } finally {
+      this.sidecarConnection?.dispose();
     }
 
     this.ribbonController?.dispose();

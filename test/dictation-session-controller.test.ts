@@ -17,9 +17,6 @@ class FakeEditorService {
 class FakeCaptureStream {
   public capturing = false;
   public frameListener: ((frameBytes: Uint8Array) => void) | null = null;
-  public dispose = vi.fn(async () => {
-    await this.stop();
-  });
   public start = vi.fn(async (listener: (frameBytes: Uint8Array) => void) => {
     this.capturing = true;
     this.frameListener = listener;
@@ -35,17 +32,17 @@ class FakeCaptureStream {
 }
 
 class FakeSidecarConnection {
-  public cancelSession = vi.fn(async () => {
+  public cancelSession = vi.fn(async (sessionId: string) => {
     this.emit({
       protocolVersion: 'v3',
       reason: 'user_cancel',
-      sessionId: this.lastSessionId ?? 'session-1',
+      sessionId,
       type: 'session_stopped',
     });
     return {
       protocolVersion: 'v3',
       reason: 'user_cancel',
-      sessionId: this.lastSessionId ?? 'session-1',
+      sessionId,
       type: 'session_stopped',
     } as const;
   });
@@ -77,17 +74,17 @@ class FakeSidecarConnection {
       } as const;
     },
   );
-  public stopSession = vi.fn(async () => {
+  public stopSession = vi.fn(async (sessionId: string) => {
     this.emit({
       protocolVersion: 'v3',
       reason: 'user_stop',
-      sessionId: this.lastSessionId ?? 'session-1',
+      sessionId,
       type: 'session_stopped',
     });
     return {
       protocolVersion: 'v3',
       reason: 'user_stop',
-      sessionId: this.lastSessionId ?? 'session-1',
+      sessionId,
       type: 'session_stopped',
     } as const;
   });
@@ -123,9 +120,9 @@ describe('DictationSessionController', () => {
     expect(sidecarConnection.startSession).toHaveBeenCalledWith(
       expect.objectContaining({
         accelerationPreference: 'auto',
-        useGpu: true,
       }),
     );
+    expect(sidecarConnection.startSession.mock.calls[0]?.[0]).not.toHaveProperty('useGpu');
     expect(controller.getState()).toBe('listening');
   });
 
@@ -145,9 +142,47 @@ describe('DictationSessionController', () => {
     expect(sidecarConnection.startSession).toHaveBeenCalledWith(
       expect.objectContaining({
         accelerationPreference: 'cpu_only',
-        useGpu: false,
       }),
     );
+    expect(sidecarConnection.startSession.mock.calls[0]?.[0]).not.toHaveProperty('useGpu');
+  });
+
+  it('recovers from capture startup failures without staying busy', async () => {
+    const captureStream = new FakeCaptureStream();
+    const sidecarConnection = new FakeSidecarConnection();
+    captureStream.start.mockImplementationOnce(async () => {
+      throw new Error('Microphone denied.');
+    });
+    const controller = createController({
+      captureStream,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(sidecarConnection.startSession).not.toHaveBeenCalled();
+    expect(controller.getState()).toBe('error');
+    expect(controller.isBusy()).toBe(false);
+  });
+
+  it('recovers from sidecar start failures without staying busy', async () => {
+    const captureStream = new FakeCaptureStream();
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.startSession.mockImplementationOnce(async () => {
+      throw new Error('Sidecar refused session.');
+    });
+    const controller = createController({
+      captureStream,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(captureStream.stop).toHaveBeenCalledTimes(1);
+    expect(controller.getState()).toBe('error');
+    expect(controller.isBusy()).toBe(false);
   });
 
   it('inserts transcript text from async sidecar events using the current placement mode', async () => {
@@ -184,6 +219,142 @@ describe('DictationSessionController', () => {
     ]);
   });
 
+  it('notifies when a transcript completes with no usable text', async () => {
+    const notice = vi.fn();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      notice,
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    sidecarConnection.emit({
+      processingDurationMs: 75,
+      protocolVersion: 'v3',
+      segments: [],
+      sessionId: sidecarConnection.lastSessionId ?? 'session-1',
+      text: '   ',
+      type: 'transcript_ready',
+      utteranceDurationMs: 700,
+    });
+
+    await vi.waitFor(() => {
+      expect(notice).toHaveBeenCalledWith(
+        'Failed to insert the local transcript: Transcription completed but returned no text.',
+      );
+      expect(sidecarConnection.cancelSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('stops local capture even when stopSession fails', async () => {
+    const captureStream = new FakeCaptureStream();
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.stopSession.mockImplementationOnce(async () => {
+      throw new Error('stop failed');
+    });
+    const controller = createController({
+      captureStream,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    await controller.stopDictation();
+
+    expect(captureStream.stop).toHaveBeenCalledTimes(1);
+    expect(controller.getState()).toBe('error');
+    expect(controller.isBusy()).toBe(false);
+  });
+
+  it('returns to idle after cancel cleanup fails for an errored session', async () => {
+    const captureStream = new FakeCaptureStream();
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.cancelSession.mockImplementationOnce(async () => {
+      throw new Error('cancel failed');
+    });
+    const controller = createController({
+      captureStream,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    sidecarConnection.emit({
+      code: 'session_failed',
+      message: 'The engine crashed.',
+      protocolVersion: 'v3',
+      sessionId: sidecarConnection.lastSessionId ?? 'session-1',
+      type: 'error',
+    });
+
+    await vi.waitFor(() => {
+      expect(captureStream.stop).toHaveBeenCalledTimes(1);
+      expect(controller.getState()).toBe('idle');
+      expect(controller.isBusy()).toBe(false);
+    });
+  });
+
+  it('cancels an errored session only once when duplicate errors arrive', async () => {
+    const sidecarConnection = new FakeSidecarConnection();
+    let resolveCancel: () => void = () => {
+      throw new Error('Expected cancel resolver to be captured.');
+    };
+    sidecarConnection.cancelSession.mockImplementationOnce(
+      async (sessionId: string) =>
+        await new Promise((resolve) => {
+          resolveCancel = () => {
+            sidecarConnection.emit({
+              protocolVersion: 'v3',
+              reason: 'user_cancel',
+              sessionId,
+              type: 'session_stopped',
+            });
+            resolve({
+              protocolVersion: 'v3',
+              reason: 'user_cancel',
+              sessionId,
+              type: 'session_stopped',
+            });
+          };
+        }),
+    );
+    const controller = createController({
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+    sidecarConnection.emit({
+      code: 'session_failed',
+      message: 'The engine crashed.',
+      protocolVersion: 'v3',
+      sessionId,
+      type: 'error',
+    });
+    sidecarConnection.emit({
+      code: 'session_failed',
+      message: 'The engine crashed again.',
+      protocolVersion: 'v3',
+      sessionId,
+      type: 'error',
+    });
+
+    await vi.waitFor(() => {
+      expect(sidecarConnection.cancelSession).toHaveBeenCalledTimes(1);
+    });
+
+    resolveCancel();
+
+    await vi.waitFor(() => {
+      expect(controller.getState()).toBe('idle');
+    });
+  });
+
   it('opens and closes the press-and-hold gate on the configured hotkey', async () => {
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
@@ -207,6 +378,31 @@ describe('DictationSessionController', () => {
       expect(sidecarConnection.setGate).toHaveBeenCalledWith(false);
     });
   });
+
+  it('clears ribbon click suppression during local cleanup', async () => {
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.startSession.mockImplementation(async () => {
+      throw new Error('session start failed');
+    });
+    const controller = createController({
+      getSettings: () =>
+        createSettings({
+          listeningMode: 'press_and_hold',
+          selectedModel: createExternalModelSelection(),
+        }),
+      sidecarConnection,
+    });
+
+    controller.handleRibbonPointerDown();
+    await vi.waitFor(() => {
+      expect(sidecarConnection.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    controller.handleRibbonClick();
+    await vi.waitFor(() => {
+      expect(sidecarConnection.startSession).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
 function createAppWithHotkeys(hotkeys: Hotkey[]): App {
@@ -222,6 +418,7 @@ function createController(overrides: {
   captureStream?: FakeCaptureStream;
   editorService?: FakeEditorService;
   getSettings?: () => PluginSettings;
+  notice?: ReturnType<typeof vi.fn>;
   sidecarConnection?: FakeSidecarConnection;
 }): DictationSessionController {
   return new DictationSessionController({
@@ -229,7 +426,7 @@ function createController(overrides: {
     captureStream: overrides.captureStream ?? new FakeCaptureStream(),
     editorService: overrides.editorService ?? new FakeEditorService(),
     getSettings: overrides.getSettings ?? (() => createSettings({})),
-    notice: () => {},
+    notice: overrides.notice ?? (() => {}),
     pressAndHoldGateCommandId: 'obsidian-local-stt:press-and-hold-gate',
     setRibbonState: () => {},
     setStatusState: () => {},

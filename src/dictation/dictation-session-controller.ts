@@ -17,7 +17,7 @@ export type DictationControllerState = PluginRuntimeState;
 
 interface DictationSessionControllerDependencies {
   app: App;
-  captureStream: Pick<AudioCaptureStream, 'dispose' | 'isCapturing' | 'start' | 'stop'>;
+  captureStream: Pick<AudioCaptureStream, 'isCapturing' | 'start' | 'stop'>;
   editorService: Pick<EditorService, 'assertActiveEditorAvailable' | 'insertTranscript'>;
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
@@ -63,7 +63,7 @@ export class DictationSessionController {
     }
 
     try {
-      await this.dependencies.sidecarConnection.cancelSession();
+      await this.dependencies.sidecarConnection.cancelSession(this.sessionId);
     } catch (error) {
       await this.cleanupLocalSession();
       this.handleError('Failed to cancel the dictation session', error);
@@ -193,7 +193,6 @@ export class DictationSessionController {
         modelSelection: selectedModel,
         pauseWhileProcessing: settings.pauseWhileProcessing,
         sessionId,
-        useGpu: settings.accelerationPreference === 'auto',
         ...(settings.modelStorePathOverride.length > 0
           ? { modelStorePathOverride: settings.modelStorePathOverride }
           : {}),
@@ -216,7 +215,7 @@ export class DictationSessionController {
     }
 
     try {
-      await this.dependencies.sidecarConnection.stopSession();
+      await this.dependencies.sidecarConnection.stopSession(this.sessionId);
     } catch (error) {
       await this.cleanupLocalSession();
       this.handleError('Failed to stop the dictation session', error);
@@ -243,6 +242,7 @@ export class DictationSessionController {
     this.gateOpen = false;
     this.ribbonHoldActive = false;
     this.sessionId = null;
+    this.suppressNextRibbonClick = false;
 
     if (this.dependencies.captureStream.isCapturing()) {
       await this.dependencies.captureStream.stop();
@@ -400,7 +400,7 @@ export class DictationSessionController {
     this.abortingSessionId = sessionId;
 
     try {
-      await this.dependencies.sidecarConnection.cancelSession();
+      await this.dependencies.sidecarConnection.cancelSession(sessionId);
     } catch (error) {
       this.dependencies.logger?.warn(
         'session',
@@ -414,6 +414,10 @@ export class DictationSessionController {
     } finally {
       if (this.abortingSessionId === sessionId) {
         this.abortingSessionId = null;
+      }
+
+      if (this.sessionId === null && this.abortingSessionId === null && this.state === 'error') {
+        this.applyUiState('idle');
       }
     }
   }

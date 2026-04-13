@@ -17,7 +17,7 @@ import type {
 } from '../src/models/model-management-types';
 
 describe('model management snapshot builders', () => {
-  it('orders catalog rows by recommendation and annotates selected installed models', () => {
+  it('orders catalog rows from smallest to largest and annotates selected installed models', () => {
     const catalog = sampleCatalog();
     const installedModels: InstalledModelRecord[] = [
       {
@@ -65,13 +65,13 @@ describe('model management snapshot builders', () => {
 
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.model.modelId)).toEqual([
-      'whisper_large_v3_turbo_q8_0',
       'whisper_small_en_q5_1',
+      'whisper_large_v3_turbo_q8_0',
     ]);
-    expect(firstRow?.installUpdate?.installId).toBe('install-1');
-    expect(secondRow?.isSelected).toBe(true);
-    expect(secondRow?.installedModel?.modelId).toBe('whisper_small_en_q5_1');
-    expect(secondRow?.installUpdate).toBeNull();
+    expect(firstRow?.isSelected).toBe(true);
+    expect(firstRow?.installedModel?.modelId).toBe('whisper_small_en_q5_1');
+    expect(firstRow?.installUpdate).toBeNull();
+    expect(secondRow?.installUpdate?.installId).toBe('install-1');
   });
 
   it('builds a managed-model card from catalog metadata when the install is missing', () => {

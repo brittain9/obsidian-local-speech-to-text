@@ -66,6 +66,8 @@ export function matchesHotkey(event: KeyboardEvent, hotkey: Hotkey): boolean {
   );
 }
 
+/** Blocks held-key shortcuts inside editable elements (including the Obsidian editor's
+ * contentEditable region) so they do not interfere with normal typing. */
 export function shouldIgnoreHeldKeyEvent(target: EventTarget | null): boolean {
   if (typeof HTMLElement === 'undefined') {
     return false;
@@ -103,9 +105,5 @@ function normalizeKey(key: string): string {
 }
 
 function isMacOsRuntime(): boolean {
-  if (typeof navigator !== 'undefined' && typeof navigator.platform === 'string') {
-    return navigator.platform.toLowerCase().includes('mac');
-  }
-
   return process.platform === 'darwin';
 }

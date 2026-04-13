@@ -17,7 +17,7 @@ interface CommandDependencies {
 export function registerCommands(dependencies: CommandDependencies): void {
   dependencies.plugin.addCommand({
     id: START_DICTATION_COMMAND_ID,
-    name: 'Local STT: Start Dictation Session',
+    name: 'Start Dictation Session',
     callback: async () => {
       await dependencies.startDictation();
     },
@@ -25,7 +25,7 @@ export function registerCommands(dependencies: CommandDependencies): void {
 
   dependencies.plugin.addCommand({
     id: STOP_DICTATION_COMMAND_ID,
-    name: 'Local STT: Stop Dictation Session',
+    name: 'Stop Dictation Session',
     callback: async () => {
       await dependencies.stopDictation();
     },
@@ -33,7 +33,7 @@ export function registerCommands(dependencies: CommandDependencies): void {
 
   dependencies.plugin.addCommand({
     id: CANCEL_DICTATION_COMMAND_ID,
-    name: 'Local STT: Cancel Dictation Session',
+    name: 'Cancel Dictation Session',
     callback: async () => {
       await dependencies.cancelDictation();
     },
@@ -43,13 +43,13 @@ export function registerCommands(dependencies: CommandDependencies): void {
   // is driven by document keydown/keyup listeners and should not be runnable directly.
   dependencies.plugin.addCommand({
     id: PRESS_AND_HOLD_GATE_COMMAND_ID,
-    name: 'Local STT: Press-And-Hold Gate',
+    name: 'Press-And-Hold Gate',
     checkCallback: () => false,
   });
 
   dependencies.plugin.addCommand({
     id: 'check-sidecar-health',
-    name: 'Local STT: Check Sidecar Health',
+    name: 'Check Sidecar Health',
     callback: async () => {
       await dependencies.checkSidecarHealth();
     },
@@ -57,7 +57,7 @@ export function registerCommands(dependencies: CommandDependencies): void {
 
   dependencies.plugin.addCommand({
     id: 'restart-sidecar',
-    name: 'Local STT: Restart Sidecar',
+    name: 'Restart Sidecar',
     callback: async () => {
       await dependencies.restartSidecar();
     },

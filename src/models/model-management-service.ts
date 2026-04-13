@@ -422,7 +422,7 @@ export function buildCurrentModelCardState(
 }
 
 function compareCatalogModels(left: CatalogModelRecord, right: CatalogModelRecord): number {
-  return getTotalModelSize(right) - getTotalModelSize(left);
+  return getTotalModelSize(left) - getTotalModelSize(right);
 }
 
 function createModelStoreOverridePayload(modelStorePathOverride: string | undefined): {

@@ -253,6 +253,9 @@ fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
 /// Search for a tokenizer file in the model directory and its parent.
 /// HuggingFace repos place `tokenizer.json` at the repo root, which ends up
 /// one level above the `onnx/` subdirectory that contains the ONNX models.
+/// For external-file selections this parent-directory search can match tokenizer
+/// files outside the model directory itself when the chosen model path lives in
+/// an arbitrary user directory.
 fn find_tokens_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
     // Check model_dir itself first, then parent (for tokenizer.json at repo root).
     let search_dirs: Vec<&Path> = if let Some(parent) = model_dir.parent() {

@@ -59,6 +59,7 @@ export class ModelExplorerModal extends Modal {
     });
 
     this.listContainer = this.contentEl.createDiv({ cls: 'local-stt-model-list' });
+    searchInput.focus();
     this.releaseInstallUpdateSubscription = this.dependencies.service.subscribeToInstallUpdates(
       (event) => {
         if (this.snapshot !== null && !isTerminalInstallState(event.state)) {
@@ -377,6 +378,8 @@ export class ExternalModelFileModal extends Modal {
         text.setValue(this.currentPath);
         this.inputEl = text.inputEl;
       });
+
+    this.inputEl?.focus();
 
     new Setting(this.contentEl).addButton((button) => {
       button

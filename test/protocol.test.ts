@@ -8,6 +8,7 @@ import {
   createStartSessionCommand,
   encodeAudioFrame,
   encodeJsonFrame,
+  FRAME_HEADER_LENGTH,
   FramedMessageParser,
   JSON_FRAME_KIND,
   parseEventFrame,
@@ -33,7 +34,7 @@ describe('sidecar protocol', () => {
     expect(frame.byteLength).toBe(5 + PCM_BYTES_PER_FRAME);
   });
 
-  it('serializes start_session command with useGpu field', () => {
+  it('serializes start_session command with accelerationPreference', () => {
     const command = createStartSessionCommand({
       accelerationPreference: 'auto',
       language: 'en',
@@ -41,13 +42,12 @@ describe('sidecar protocol', () => {
       modelSelection: { kind: 'external_file', engineId: 'whisper_cpp', filePath: '/tmp/m.bin' },
       pauseWhileProcessing: true,
       sessionId: 'session-gpu',
-      useGpu: false,
     });
     const frame = encodeJsonFrame(command);
     const payload = readPayload(frame) as Record<string, unknown>;
 
     expect(payload.accelerationPreference).toBe('auto');
-    expect(payload.useGpu).toBe(false);
+    expect(payload).not.toHaveProperty('useGpu');
     expect(payload.sessionId).toBe('session-gpu');
   });
 
@@ -123,6 +123,68 @@ describe('sidecar protocol', () => {
       },
       kind: JSON_FRAME_KIND,
     });
+  });
+
+  it('rejects non-object JSON in parseEventFrame', () => {
+    expect(() => parseEventFrame('"hello"')).toThrow('Sidecar event must be a JSON object.');
+    expect(() => parseEventFrame('42')).toThrow('Sidecar event must be a JSON object.');
+  });
+
+  it('rejects missing type field in parseEventFrame', () => {
+    expect(() =>
+      parseEventFrame(JSON.stringify({ protocolVersion: SIDECAR_PROTOCOL_VERSION })),
+    ).toThrow('event.type must be a string.');
+  });
+
+  it('rejects unknown event type in parseEventFrame', () => {
+    expect(() =>
+      parseEventFrame(
+        JSON.stringify({
+          protocolVersion: SIDECAR_PROTOCOL_VERSION,
+          type: 'nonexistent_event',
+        }),
+      ),
+    ).toThrow('Unsupported sidecar event type: nonexistent_event');
+  });
+
+  it('rejects wrong protocol version in parseEventFrame', () => {
+    expect(() =>
+      parseEventFrame(JSON.stringify({ protocolVersion: 'v999', type: 'health_ok' })),
+    ).toThrow('Unsupported sidecar protocol version: v999');
+  });
+
+  it('rejects unknown frame kind byte in FramedMessageParser.pushChunk', () => {
+    const parser = new FramedMessageParser(parseEventFrame);
+    const payload = new Uint8Array(4);
+    const frame = new Uint8Array(FRAME_HEADER_LENGTH + payload.byteLength);
+    const view = new DataView(frame.buffer);
+
+    frame[0] = 0xff;
+    view.setUint32(1, payload.byteLength, true);
+    frame.set(payload, FRAME_HEADER_LENGTH);
+
+    expect(() => parser.pushChunk(frame)).toThrow('Unsupported sidecar frame kind: 255');
+  });
+
+  it('rejects wrong-size payload in encodeAudioFrame', () => {
+    expect(() => encodeAudioFrame(new Uint8Array(1))).toThrow(
+      `Audio frames must be ${PCM_BYTES_PER_FRAME} bytes, received 1.`,
+    );
+  });
+
+  it('rejects transcript_ready with missing sessionId', () => {
+    expect(() =>
+      parseEventFrame(
+        JSON.stringify({
+          processingDurationMs: 100,
+          protocolVersion: SIDECAR_PROTOCOL_VERSION,
+          segments: [],
+          text: 'hello',
+          type: 'transcript_ready',
+          utteranceDurationMs: 500,
+        }),
+      ),
+    ).toThrow('event.sessionId must be a string.');
   });
 
   it('parses mixed JSON and binary frames across chunk boundaries', () => {

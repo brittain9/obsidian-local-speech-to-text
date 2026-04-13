@@ -116,10 +116,6 @@ export class AudioCaptureStream {
     this.options.logger?.debug('audio', 'capture stopped');
   }
 
-  async dispose(): Promise<void> {
-    await this.stop();
-  }
-
   private async releaseCapture(): Promise<void> {
     const audioContext = this.audioContext;
     const mediaStream = this.mediaStream;
@@ -161,16 +157,8 @@ export class AudioCaptureStream {
 }
 
 function getAudioContextConstructor(): typeof AudioContext {
-  const runtime = globalThis as typeof globalThis & {
-    webkitAudioContext?: typeof AudioContext;
-  };
-
-  if (runtime.AudioContext !== undefined) {
-    return runtime.AudioContext;
-  }
-
-  if (runtime.webkitAudioContext !== undefined) {
-    return runtime.webkitAudioContext;
+  if (globalThis.AudioContext !== undefined) {
+    return globalThis.AudioContext;
   }
 
   throw new Error('AudioContext is not available in this Obsidian runtime.');

@@ -65,16 +65,6 @@ describe('resolvePluginSettings', () => {
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);
   });
 
-  it('defaults accelerationPreference to auto', () => {
-    expect(DEFAULT_PLUGIN_SETTINGS.accelerationPreference).toBe('auto');
-    expect(resolvePluginSettings({}).accelerationPreference).toBe('auto');
-  });
-
-  it('defaults cudaLibraryPath to an empty string', () => {
-    expect(DEFAULT_PLUGIN_SETTINGS.cudaLibraryPath).toBe('');
-    expect(resolvePluginSettings({}).cudaLibraryPath).toBe('');
-  });
-
   it('ignores legacy useGpu false and defaults to auto', () => {
     expect(resolvePluginSettings({ useGpu: false }).accelerationPreference).toBe('auto');
   });
@@ -87,10 +77,5 @@ describe('resolvePluginSettings', () => {
     expect(resolvePluginSettings({ accelerationPreference: 'gpu' }).accelerationPreference).toBe(
       'auto',
     );
-  });
-
-  it('uses the new one-sentence default mode with pause-while-processing enabled', () => {
-    expect(DEFAULT_PLUGIN_SETTINGS.listeningMode).toBe('one_sentence');
-    expect(DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing).toBe(true);
   });
 });

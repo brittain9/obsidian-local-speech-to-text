@@ -252,6 +252,7 @@ impl HttpDownloadSource {
     fn new() -> Result<Self, String> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(60))
             .build()
             .map_err(|error| format!("Failed to create HTTP client: {error}"))?;
 
