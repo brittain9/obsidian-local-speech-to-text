@@ -114,7 +114,7 @@ impl TranscriptionBackend for WhisperBackend {
         })?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 0 });
 
-        params.set_n_threads(recommended_thread_count());
+        params.set_n_threads(recommended_thread_count(request.gpu_config.use_gpu));
         params.set_language(Some(&request.language));
         params.set_translate(false);
         params.set_print_special(false);
@@ -250,11 +250,12 @@ fn load_whisper_context(
         .map_err(|error| TranscriptionError::invalid_model_with_details(error.to_string()))
 }
 
-fn recommended_thread_count() -> i32 {
+fn recommended_thread_count(gpu_active: bool) -> i32 {
+    let max = if gpu_active { 4 } else { 8 };
     std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1)
-        .min(8) as i32
+        .min(max) as i32
 }
 
 fn whisper_timestamp_to_millis(timestamp: i64) -> u64 {
