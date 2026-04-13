@@ -54,7 +54,6 @@ export interface CatalogModelRecord {
   modelCardUrl: string | null;
   modelId: string;
   notes: string[];
-  recommended: boolean;
   sourceUrl: string;
   summary: string;
   uxTags: string[];

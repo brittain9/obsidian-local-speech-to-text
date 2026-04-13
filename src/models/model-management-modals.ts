@@ -95,15 +95,10 @@ export class ModelDetailsModal extends Modal {
     }
 
     if (this.model.artifacts.length > 0) {
-      this.contentEl.createEl('h4', {
-        text: `Files (${this.model.artifacts.length})`,
-        cls: 'local-stt-details-section-heading',
-      });
-
       const table = this.contentEl.createEl('table', { cls: 'local-stt-artifact-table' });
       const thead = table.createEl('thead');
       const headerRow = thead.createEl('tr');
-      headerRow.createEl('th', { text: 'File' });
+      headerRow.createEl('th', { text: `Files (${this.model.artifacts.length})` });
       headerRow.createEl('th', { text: 'Size' });
 
       const tbody = table.createEl('tbody');

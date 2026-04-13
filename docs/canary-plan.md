@@ -14,7 +14,7 @@ Ship Whisper and Canary as two coexisting STT engines in v1. Canary runs as a pe
 - `EngineId` is a single-variant enum (`WhisperCpp`) used across protocol, catalog, types, and serde
 - The TS plugin has `ENGINE_IDS = ['whisper_cpp']` as a const array driving type safety
 - Model catalog JSON has one engine, one collection, five Whisper models
-- Model explorer modal renders a flat searchable list, no grouping
+- Model management uses `ManageModelsModal` with engine tabs and `ModelInstallManager` for install lifecycle
 - `installer.rs` downloads artifacts by URL with SHA-256 verification — Canary models use HuggingFace `from_pretrained` instead, so a different install strategy is needed
 
 ## Constraints
@@ -140,13 +140,12 @@ Install and probe behavior for `nemo_pretrained` models:
 - Install progress: since `from_pretrained` doesn't provide callbacks, the Rust side polls the HuggingFace cache directory for size changes and emits approximate `ModelInstallUpdate` events
 - Probing checks whether the model directory exists in the HuggingFace cache
 
-### Model Explorer UI Grouping
+### Model Management UI
 
-The model explorer modal gets grouped sections based on `collectionId`:
-- "Whisper" collection — existing CPU-first models, always visible
-- "NVIDIA Canary" collection — Canary models, only shown when capability detection passes (collection's `engineId` checked against cached `EngineCapabilities`)
-- Each collection renders as a collapsible group with a heading
-- When Canary capability check fails, show a collapsed info section with the **specific missing dependency** from the granular check results (not a generic banner)
+The manage-models modal already uses engine tabs (`ManageModelsModal`). Adding Canary means:
+- A new "Canary" tab, only shown when capability detection passes (`engineId` checked against cached `EngineCapabilities`)
+- When `engine-canary` is compiled but dependencies are missing, show targeted missing-dependency guidance in the tab content
+- When `engine-canary` is not compiled, hide the tab entirely
 
 ## Execution Steps
 
@@ -208,19 +207,18 @@ The model explorer modal gets grouped sections based on `collectionId`:
 - [ ] 5.9 Update `getEngineDisplayName` and related TS helpers for the new engine ID
 - [ ] 5.10 Bump `catalogVersion` and `PROTOCOL_VERSION`
 
-### Phase 6: UI — Model Explorer Grouping and Capability Gating
+### Phase 6: UI — Manage Models Tab and Capability Gating
 
-- [ ] 6.1 Group models by `collectionId` in `ModelExplorerModal` — render each collection as a section with a heading
-- [ ] 6.2 Filter Canary collection visibility based on collection's `engineId` checked against cached `EngineCapabilities`
-- [ ] 6.3 When `engine-canary` feature is not compiled, hide the Canary collection entirely (no message)
-- [ ] 6.4 When `engine-canary` is compiled but dependencies are missing, show a collapsed info section with **specific** missing dependency from the granular capability check:
+- [ ] 6.1 Add a "Canary" engine tab in `ManageModelsModal`, gated by `EngineCapabilities`
+- [ ] 6.2 When `engine-canary` feature is not compiled, hide the Canary tab entirely (no message)
+- [ ] 6.3 When `engine-canary` is compiled but dependencies are missing, show targeted guidance in the tab content:
   - Python not found → "Install Python 3.10+ and add it to PATH"
   - NeMo not found → "Run `pip install nemo_toolkit[asr]`"
   - CUDA not available → "Requires an NVIDIA GPU with CUDA drivers"
   - Link to `docs/nvidia-canary-setup.md` in all cases
-- [ ] 6.5 Show `loading_model` session state in the UI — warm-up indicator while Canary loads its model on first session start
-- [ ] 6.6 Settings tab model card correctly displays Canary engine label and status
-- [ ] 6.7 External file modal scopes engine selection (Whisper files vs Canary model names)
+- [ ] 6.4 Show `loading_model` session state in the UI — warm-up indicator while Canary loads its model on first session start
+- [ ] 6.5 Settings tab model section correctly displays Canary engine label and status
+- [ ] 6.6 External file modal scopes engine selection (Whisper files vs Canary model names)
 
 ### Phase 7: Documentation and Verification
 

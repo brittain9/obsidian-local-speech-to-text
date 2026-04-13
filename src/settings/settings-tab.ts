@@ -2,7 +2,7 @@ import type { App, Plugin } from 'obsidian';
 import { Platform, PluginSettingTab, Setting } from 'obsidian';
 import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
-import { ExternalModelFileModal } from '../models/model-management-modals';
+import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
 import { getEngineDisplayName, isEngineId } from '../models/model-management-types';
 import type {
   AccelerationPreference,
@@ -197,7 +197,30 @@ export class LocalSttSettingTab extends PluginSettingTab {
           },
         ).open();
       },
-      onModelInfo: settings.selectedModel !== null ? () => {} : null,
+      onModelInfo:
+        settings.selectedModel !== null && settings.selectedModel.kind === 'catalog_model'
+          ? (() => {
+              const sel = settings.selectedModel as Extract<
+                typeof settings.selectedModel,
+                { kind: 'catalog_model' }
+              >;
+              return () => {
+                const state = manager.getState();
+                const catalogModel = state.catalog.models.find(
+                  (m) => m.engineId === sel.engineId && m.modelId === sel.modelId,
+                );
+                if (catalogModel === undefined) return;
+                const installedModel = state.installedModels.find(
+                  (m) => m.engineId === sel.engineId && m.modelId === sel.modelId,
+                );
+                new ModelDetailsModal(
+                  this.app,
+                  catalogModel,
+                  installedModel?.installPath ?? null,
+                ).open();
+              };
+            })()
+          : null,
     });
 
     // --- Transcription ---

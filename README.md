@@ -23,7 +23,7 @@ Local, private speech-to-text for Obsidian. Transcription runs entirely on your 
 
 1. Clone this repo into `<vault>/.obsidian/plugins/obsidian-local-stt` and enable it in Obsidian's community plugins settings.
 2. Open `Settings -> Local STT`.
-3. Click `Browse models` and install a model — start with `Whisper Small English Q5_1` for a quick first test. The browser also includes Cohere Transcribe models if you want the higher-accuracy experimental path.
+3. Click `Manage models` and install a model — start with `Whisper Small English Q5_1` for a quick first test. The Cohere tab includes higher-accuracy experimental models.
 4. Open a note, click the microphone ribbon button or run `Local STT: Start Dictation Session`.
 5. Talk. Text appears in your note.
 

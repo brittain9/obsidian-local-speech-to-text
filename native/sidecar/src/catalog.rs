@@ -55,7 +55,6 @@ pub struct CatalogModel {
     #[serde(rename = "modelId")]
     pub model_id: String,
     pub notes: Vec<String>,
-    pub recommended: bool,
     #[serde(rename = "sourceUrl")]
     pub source_url: String,
     pub summary: String,
@@ -328,10 +327,9 @@ mod tests {
             model_card_url: None,
             model_id: "model".to_string(),
             notes: vec![],
-            recommended: true,
             source_url: "https://example.com".to_string(),
             summary: "summary".to_string(),
-            ux_tags: vec!["recommended".to_string()],
+            ux_tags: vec![],
         }
     }
 }

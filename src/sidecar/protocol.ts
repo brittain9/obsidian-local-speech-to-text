@@ -829,7 +829,6 @@ function readCatalogModels(value: unknown): CatalogModelRecord[] {
       modelCardUrl: readNullableString(record.modelCardUrl, `event.models[${index}].modelCardUrl`),
       modelId: readString(record.modelId, `event.models[${index}].modelId`),
       notes: readStringArray(record.notes, `event.models[${index}].notes`),
-      recommended: readBoolean(record.recommended, `event.models[${index}].recommended`),
       sourceUrl: readString(record.sourceUrl, `event.models[${index}].sourceUrl`),
       summary: readString(record.summary, `event.models[${index}].summary`),
       uxTags: readStringArray(record.uxTags, `event.models[${index}].uxTags`),

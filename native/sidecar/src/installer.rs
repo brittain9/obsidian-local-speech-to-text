@@ -1272,7 +1272,6 @@ mod tests {
             model_card_url: None,
             model_id: model_id.to_string(),
             notes: vec![],
-            recommended: true,
             source_url: "https://example.com".to_string(),
             summary: "summary".to_string(),
             ux_tags: vec![],

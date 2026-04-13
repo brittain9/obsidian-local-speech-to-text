@@ -385,7 +385,7 @@ export class ManageModelsModal extends Modal {
 
     for (const tag of model.uxTags) {
       tagsContainer.createEl('span', {
-        cls: tag === 'recommended' ? 'local-stt-tag local-stt-tag--recommended' : 'local-stt-tag',
+        cls: 'local-stt-tag',
         text: tag,
       });
     }

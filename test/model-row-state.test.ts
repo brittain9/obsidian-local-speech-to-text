@@ -76,7 +76,6 @@ function sampleCatalogModel(input: {
     modelCardUrl: null,
     modelId: input.modelId,
     notes: [],
-    recommended: false,
     sourceUrl: 'https://example.com/source',
     summary: 'Test model',
     uxTags: [],
