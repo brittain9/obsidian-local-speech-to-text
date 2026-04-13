@@ -58,8 +58,7 @@ Engine/backend matrix: Whisper supports Metal on macOS and CUDA on Linux. Cohere
 Build the CUDA sidecar on Linux:
 
 ```sh
-bash scripts/build-cuda.sh           # debug
-bash scripts/build-cuda.sh --release # optimized
+npm run build:sidecar:cuda           # debug
 ```
 
 Then point `Settings -> Local STT -> Advanced -> Sidecar path override` to the CUDA binary. On Linux Flatpak, also set `CUDA library path` so the plugin scopes `LD_LIBRARY_PATH` to the sidecar child process only. `GPU acceleration` defaults to `Use when available`, which uses a working GPU backend when one is available for the selected engine.
@@ -78,7 +77,7 @@ Versions are pinned in `package.json` (`engines`, `packageManager`) and `rust-to
 
 ```sh
 npm install
-cargo build --manifest-path native/sidecar/Cargo.toml
+npm run build:sidecar
 npm run dev
 ```
 
@@ -92,10 +91,6 @@ npm run dev            # watch mode for plugin
 npm run test           # TypeScript unit tests
 npm run check          # full quality gates (TS + Rust)
 ```
-
-## Versioning
-
-Calendar versioning: `YYYY.M.D.patch` (e.g., `2026.4.11.0`).
 
 ## License
 

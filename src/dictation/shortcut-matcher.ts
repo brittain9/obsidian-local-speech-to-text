@@ -1,3 +1,4 @@
+import { Platform } from 'obsidian';
 import type { App, Hotkey, Modifier } from 'obsidian';
 
 interface InternalAppShape extends App {
@@ -92,7 +93,7 @@ function expandModifiers(modifiers: Modifier[]): Modifier[] {
       return [modifier];
     }
 
-    return isMacOsRuntime() ? ['Meta'] : ['Ctrl'];
+    return Platform.isMacOS ? ['Meta'] : ['Ctrl'];
   });
 }
 
@@ -104,6 +105,3 @@ function normalizeKey(key: string): string {
   return key.toLowerCase();
 }
 
-function isMacOsRuntime(): boolean {
-  return process.platform === 'darwin';
-}

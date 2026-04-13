@@ -164,11 +164,11 @@ mod tests {
             "--catalog-path".to_string(),
             "/tmp/catalog.json".to_string(),
             "--app-version".to_string(),
-            "2026.4.11.0".to_string(),
+            "1.0.0".to_string(),
         ])
         .expect("config should parse");
 
-        assert_eq!(config.app_version, "2026.4.11.0");
+        assert_eq!(config.app_version, "1.0.0");
         assert_eq!(config.catalog_path.to_string_lossy(), "/tmp/catalog.json");
     }
 
