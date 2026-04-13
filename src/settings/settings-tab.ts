@@ -197,30 +197,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
           },
         ).open();
       },
-      onModelInfo:
-        settings.selectedModel !== null && settings.selectedModel.kind === 'catalog_model'
-          ? (() => {
-              const sel = settings.selectedModel as Extract<
-                typeof settings.selectedModel,
-                { kind: 'catalog_model' }
-              >;
-              return () => {
-                const state = manager.getState();
-                const catalogModel = state.catalog.models.find(
-                  (m) => m.engineId === sel.engineId && m.modelId === sel.modelId,
-                );
-                if (catalogModel === undefined) return;
-                const installedModel = state.installedModels.find(
-                  (m) => m.engineId === sel.engineId && m.modelId === sel.modelId,
-                );
-                new ModelDetailsModal(
-                  this.app,
-                  catalogModel,
-                  installedModel?.installPath ?? null,
-                ).open();
-              };
-            })()
-          : null,
+      onModelInfo: this.buildModelInfoCallback(manager, settings),
     });
 
     // --- Transcription ---
@@ -409,6 +386,31 @@ export class LocalSttSettingTab extends PluginSettingTab {
   private tearDown(): void {
     this.disposeModelSection?.();
     this.disposeModelSection = null;
+  }
+
+  private buildModelInfoCallback(
+    manager: ModelInstallManager,
+    settings: PluginSettings,
+  ): (() => void) | null {
+    const sel = settings.selectedModel;
+
+    if (sel === null || sel.kind !== 'catalog_model') {
+      return null;
+    }
+
+    const { engineId, modelId } = sel;
+
+    return () => {
+      const state = manager.getState();
+      const catalogModel = state.catalog.models.find(
+        (m) => m.engineId === engineId && m.modelId === modelId,
+      );
+      if (catalogModel === undefined) return;
+      const installedModel = state.installedModels.find(
+        (m) => m.engineId === engineId && m.modelId === modelId,
+      );
+      new ModelDetailsModal(this.app, catalogModel, installedModel?.installPath ?? null).open();
+    };
   }
 
   private async renderEngineOptions(

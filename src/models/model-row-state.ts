@@ -184,34 +184,19 @@ export function deriveCurrentModelDisplay(state: ModelManagerState): CurrentMode
     installedModel?.totalSizeBytes ??
     (catalogEntry !== null ? getTotalModelSize(catalogEntry) : null);
 
-  const installedLabel = resolveInstalledLabel(installedModel);
-
   return {
     displayName,
     engineLabel,
-    detail: deriveSelectedModelDetail(installedModel),
-    installedLabel,
+    detail:
+      installedModel !== null
+        ? 'Model is installed and ready.'
+        : 'The selected managed model is not installed.',
+    installedLabel: installedModel !== null ? 'Installed' : 'Not installed',
     sourceLabel: 'Managed download',
     sizeBytes,
     installLocation: installedModel?.installPath ?? null,
     resolvedPath: installedModel?.runtimePath ?? null,
   };
-}
-
-function resolveInstalledLabel(installedModel: InstalledModelRecord | null): string {
-  if (installedModel !== null) {
-    return 'Installed';
-  }
-
-  return 'Not installed';
-}
-
-function deriveSelectedModelDetail(installedModel: InstalledModelRecord | null): string {
-  if (installedModel !== null) {
-    return 'Model is installed and ready.';
-  }
-
-  return 'The selected managed model is not installed.';
 }
 
 // ---------------------------------------------------------------------------

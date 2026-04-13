@@ -1,6 +1,6 @@
 import { Setting } from 'obsidian';
 
-import type { ModelInstallManager } from '../models/model-install-manager';
+import { isCancellingPhase, type ModelInstallManager } from '../models/model-install-manager';
 import {
   createInstallProgressElement,
   updateInstallProgressElement,
@@ -14,12 +14,9 @@ import { deriveCurrentModelDisplay } from '../models/model-row-state';
 function getBadgeInfo(installedLabel: string): { modifier: string; text: string } {
   switch (installedLabel) {
     case 'Installed':
-    case 'Validated external file':
       return { modifier: 'ready', text: 'Ready' };
     case 'Not installed':
       return { modifier: 'missing', text: 'Not installed' };
-    case 'Unavailable':
-      return { modifier: 'missing', text: 'Unavailable' };
     case 'External file':
       return { modifier: 'external', text: 'Unverified' };
     default:
@@ -108,7 +105,7 @@ export function renderModelSection(
     if (activeInstall !== null) {
       const progressState = {
         ...activeInstall.installUpdate,
-        isCancelling: activeInstall.phase === 'canceling' || activeInstall.phase === 'cancelStuck',
+        isCancelling: isCancellingPhase(activeInstall.phase),
       };
       const progressEl = createInstallProgressElement(progressState);
       installProgressEl = progressEl;
@@ -135,7 +132,7 @@ export function renderModelSection(
     if (activeInstall !== null && installProgressEl !== null) {
       updateInstallProgressElement(installProgressEl, {
         ...activeInstall.installUpdate,
-        isCancelling: activeInstall.phase === 'canceling' || activeInstall.phase === 'cancelStuck',
+        isCancelling: isCancellingPhase(activeInstall.phase),
       });
       return;
     }

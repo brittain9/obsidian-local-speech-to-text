@@ -68,6 +68,10 @@ export function isTerminalInstallState(state: ModelInstallUpdateRecord['state'])
   return state === 'cancelled' || state === 'completed' || state === 'failed';
 }
 
+export function isCancellingPhase(phase: InstallPhase): boolean {
+  return phase === 'canceling' || phase === 'cancelStuck';
+}
+
 export function createInstallLifecycleLogMessage(
   installUpdate: ModelInstallUpdateRecord,
 ): string | null {

@@ -2,7 +2,7 @@ import type { App } from 'obsidian';
 import { Modal, Notice, Setting } from 'obsidian';
 
 import { formatBytes, formatErrorMessage } from '../shared/format-utils';
-import type { ModelInstallManager } from './model-install-manager';
+import { isCancellingPhase, type ModelInstallManager } from './model-install-manager';
 import {
   createInstallProgressElement,
   type InstallProgressState,
@@ -304,15 +304,13 @@ export class ManageModelsModal extends Modal {
     // Fast path: if an install is active for a visible row, try in-place
     // progress update instead of full re-render.
     if (activeInstall !== null) {
-      const installEngineId = activeInstall.installUpdate.engineId;
-      const key = `${installEngineId}:${activeInstall.installUpdate.modelId}`;
+      const key = `${activeInstall.installUpdate.engineId}:${activeInstall.installUpdate.modelId}`;
       const existingProgressEl = this.progressElements.get(key);
 
       if (existingProgressEl !== null && existingProgressEl !== undefined) {
         updateInstallProgressElement(existingProgressEl, {
           ...activeInstall.installUpdate,
-          isCancelling:
-            activeInstall.phase === 'canceling' || activeInstall.phase === 'cancelStuck',
+          isCancelling: isCancellingPhase(activeInstall.phase),
         });
         return;
       }
@@ -320,7 +318,7 @@ export class ManageModelsModal extends Modal {
       // The active install belongs to a different engine than the visible tab.
       // Progress ticks for that install don't affect visible rows — skip the
       // full re-render to avoid clobbering the DOM under the user's cursor.
-      if (installEngineId !== this.activeEngineId) {
+      if (activeInstall.installUpdate.engineId !== this.activeEngineId) {
         return;
       }
     }
@@ -375,7 +373,7 @@ export class ManageModelsModal extends Modal {
 
     return {
       ...activeInstall.installUpdate,
-      isCancelling: activeInstall.phase === 'canceling' || activeInstall.phase === 'cancelStuck',
+      isCancelling: isCancellingPhase(activeInstall.phase),
     };
   }
 

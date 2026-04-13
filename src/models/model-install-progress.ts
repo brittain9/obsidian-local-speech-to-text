@@ -125,12 +125,6 @@ export function updateInstallProgressElement(
   }
 }
 
-export function createInstallProgressFragment(state: InstallProgressState): DocumentFragment {
-  const fragment = document.createDocumentFragment();
-  fragment.append(createInstallProgressElement(state));
-  return fragment;
-}
-
 function normalizeOptionalLine(value: string | null): string | null {
   const trimmed = value?.trim() ?? '';
   return trimmed.length > 0 ? trimmed : null;
