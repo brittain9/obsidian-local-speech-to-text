@@ -5,13 +5,13 @@ import {
   isTerminalInstallState,
   ModelInstallManager,
 } from '../src/models/model-install-manager';
-import {
-  type CatalogModelRecord,
-  type CatalogModelSelection,
-  type InstalledModelRecord,
-  type ModelCatalogRecord,
-  type ModelInstallUpdateRecord,
-  type ModelStoreRecord,
+import type {
+  CatalogModelRecord,
+  CatalogModelSelection,
+  InstalledModelRecord,
+  ModelCatalogRecord,
+  ModelInstallUpdateRecord,
+  ModelStoreRecord,
 } from '../src/models/model-management-types';
 import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from '../src/settings/plugin-settings';
 import type { SidecarEvent } from '../src/sidecar/protocol';
@@ -170,7 +170,9 @@ function sampleModelStore(): ModelStoreRecord {
   };
 }
 
-function sampleInstallUpdate(overrides?: Partial<ModelInstallUpdateRecord>): ModelInstallUpdateRecord {
+function sampleInstallUpdate(
+  overrides?: Partial<ModelInstallUpdateRecord>,
+): ModelInstallUpdateRecord {
   return {
     details: null,
     downloadedBytes: 50,
@@ -288,9 +290,7 @@ describe('ModelInstallManager', () => {
     it('sets loadStatus to error on failure', async () => {
       const harness = createManagerHarness();
       harness.sidecarConnection.listModelCatalog.mockRejectedValue(new Error('connection lost'));
-      harness.sidecarConnection.listInstalledModels.mockRejectedValue(
-        new Error('connection lost'),
-      );
+      harness.sidecarConnection.listInstalledModels.mockRejectedValue(new Error('connection lost'));
       harness.sidecarConnection.getModelStore.mockRejectedValue(new Error('connection lost'));
       harness.sidecarConnection.getSystemInfo.mockRejectedValue(new Error('connection lost'));
 
@@ -331,8 +331,8 @@ describe('ModelInstallManager', () => {
 
       const state = harness.manager.getState();
       expect(state.activeInstall).not.toBeNull();
-      expect(state.activeInstall!.phase).toBe('installing');
-      expect(state.activeInstall!.installUpdate.modelId).toBe('whisper_large_v3_turbo_q8_0');
+      expect(state.activeInstall?.phase).toBe('installing');
+      expect(state.activeInstall?.installUpdate.modelId).toBe('whisper_large_v3_turbo_q8_0');
 
       harness.manager.dispose();
     });
@@ -384,12 +384,12 @@ describe('ModelInstallManager', () => {
 
       emitInstallUpdate(harness, { downloadedBytes: 100 });
 
-      expect(harness.manager.getState().activeInstall!.installUpdate.downloadedBytes).toBe(100);
+      expect(harness.manager.getState().activeInstall?.installUpdate.downloadedBytes).toBe(100);
 
       emitInstallUpdate(harness, { downloadedBytes: 400 });
 
-      expect(harness.manager.getState().activeInstall!.installUpdate.downloadedBytes).toBe(400);
-      expect(harness.manager.getState().activeInstall!.phase).toBe('installing');
+      expect(harness.manager.getState().activeInstall?.installUpdate.downloadedBytes).toBe(400);
+      expect(harness.manager.getState().activeInstall?.phase).toBe('installing');
 
       harness.manager.dispose();
     });
@@ -448,12 +448,12 @@ describe('ModelInstallManager', () => {
       await harness.manager.init();
 
       emitInstallUpdate(harness);
-      expect(harness.manager.getState().activeInstall!.phase).toBe('installing');
+      expect(harness.manager.getState().activeInstall?.phase).toBe('installing');
 
       await harness.manager.cancel();
 
       expect(harness.sidecarConnection.cancelModelInstall).toHaveBeenCalledWith('install-1');
-      expect(harness.manager.getState().activeInstall!.phase).toBe('canceling');
+      expect(harness.manager.getState().activeInstall?.phase).toBe('canceling');
 
       harness.manager.dispose();
     });
@@ -464,12 +464,10 @@ describe('ModelInstallManager', () => {
       await harness.manager.init();
 
       emitInstallUpdate(harness);
-      harness.sidecarConnection.cancelModelInstall.mockRejectedValueOnce(
-        new Error('write failed'),
-      );
+      harness.sidecarConnection.cancelModelInstall.mockRejectedValueOnce(new Error('write failed'));
 
       await expect(harness.manager.cancel()).rejects.toThrow('write failed');
-      expect(harness.manager.getState().activeInstall!.phase).toBe('installing');
+      expect(harness.manager.getState().activeInstall?.phase).toBe('installing');
 
       harness.manager.dispose();
     });
@@ -481,11 +479,11 @@ describe('ModelInstallManager', () => {
 
       emitInstallUpdate(harness);
       await harness.manager.cancel();
-      expect(harness.manager.getState().activeInstall!.phase).toBe('canceling');
+      expect(harness.manager.getState().activeInstall?.phase).toBe('canceling');
 
       emitInstallUpdate(harness, { downloadedBytes: 400 });
-      expect(harness.manager.getState().activeInstall!.phase).toBe('canceling');
-      expect(harness.manager.getState().activeInstall!.installUpdate.downloadedBytes).toBe(400);
+      expect(harness.manager.getState().activeInstall?.phase).toBe('canceling');
+      expect(harness.manager.getState().activeInstall?.installUpdate.downloadedBytes).toBe(400);
 
       harness.manager.dispose();
     });
@@ -529,10 +527,10 @@ describe('ModelInstallManager', () => {
 
         emitInstallUpdate(harness);
         await harness.manager.cancel();
-        expect(harness.manager.getState().activeInstall!.phase).toBe('canceling');
+        expect(harness.manager.getState().activeInstall?.phase).toBe('canceling');
 
         vi.advanceTimersByTime(30_000);
-        expect(harness.manager.getState().activeInstall!.phase).toBe('cancelStuck');
+        expect(harness.manager.getState().activeInstall?.phase).toBe('cancelStuck');
 
         harness.manager.dispose();
       } finally {
@@ -574,7 +572,7 @@ describe('ModelInstallManager', () => {
         emitInstallUpdate(harness);
         await harness.manager.cancel();
         vi.advanceTimersByTime(30_000);
-        expect(harness.manager.getState().activeInstall!.phase).toBe('cancelStuck');
+        expect(harness.manager.getState().activeInstall?.phase).toBe('cancelStuck');
 
         emitInstallUpdate(harness, { state: 'cancelled' });
         expect(harness.manager.getState().activeInstall).toBeNull();
@@ -600,7 +598,7 @@ describe('ModelInstallManager', () => {
         emitInstallUpdate(harness);
         await harness.manager.cancel();
         vi.advanceTimersByTime(30_000);
-        expect(harness.manager.getState().activeInstall!.phase).toBe('cancelStuck');
+        expect(harness.manager.getState().activeInstall?.phase).toBe('cancelStuck');
 
         // Model actually completed during stuck state.
         harness.sidecarConnection.listInstalledModels.mockResolvedValueOnce({
@@ -820,7 +818,7 @@ describe('ModelInstallManager', () => {
       await harness.manager.select(sampleSelection());
 
       expect(harness.getSettings().selectedModel).toEqual(sampleSelection());
-      expect(harness.manager.getState().activeInstall!.installUpdate.installId).toBe('install-sel');
+      expect(harness.manager.getState().activeInstall?.installUpdate.installId).toBe('install-sel');
 
       harness.manager.dispose();
     });

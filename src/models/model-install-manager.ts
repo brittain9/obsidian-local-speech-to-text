@@ -368,9 +368,7 @@ export class ModelInstallManager {
       currentSelection.engineId === selection.engineId &&
       currentSelection.modelId === selection.modelId
     ) {
-      throw new Error(
-        'Cannot remove the currently selected model. Clear the selection first.',
-      );
+      throw new Error('Cannot remove the currently selected model. Clear the selection first.');
     }
 
     if (
