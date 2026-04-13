@@ -70,17 +70,12 @@ pub enum ListeningMode {
     OneSentence,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccelerationPreference {
+    #[default]
     Auto,
     CpuOnly,
-}
-
-impl Default for AccelerationPreference {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

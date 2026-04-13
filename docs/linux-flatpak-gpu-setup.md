@@ -181,9 +181,9 @@ flatpak run --command=sh md.obsidian.Obsidian -c 'ls /dev/nvidia* 2>&1'
 
 If those nodes are missing, re-apply `--device=all`.
 
-## Deprecated Fallback: Wrapper Script
+## Removed Fallback: Wrapper Script
 
-If you cannot use the `CUDA library path` setting for some reason, you can still point `Sidecar path override` at `scripts/flatpak-cuda-wrapper.sh`. That script is deprecated and kept only as a legacy escape hatch.
+The old wrapper-script escape hatch has been removed. The supported approach is to point `Sidecar path override` directly at the CUDA sidecar binary and use the plugin's `CUDA library path` setting for the host library directories.
 
 ## Alternative: Native Obsidian Install
 

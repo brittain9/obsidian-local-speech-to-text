@@ -144,7 +144,7 @@ Automated release artifacts (via `workflow_dispatch`) currently cover:
 | Artifact | Runner | Build script |
 |---|---|---|
 | `sidecar-linux-x86_64` | `ubuntu-latest` | `scripts/build-cpu.sh --release` |
-| `sidecar-macos-arm64` | `macos-14` | `scripts/build-metal.sh --release` |
+| `sidecar-macos-arm64` | `macos-15` | `scripts/build-metal.sh --release` |
 
 CUDA release artifacts are not yet automated. Producing them requires a CUDA-capable runner or a self-hosted packaging flow (D-019). The CUDA build script (`scripts/build-cuda.sh`) is production-ready but must be run on a machine with the CUDA toolkit installed.
 

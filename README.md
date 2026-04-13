@@ -7,9 +7,9 @@ Local, private speech-to-text for Obsidian. Transcription runs entirely on your 
 - Streaming dictation directly into your notes
 - Three listening modes: always-on, press-and-hold, and one-sentence
 - Managed model catalog with one-click downloads (SHA-256 verified)
-- Multiple Whisper model sizes from small/fast to large/accurate
+- Two local transcription engines: Whisper (mature, smaller models) and Cohere Transcribe (newer, higher quality, larger models, still experimental)
 - Transcript placement at the cursor, end of note, or as a new paragraph
-- Optional GPU acceleration (CUDA on Linux/Windows, Metal on macOS)
+- Optional GPU acceleration where supported
 - Works entirely offline after initial model download
 
 ## Design Principles
@@ -23,13 +23,13 @@ Local, private speech-to-text for Obsidian. Transcription runs entirely on your 
 
 1. Clone this repo into `<vault>/.obsidian/plugins/obsidian-local-stt` and enable it in Obsidian's community plugins settings.
 2. Open `Settings -> Local STT`.
-3. Click `Browse models` and install a model — start with `Whisper Small English Q5_1` for a quick first test.
+3. Click `Browse models` and install a model — start with `Whisper Small English Q5_1` for a quick first test. The browser also includes Cohere Transcribe models if you want the higher-accuracy experimental path.
 4. Open a note, click the microphone ribbon button or run `Local STT: Start Dictation Session`.
 5. Talk. Text appears in your note.
 
 ## How It Works
 
-An Obsidian plugin (TypeScript) handles the UI, settings, mic capture, and editor insertion. A native Rust sidecar handles audio processing, VAD, and Whisper inference. They communicate over framed stdio IPC — the sidecar runs as a managed child process, no server or port binding.
+An Obsidian plugin (TypeScript) handles the UI, settings, mic capture, and editor insertion. A native Rust sidecar handles audio processing, VAD, and Whisper and Cohere inference. They communicate over framed stdio IPC — the sidecar runs as a managed child process, no server or port binding.
 
 ## Commands
 
@@ -48,10 +48,12 @@ The default build is CPU-only and works everywhere. GPU acceleration is opt-in v
 
 | Platform | GPU | Notes |
 |---|---|---|
-| Windows | CUDA | Inherited from host environment |
-| macOS | Metal | System framework, nothing extra needed |
-| Linux native | CUDA | Works out of the box |
-| Linux Flatpak | CUDA | Requires manual overrides — see [Flatpak GPU setup](docs/linux-flatpak-gpu-setup.md) |
+| Windows | Planned | Runtime support is planned, but Windows is not yet tested or supported in this repo. |
+| macOS | Metal | Whisper can use Metal. Cohere runs CPU-only on macOS and performs well there. |
+| Linux native | CUDA | Whisper and Cohere can use CUDA when built with the CUDA sidecar. |
+| Linux Flatpak | CUDA | Whisper and Cohere can use CUDA with manual overrides — see [Flatpak GPU setup](docs/linux-flatpak-gpu-setup.md) |
+
+Engine/backend matrix: Whisper supports Metal on macOS and CUDA on Linux. Cohere supports CUDA on Linux only; on macOS it stays CPU-only, and there is no planned Metal/CoreML path.
 
 Build the CUDA sidecar on Linux:
 

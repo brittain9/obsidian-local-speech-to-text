@@ -1,5 +1,7 @@
 # Add NVIDIA Canary STT Engine
 
+Status: Shelved — retained as reference material for a potential future Canary engine integration. Not implemented; all checklist items remain open.
+
 ## Objective
 
 Ship Whisper and Canary as two coexisting STT engines in v1. Canary runs as a persistent Python subprocess managed by the Rust sidecar. CUDA-only, feature-gated at compile time, capability-detected at runtime. macOS and CPU-only users are completely unaffected.
