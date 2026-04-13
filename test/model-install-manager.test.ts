@@ -402,8 +402,58 @@ describe('ModelInstallManager', () => {
       emitInstallUpdate(harness);
       expect(harness.manager.getState().activeInstall).not.toBeNull();
 
+      // completed triggers an async refresh — mock the listInstalledModels call
+      harness.sidecarConnection.listInstalledModels.mockResolvedValueOnce({
+        models: [sampleInstalledModel()],
+      });
+
       emitInstallUpdate(harness, { state: 'completed' });
       expect(harness.manager.getState().activeInstall).toBeNull();
+
+      // Wait for the async refresh to complete.
+      await vi.waitFor(() => {
+        expect(harness.sidecarConnection.listInstalledModels).toHaveBeenCalledTimes(2);
+      });
+
+      harness.manager.dispose();
+    });
+
+    it('refreshes installed models after completed event', async () => {
+      const harness = createManagerHarness();
+      configureSidecarForInit(harness.sidecarConnection);
+      await harness.manager.init();
+
+      // Before install: one model installed.
+      expect(harness.manager.getState().installedModels).toHaveLength(1);
+
+      emitInstallUpdate(harness, {
+        modelId: 'whisper_small_en_q5_1',
+        installId: 'install-refresh',
+      });
+
+      // After completion the sidecar reports the new model as installed.
+      harness.sidecarConnection.listInstalledModels.mockResolvedValueOnce({
+        models: [
+          sampleInstalledModel(),
+          {
+            ...sampleInstalledModel(),
+            installPath: '/models/whisper_cpp/whisper_small_en_q5_1',
+            modelId: 'whisper_small_en_q5_1',
+            totalSizeBytes: 100,
+          },
+        ],
+      });
+
+      emitInstallUpdate(harness, {
+        installId: 'install-refresh',
+        modelId: 'whisper_small_en_q5_1',
+        state: 'completed',
+      });
+
+      // Wait for the async refresh.
+      await vi.waitFor(() => {
+        expect(harness.manager.getState().installedModels).toHaveLength(2);
+      });
 
       harness.manager.dispose();
     });
@@ -429,11 +479,22 @@ describe('ModelInstallManager', () => {
       const listener = vi.fn();
       harness.manager.subscribe(listener);
 
+      // completed triggers an async refresh — mock listInstalledModels
+      harness.sidecarConnection.listInstalledModels.mockResolvedValueOnce({
+        models: [sampleInstalledModel()],
+      });
+
       emitInstallUpdate(harness, { downloadedBytes: 100 });
       emitInstallUpdate(harness, { downloadedBytes: 400 });
       emitInstallUpdate(harness, { state: 'completed' });
 
-      expect(listener).toHaveBeenCalledTimes(3);
+      // 2 synchronous notifications for progress ticks.
+      expect(listener).toHaveBeenCalledTimes(2);
+
+      // 3rd notification arrives after the async installed-models refresh.
+      await vi.waitFor(() => {
+        expect(listener).toHaveBeenCalledTimes(3);
+      });
 
       harness.manager.dispose();
     });
@@ -830,6 +891,10 @@ describe('ModelInstallManager', () => {
       configureSidecarForInit(harness.sidecarConnection);
       await harness.manager.init();
 
+      harness.sidecarConnection.listInstalledModels.mockResolvedValueOnce({
+        models: [sampleInstalledModel()],
+      });
+
       emitInstallUpdate(harness, { modelId: 'whisper_small_en_q5_1', installId: 'install-comp' });
       emitInstallUpdate(harness, {
         modelId: 'whisper_small_en_q5_1',
@@ -838,6 +903,13 @@ describe('ModelInstallManager', () => {
       });
 
       expect(harness.manager.getState().activeInstall).toBeNull();
+      expect(harness.getSettings().selectedModel).toEqual(sampleSelection());
+
+      // Wait for the async refresh triggered by completed event.
+      await vi.waitFor(() => {
+        expect(harness.sidecarConnection.listInstalledModels).toHaveBeenCalledTimes(2);
+      });
+
       expect(harness.getSettings().selectedModel).toEqual(sampleSelection());
 
       harness.manager.dispose();

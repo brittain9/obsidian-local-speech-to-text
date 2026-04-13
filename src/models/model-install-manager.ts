@@ -435,6 +435,31 @@ export class ModelInstallManager {
       this.cancelStuckTimer = null;
     }
 
+    // On completed installs, refresh the installed models list so the UI
+    // reflects the new model without requiring a restart.
+    if (event.state === 'completed') {
+      void this.refreshInstalledModels();
+      return;
+    }
+
+    this.notify();
+  }
+
+  private async refreshInstalledModels(): Promise<void> {
+    try {
+      const overridePayload = createModelStoreOverridePayload(
+        this.deps.getSettings().modelStorePathOverride,
+      );
+      const installedEvent = await this.deps.sidecarConnection.listInstalledModels(
+        overridePayload.modelStorePathOverride,
+      );
+      this.installedModels = installedEvent.models;
+    } catch (error) {
+      this.deps.logger?.warn(
+        'model',
+        `failed to refresh installed models after install: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     this.notify();
   }
 

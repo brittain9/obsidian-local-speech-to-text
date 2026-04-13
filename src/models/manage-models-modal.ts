@@ -304,7 +304,8 @@ export class ManageModelsModal extends Modal {
     // Fast path: if an install is active for a visible row, try in-place
     // progress update instead of full re-render.
     if (activeInstall !== null) {
-      const key = `${activeInstall.installUpdate.engineId}:${activeInstall.installUpdate.modelId}`;
+      const installEngineId = activeInstall.installUpdate.engineId;
+      const key = `${installEngineId}:${activeInstall.installUpdate.modelId}`;
       const existingProgressEl = this.progressElements.get(key);
 
       if (existingProgressEl !== null && existingProgressEl !== undefined) {
@@ -313,6 +314,13 @@ export class ManageModelsModal extends Modal {
           isCancelling:
             activeInstall.phase === 'canceling' || activeInstall.phase === 'cancelStuck',
         });
+        return;
+      }
+
+      // The active install belongs to a different engine than the visible tab.
+      // Progress ticks for that install don't affect visible rows — skip the
+      // full re-render to avoid clobbering the DOM under the user's cursor.
+      if (installEngineId !== this.activeEngineId) {
         return;
       }
     }
