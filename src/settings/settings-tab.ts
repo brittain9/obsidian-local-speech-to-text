@@ -1,5 +1,7 @@
 import type { App, Plugin } from 'obsidian';
 import { Platform, PluginSettingTab, Setting } from 'obsidian';
+import { USE_NEW_MODEL_MANAGEMENT } from '../models/feature-flags';
+import type { ModelInstallManager } from '../models/model-install-manager';
 import {
   createInstallProgressElement,
   updateInstallProgressElement,
@@ -22,10 +24,12 @@ import type {
   SystemInfoEvent,
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
+import { renderModelSection as renderNewModelSection } from './model-settings-section';
 import { INSERTION_MODES, type InsertionMode, type PluginSettings } from './plugin-settings';
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
+  modelInstallManager?: ModelInstallManager;
   modelManagementService: ModelManagementService;
   saveSettings: (settings: PluginSettings) => Promise<void>;
   sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
@@ -160,6 +164,7 @@ function buildEffectiveBackendLines(
 }
 
 export class LocalSttSettingTab extends PluginSettingTab {
+  private disposeNewModelSection: (() => void) | null = null;
   private installProgressEl: HTMLDivElement | null = null;
   private modelSectionEl: HTMLDivElement | null = null;
   private releaseInstallSubscription: (() => void) | null = null;
@@ -187,13 +192,44 @@ export class LocalSttSettingTab extends PluginSettingTab {
     // --- Model ---
     new Setting(containerEl).setName('Model').setHeading();
     const modelSection = containerEl.createDiv();
-    this.modelSectionEl = modelSection;
-    void this.renderModelSection(modelSection);
 
-    this.releaseInstallSubscription =
-      this.dependencies.modelManagementService.subscribeToInstallUpdates(() => {
-        this.handleInstallUpdate();
+    if (USE_NEW_MODEL_MANAGEMENT && this.dependencies.modelInstallManager !== undefined) {
+      const manager = this.dependencies.modelInstallManager;
+      const settings = this.dependencies.getSettings();
+      this.disposeNewModelSection = renderNewModelSection(modelSection, manager, {
+        onManageModels: () => {
+          // TODO(Phase 5): open new model management modal
+        },
+        onExternalFile: () => {
+          const selectedModel = settings.selectedModel;
+          new ExternalModelFileModal(
+            this.app,
+            selectedModel?.kind === 'external_file' ? selectedModel.filePath : '',
+            {
+              onChanged: async () => {
+                this.display();
+              },
+              service: this.dependencies.modelManagementService,
+            },
+          ).open();
+        },
+        onModelInfo:
+          settings.selectedModel !== null
+            ? () => {
+                // Info context is not available from the new manager in Phase 3;
+                // will be wired in Phase 5.
+              }
+            : null,
       });
+    } else {
+      this.modelSectionEl = modelSection;
+      void this.renderModelSection(modelSection);
+
+      this.releaseInstallSubscription =
+        this.dependencies.modelManagementService.subscribeToInstallUpdates(() => {
+          this.handleInstallUpdate();
+        });
+    }
 
     // --- Transcription ---
     new Setting(containerEl).setName('Transcription').setHeading();
@@ -379,6 +415,8 @@ export class LocalSttSettingTab extends PluginSettingTab {
   }
 
   private tearDownInstallSubscription(): void {
+    this.disposeNewModelSection?.();
+    this.disposeNewModelSection = null;
     this.releaseInstallSubscription?.();
     this.releaseInstallSubscription = null;
     this.installProgressEl = null;
