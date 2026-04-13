@@ -69,7 +69,7 @@
   color: var(--text-muted);
 }
 
-/* --- Explorer toolbar (tabs + search) ----------------------------- */
+/* --- Modal toolbar (tab bar) -------------------------------------- */
 
 .local-stt-toolbar {
   display: flex;
@@ -109,34 +109,7 @@
   border-bottom-color: var(--interactive-accent, #7c3aed);
 }
 
-.local-stt-search-wrapper {
-  margin-left: auto;
-  flex-shrink: 1;
-  min-width: 0;
-  padding-bottom: 2px;
-}
-
-.local-stt-search-input {
-  width: 140px;
-  padding: 4px 8px;
-  border: 1px solid var(--background-modifier-border, rgba(128, 128, 128, 0.3));
-  border-radius: var(--input-radius, 4px);
-  background-color: var(--background-modifier-form-field, transparent);
-  color: var(--text-normal);
-  font-size: var(--font-ui-smaller);
-  outline: none;
-}
-
-.local-stt-search-input:focus {
-  border-color: var(--interactive-accent, #7c3aed);
-  box-shadow: 0 0 0 1px var(--interactive-accent, #7c3aed);
-}
-
-.local-stt-search-input::placeholder {
-  color: var(--text-faint);
-}
-
-/* --- Model explorer rows (compact Setting-based) ------------------ */
+/* --- Model rows (compact Setting-based) --------------------------- */
 
 .local-stt-model-row .setting-item-info {
   min-width: 0;
@@ -307,8 +280,8 @@
   margin-bottom: 4px;
 }
 
-/* --- Explorer modal width constraint ------------------------------ */
+/* --- Manage-models modal width constraint ------------------------- */
 
-.local-stt-explorer {
+.local-stt-manage-models {
   width: min(600px, 90vw);
 }
