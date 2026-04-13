@@ -1,37 +1,21 @@
 import type { App, Plugin } from 'obsidian';
 import { Platform, PluginSettingTab, Setting } from 'obsidian';
-import { USE_NEW_MODEL_MANAGEMENT } from '../models/feature-flags';
 import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
-import {
-  createInstallProgressElement,
-  updateInstallProgressElement,
-} from '../models/model-install-progress';
-import {
-  CurrentModelInfoModal,
-  ExternalModelFileModal,
-  ModelExplorerModal,
-} from '../models/model-management-modals';
-import type {
-  CurrentModelCardState,
-  ModelManagementService,
-  ModelManagementSnapshot,
-} from '../models/model-management-service';
+import { ExternalModelFileModal } from '../models/model-management-modals';
 import { getEngineDisplayName, isEngineId } from '../models/model-management-types';
-import { formatErrorMessage } from '../shared/format-utils';
 import type {
   AccelerationPreference,
   RuntimeCapability,
   SystemInfoEvent,
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
-import { renderModelSection as renderNewModelSection } from './model-settings-section';
+import { renderModelSection } from './model-settings-section';
 import { INSERTION_MODES, type InsertionMode, type PluginSettings } from './plugin-settings';
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
-  modelInstallManager?: ModelInstallManager;
-  modelManagementService: ModelManagementService;
+  modelInstallManager: ModelInstallManager;
   saveSettings: (settings: PluginSettings) => Promise<void>;
   sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
 }
@@ -165,10 +149,7 @@ function buildEffectiveBackendLines(
 }
 
 export class LocalSttSettingTab extends PluginSettingTab {
-  private disposeNewModelSection: (() => void) | null = null;
-  private installProgressEl: HTMLDivElement | null = null;
-  private modelSectionEl: HTMLDivElement | null = null;
-  private releaseInstallSubscription: (() => void) | null = null;
+  private disposeModelSection: (() => void) | null = null;
 
   constructor(
     app: App,
@@ -179,7 +160,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
   }
 
   override display(): void {
-    this.tearDownInstallSubscription();
+    this.tearDown();
 
     const { containerEl } = this;
     const settings = this.dependencies.getSettings();
@@ -193,49 +174,31 @@ export class LocalSttSettingTab extends PluginSettingTab {
     // --- Model ---
     new Setting(containerEl).setName('Model').setHeading();
     const modelSection = containerEl.createDiv();
-
-    if (USE_NEW_MODEL_MANAGEMENT && this.dependencies.modelInstallManager !== undefined) {
-      const manager = this.dependencies.modelInstallManager;
-      const settings = this.dependencies.getSettings();
-      this.disposeNewModelSection = renderNewModelSection(modelSection, manager, {
-        onManageModels: () => {
-          new ManageModelsModal(this.app, {
+    const manager = this.dependencies.modelInstallManager;
+    this.disposeModelSection = renderModelSection(modelSection, manager, {
+      onManageModels: () => {
+        new ManageModelsModal(this.app, {
+          manager,
+          onChanged: () => {
+            this.display();
+          },
+        }).open();
+      },
+      onExternalFile: () => {
+        const selectedModel = this.dependencies.getSettings().selectedModel;
+        new ExternalModelFileModal(
+          this.app,
+          selectedModel?.kind === 'external_file' ? selectedModel.filePath : '',
+          {
             manager,
-            onChanged: () => {
+            onChanged: async () => {
               this.display();
             },
-          }).open();
-        },
-        onExternalFile: () => {
-          const selectedModel = settings.selectedModel;
-          new ExternalModelFileModal(
-            this.app,
-            selectedModel?.kind === 'external_file' ? selectedModel.filePath : '',
-            {
-              onChanged: async () => {
-                this.display();
-              },
-              service: this.dependencies.modelManagementService,
-            },
-          ).open();
-        },
-        onModelInfo:
-          settings.selectedModel !== null
-            ? () => {
-                // Info context is not available from the new manager in Phase 3;
-                // will be wired in Phase 5.
-              }
-            : null,
-      });
-    } else {
-      this.modelSectionEl = modelSection;
-      void this.renderModelSection(modelSection);
-
-      this.releaseInstallSubscription =
-        this.dependencies.modelManagementService.subscribeToInstallUpdates(() => {
-          this.handleInstallUpdate();
-        });
-    }
+          },
+        ).open();
+      },
+      onModelInfo: settings.selectedModel !== null ? () => {} : null,
+    });
 
     // --- Transcription ---
     new Setting(containerEl).setName('Transcription').setHeading();
@@ -322,7 +285,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       new Setting(advancedDetails)
         .setName('CUDA library path')
         .setDesc(
-          'Optional colon-separated library search path for the sidecar process only. Use this for Flatpak or custom CUDA installs without changing Obsidian’s global environment.',
+          'Optional colon-separated library search path for the sidecar process only. Use this for Flatpak or custom CUDA installs without changing Obsidian\u2019s global environment.',
         )
         .addText((text) => {
           text.setPlaceholder(
@@ -417,32 +380,12 @@ export class LocalSttSettingTab extends PluginSettingTab {
   }
 
   override hide(): void {
-    this.tearDownInstallSubscription();
+    this.tearDown();
   }
 
-  private tearDownInstallSubscription(): void {
-    this.disposeNewModelSection?.();
-    this.disposeNewModelSection = null;
-    this.releaseInstallSubscription?.();
-    this.releaseInstallSubscription = null;
-    this.installProgressEl = null;
-    this.modelSectionEl = null;
-  }
-
-  private handleInstallUpdate(): void {
-    const activeInstall = this.dependencies.modelManagementService.getActiveInstallState();
-
-    if (activeInstall !== null && this.installProgressEl !== null) {
-      updateInstallProgressElement(this.installProgressEl, {
-        ...activeInstall.installUpdate,
-        isCancelling: activeInstall.isCancelling,
-      });
-      return;
-    }
-
-    if (this.modelSectionEl !== null) {
-      void this.renderModelSection(this.modelSectionEl);
-    }
+  private tearDown(): void {
+    this.disposeModelSection?.();
+    this.disposeModelSection = null;
   }
 
   private async renderEngineOptions(
@@ -493,139 +436,5 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
   private async persistSettings(nextSettings: PluginSettings): Promise<void> {
     await this.dependencies.saveSettings(nextSettings);
-  }
-
-  private async renderModelSection(containerEl: HTMLDivElement): Promise<void> {
-    containerEl.empty();
-
-    const placeholderSetting = new Setting(containerEl).setName('Loading current model\u2026');
-    this.addModelActions(placeholderSetting, null);
-
-    try {
-      const snapshot = await this.dependencies.modelManagementService.getSnapshot();
-      this.renderCurrentModelCard(containerEl, snapshot);
-    } catch (error) {
-      containerEl.empty();
-      containerEl.createEl('p', {
-        text: formatErrorMessage(error, 'Failed to load the current model state.'),
-      });
-    }
-  }
-
-  private renderCurrentModelCard(
-    containerEl: HTMLDivElement,
-    snapshot: ModelManagementSnapshot,
-  ): void {
-    containerEl.empty();
-
-    const { currentModel, currentSelection, modelStore } = snapshot;
-
-    const descFragment = document.createDocumentFragment();
-    if (currentModel.engineLabel.length > 0) {
-      descFragment.createSpan({ text: `${currentModel.engineLabel} \u00b7 ` });
-    }
-    const badge = getBadgeInfo(currentModel.installedLabel);
-    descFragment.createSpan({
-      cls: `local-stt-badge local-stt-badge--${badge.modifier}`,
-      text: badge.text,
-    });
-
-    const cardSetting = new Setting(containerEl)
-      .setName(currentModel.displayName)
-      .setDesc(descFragment);
-
-    this.addModelActions(
-      cardSetting,
-      currentSelection !== null ? { currentModel, storePath: modelStore.path } : null,
-    );
-
-    if (snapshot.activeInstall !== null) {
-      const { activeInstall } = snapshot;
-      const activeInstallDisplayName =
-        snapshot.rows.find(
-          (row) =>
-            row.model.engineId === activeInstall.installUpdate.engineId &&
-            row.model.modelId === activeInstall.installUpdate.modelId,
-        )?.model.displayName ?? activeInstall.installUpdate.modelId;
-      const progressEl = createInstallProgressElement({
-        ...activeInstall.installUpdate,
-        isCancelling: activeInstall.isCancelling,
-      });
-      this.installProgressEl = progressEl;
-      const fragment = document.createDocumentFragment();
-      fragment.append(progressEl);
-      new Setting(containerEl).setName(`Installing: ${activeInstallDisplayName}`).setDesc(fragment);
-    } else {
-      this.installProgressEl = null;
-    }
-  }
-
-  private addModelActions(
-    setting: Setting,
-    infoContext: { currentModel: CurrentModelCardState; storePath: string } | null,
-  ): void {
-    setting.addButton((button) => {
-      button
-        .setCta()
-        .setButtonText('Browse models')
-        .onClick(() => {
-          new ModelExplorerModal(this.app, {
-            onChanged: async () => {
-              this.display();
-            },
-            service: this.dependencies.modelManagementService,
-          }).open();
-        });
-    });
-
-    setting.addExtraButton((button) => {
-      button
-        .setIcon('file-input')
-        .setTooltip('Use external file')
-        .onClick(() => {
-          const selectedModel = this.dependencies.getSettings().selectedModel;
-          new ExternalModelFileModal(
-            this.app,
-            selectedModel?.kind === 'external_file' ? selectedModel.filePath : '',
-            {
-              onChanged: async () => {
-                this.display();
-              },
-              service: this.dependencies.modelManagementService,
-            },
-          ).open();
-        });
-    });
-
-    if (infoContext !== null) {
-      setting.addExtraButton((button) => {
-        button
-          .setIcon('info')
-          .setTooltip('Model details')
-          .onClick(() => {
-            new CurrentModelInfoModal(
-              this.app,
-              infoContext.currentModel,
-              infoContext.storePath,
-            ).open();
-          });
-      });
-    }
-  }
-}
-
-function getBadgeInfo(installedLabel: string): { modifier: string; text: string } {
-  switch (installedLabel) {
-    case 'Installed':
-    case 'Validated external file':
-      return { modifier: 'ready', text: 'Ready' };
-    case 'Not installed':
-      return { modifier: 'missing', text: 'Not installed' };
-    case 'Unavailable':
-      return { modifier: 'missing', text: 'Unavailable' };
-    case 'External file':
-      return { modifier: 'external', text: 'Unverified' };
-    default:
-      return { modifier: 'none', text: 'No model' };
   }
 }

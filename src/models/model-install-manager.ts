@@ -393,6 +393,15 @@ export class ModelInstallManager {
     }
   }
 
+  async validateAndSelectExternalFile(filePath: string): Promise<ModelProbeResultEvent> {
+    const selection: SelectedModel = {
+      engineId: 'whisper_cpp',
+      filePath: filePath.trim(),
+      kind: 'external_file',
+    };
+    return this.select(selection);
+  }
+
   async clearSelection(): Promise<void> {
     this.deps.logger?.debug('model', 'cleared selected model');
     await this.updateSettings({ selectedModel: null });

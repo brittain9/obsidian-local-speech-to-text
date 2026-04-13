@@ -8,7 +8,7 @@ import { PRESS_AND_HOLD_GATE_COMMAND_ID, registerCommands } from './commands/reg
 import { DictationSessionController } from './dictation/dictation-session-controller';
 import { EditorService } from './editor/editor-service';
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
-import { ModelManagementService } from './models/model-management-service';
+import { ModelInstallManager } from './models/model-install-manager';
 import {
   DEFAULT_PLUGIN_SETTINGS,
   type PluginSettings,
@@ -29,7 +29,7 @@ export default class LocalSttPlugin extends Plugin {
   private dictationController: DictationSessionController | null = null;
   private editorService: EditorService | null = null;
   private logger: PluginLogger = createPluginLogger(() => this.settings.developerMode);
-  private modelManagementService: ModelManagementService | null = null;
+  private modelInstallManager: ModelInstallManager | null = null;
   private ribbonController: DictationRibbonController | null = null;
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
   private sidecarConnection: SidecarConnection | null = null;
@@ -49,7 +49,7 @@ export default class LocalSttPlugin extends Plugin {
       logger: this.logger,
       resolveWorkletModulePath: async () => this.resolveRecorderWorkletModulePath(),
     });
-    this.modelManagementService = new ModelManagementService({
+    this.modelInstallManager = new ModelInstallManager({
       getSettings: () => this.settings,
       logger: this.logger,
       saveSettings: async (nextSettings) => {
@@ -101,7 +101,7 @@ export default class LocalSttPlugin extends Plugin {
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
         getSettings: () => this.settings,
-        modelManagementService: this.requireModelManagementService(),
+        modelInstallManager: this.requireModelInstallManager(),
         saveSettings: async (nextSettings) => {
           await this.updateSettings(nextSettings);
         },
@@ -121,13 +121,17 @@ export default class LocalSttPlugin extends Plugin {
     await this.checkSidecarHealth({ showNotice: false }).catch((error: unknown) => {
       this.logger.error('sidecar', 'initial health check failed', error);
     });
+
+    this.modelInstallManager?.init().catch((error: unknown) => {
+      this.logger.error('model', 'model install manager init failed', error);
+    });
   }
 
   override async onunload(): Promise<void> {
     try {
-      this.modelManagementService?.dispose();
+      this.modelInstallManager?.dispose();
     } catch (error) {
-      this.logger.error('model', 'failed to dispose model management service cleanly', error);
+      this.logger.error('model', 'failed to dispose model install manager cleanly', error);
     }
 
     try {
@@ -218,12 +222,12 @@ export default class LocalSttPlugin extends Plugin {
     return this.sidecarConnection;
   }
 
-  private requireModelManagementService(): ModelManagementService {
-    if (this.modelManagementService === null) {
-      throw new Error('Model management service has not been initialized.');
+  private requireModelInstallManager(): ModelInstallManager {
+    if (this.modelInstallManager === null) {
+      throw new Error('Model install manager has not been initialized.');
     }
 
-    return this.modelManagementService;
+    return this.modelInstallManager;
   }
 
   private async resolveSidecarLaunchSpec(): Promise<SidecarLaunchSpec> {
