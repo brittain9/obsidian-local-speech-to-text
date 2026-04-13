@@ -469,7 +469,7 @@ export class ExternalModelFileModal extends Modal {
   }
 }
 
-class ModelDetailsModal extends Modal {
+export class ModelDetailsModal extends Modal {
   constructor(
     app: App,
     private readonly model: CatalogModelRecord,

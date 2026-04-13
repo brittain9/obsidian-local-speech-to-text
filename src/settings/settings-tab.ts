@@ -1,6 +1,7 @@
 import type { App, Plugin } from 'obsidian';
 import { Platform, PluginSettingTab, Setting } from 'obsidian';
 import { USE_NEW_MODEL_MANAGEMENT } from '../models/feature-flags';
+import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import {
   createInstallProgressElement,
@@ -198,7 +199,12 @@ export class LocalSttSettingTab extends PluginSettingTab {
       const settings = this.dependencies.getSettings();
       this.disposeNewModelSection = renderNewModelSection(modelSection, manager, {
         onManageModels: () => {
-          // TODO(Phase 5): open new model management modal
+          new ManageModelsModal(this.app, {
+            manager,
+            onChanged: () => {
+              this.display();
+            },
+          }).open();
         },
         onExternalFile: () => {
           const selectedModel = settings.selectedModel;
