@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(grep -n \"whisper_full_result\\\\|whisper_full_get_segment\\\\|pub struct.*segment\" native/sidecar/target/debug/build/whisper-rs-sys-*/out/bindings.rs)",
+      "Bash(ls -t native/sidecar/target/debug/build/whisper-rs-sys-*/out/bindings.rs)",
+      "Bash(xargs sed:*)"
     ]
   }
 }
