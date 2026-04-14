@@ -11,7 +11,12 @@ import type {
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import { renderModelSection } from './model-settings-section';
-import { INSERTION_MODES, type InsertionMode, type PluginSettings } from './plugin-settings';
+import {
+  INSERTION_MODES,
+  type InsertionMode,
+  isInsertionMode,
+  type PluginSettings,
+} from './plugin-settings';
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
@@ -44,10 +49,6 @@ function formatBackendLabel(backend: string): string {
   }
 
   return backend.charAt(0).toUpperCase() + backend.slice(1);
-}
-
-function isInsertionMode(value: string): value is InsertionMode {
-  return (INSERTION_MODES as readonly string[]).includes(value);
 }
 
 function buildAccelerationSummary(systemInfo: SystemInfoEvent | null): string {

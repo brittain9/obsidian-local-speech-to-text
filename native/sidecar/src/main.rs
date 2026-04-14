@@ -1,5 +1,4 @@
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -20,7 +19,7 @@ fn main() -> Result<()> {
     install_logging_hooks();
 
     let config = SidecarStartupConfig::from_args(std::env::args().skip(1))?;
-    let catalog = ModelCatalog::load_from_path(&config.catalog_path)?;
+    let catalog = ModelCatalog::load_bundled()?;
     run_stdio(catalog, config.app_version)
 }
 
@@ -72,13 +71,11 @@ fn run_stdio(catalog: ModelCatalog, app_version: String) -> Result<()> {
 #[derive(Debug)]
 struct SidecarStartupConfig {
     app_version: String,
-    catalog_path: PathBuf,
 }
 
 impl SidecarStartupConfig {
     fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut app_version = env!("CARGO_PKG_VERSION").to_string();
-        let mut catalog_path = None;
         let mut args = args.into_iter();
 
         while let Some(argument) = args.next() {
@@ -88,28 +85,11 @@ impl SidecarStartupConfig {
                         .next()
                         .ok_or_else(|| anyhow!("--app-version requires a version string"))?;
                 }
-                "--catalog-path" => {
-                    let value = args
-                        .next()
-                        .ok_or_else(|| anyhow!("--catalog-path requires an absolute path"))?;
-                    catalog_path = Some(PathBuf::from(value));
-                }
                 _ => return Err(anyhow!("unsupported sidecar argument: {argument}")),
             }
         }
 
-        let catalog_path = catalog_path.ok_or_else(|| {
-            anyhow!("--catalog-path <absolute-path> is required for the sidecar startup")
-        })?;
-
-        if !catalog_path.is_absolute() {
-            return Err(anyhow!("--catalog-path must be an absolute path"));
-        }
-
-        Ok(Self {
-            app_version,
-            catalog_path,
-        })
+        Ok(Self { app_version })
     }
 }
 
@@ -160,30 +140,17 @@ mod tests {
 
     #[test]
     fn startup_config_accepts_app_version_override() {
-        let config = SidecarStartupConfig::from_args([
-            "--catalog-path".to_string(),
-            "/tmp/catalog.json".to_string(),
-            "--app-version".to_string(),
-            "1.0.0".to_string(),
-        ])
-        .expect("config should parse");
+        let config =
+            SidecarStartupConfig::from_args(["--app-version".to_string(), "1.0.0".to_string()])
+                .expect("config should parse");
 
         assert_eq!(config.app_version, "1.0.0");
-        assert_eq!(config.catalog_path.to_string_lossy(), "/tmp/catalog.json");
     }
 
     #[test]
-    fn startup_config_requires_absolute_catalog_path() {
-        let error = SidecarStartupConfig::from_args([
-            "--catalog-path".to_string(),
-            "catalog.json".to_string(),
-        ])
-        .expect_err("relative catalog path should fail");
+    fn startup_config_uses_cargo_version_by_default() {
+        let config = SidecarStartupConfig::from_args([]).expect("config should parse");
 
-        assert!(
-            error
-                .to_string()
-                .contains("--catalog-path must be an absolute path")
-        );
+        assert_eq!(config.app_version, env!("CARGO_PKG_VERSION"));
     }
 }

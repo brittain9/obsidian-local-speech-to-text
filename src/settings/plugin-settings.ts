@@ -107,7 +107,7 @@ function readSelectedModel(selectedModel: unknown): SelectedModel | null {
   return DEFAULT_PLUGIN_SETTINGS.selectedModel;
 }
 
-function isInsertionMode(value: unknown): value is InsertionMode {
+export function isInsertionMode(value: unknown): value is InsertionMode {
   return typeof value === 'string' && (INSERTION_MODES as readonly string[]).includes(value);
 }
 

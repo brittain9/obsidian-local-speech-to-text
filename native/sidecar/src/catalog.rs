@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::EngineId;
 
+const BUNDLED_CATALOG_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/catalog.json"));
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCatalog {
     #[serde(rename = "catalogVersion")]
@@ -85,11 +88,9 @@ pub enum ArtifactRole {
 }
 
 impl ModelCatalog {
-    pub fn load_from_path(path: &Path) -> Result<Self> {
-        let json = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read model catalog {}", path.display()))?;
-        let catalog: Self = serde_json::from_str(&json)
-            .with_context(|| format!("failed to parse model catalog {}", path.display()))?;
+    pub fn load_bundled() -> Result<Self> {
+        let catalog: Self = serde_json::from_str(BUNDLED_CATALOG_JSON)
+            .context("failed to parse bundled model catalog")?;
         catalog.validate()?;
         Ok(catalog)
     }
@@ -253,6 +254,11 @@ mod tests {
         ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
     };
     use crate::protocol::EngineId;
+
+    #[test]
+    fn bundled_catalog_is_valid() {
+        ModelCatalog::load_bundled().expect("bundled catalog should parse and validate");
+    }
 
     #[test]
     fn validate_rejects_duplicate_engine_ids() {

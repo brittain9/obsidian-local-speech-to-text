@@ -1,8 +1,4 @@
-import {
-  PCM_FRAME_DURATION_MS,
-  PCM_SAMPLE_RATE_HZ,
-  PCM_SAMPLES_PER_FRAME,
-} from '../shared/pcm-format';
+import { PCM_FRAME_DURATION_MS, PCM_SAMPLE_RATE_HZ } from '../shared/pcm-format';
 
 export interface PcmFrameProcessorOptions {
   samplesPerFrame?: number;
@@ -135,5 +131,3 @@ function floatToPcm16(sample: number): number {
     ? Math.round(clampedSample * 0x8000)
     : Math.round(clampedSample * 0x7fff);
 }
-
-export const DEFAULT_PCM_SAMPLES_PER_FRAME = PCM_SAMPLES_PER_FRAME;

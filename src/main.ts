@@ -232,7 +232,6 @@ export default class LocalSttPlugin extends Plugin {
 
   private async resolveSidecarLaunchSpec(): Promise<SidecarLaunchSpec> {
     const executablePath = await this.resolveSidecarExecutablePath();
-    const catalogPath = await this.resolveModelCatalogPath();
     const env =
       Platform.isLinux && this.settings.cudaLibraryPath.length > 0
         ? {
@@ -243,7 +242,7 @@ export default class LocalSttPlugin extends Plugin {
         : undefined;
 
     return {
-      args: ['--catalog-path', catalogPath, '--app-version', this.manifest.version],
+      args: ['--app-version', this.manifest.version],
       command: executablePath,
       cwd: dirname(executablePath),
       ...(env ? { env } : {}),
@@ -298,13 +297,6 @@ export default class LocalSttPlugin extends Plugin {
 
   private async resolveRecorderWorkletModulePath(): Promise<string> {
     return join(await this.resolvePluginDirectoryPath(), PCM_RECORDER_WORKLET_OUTPUT_PATH);
-  }
-
-  private async resolveModelCatalogPath(): Promise<string> {
-    return assertAbsoluteExistingFilePath(
-      join(await this.resolvePluginDirectoryPath(), 'config', 'model-catalog.json'),
-      'Bundled model catalog path',
-    );
   }
 }
 
