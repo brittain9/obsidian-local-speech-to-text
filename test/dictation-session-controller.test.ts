@@ -268,7 +268,7 @@ describe('DictationSessionController', () => {
     expect(controller.isBusy()).toBe(false);
   });
 
-  it('returns to idle after cancel cleanup fails for an errored session', async () => {
+  it('persists error state after cancel cleanup fails until ribbon click acknowledges', async () => {
     const captureStream = new FakeCaptureStream();
     const sidecarConnection = new FakeSidecarConnection();
     sidecarConnection.cancelSession.mockImplementationOnce(async () => {
@@ -292,9 +292,12 @@ describe('DictationSessionController', () => {
 
     await vi.waitFor(() => {
       expect(captureStream.stop).toHaveBeenCalledTimes(1);
-      expect(controller.getState()).toBe('idle');
+      expect(controller.getState()).toBe('error');
       expect(controller.isBusy()).toBe(false);
     });
+
+    controller.handleRibbonClick();
+    expect(controller.getState()).toBe('idle');
   });
 
   it('cancels an errored session only once when duplicate errors arrive', async () => {
@@ -398,6 +401,11 @@ describe('DictationSessionController', () => {
       expect(sidecarConnection.startSession).toHaveBeenCalledTimes(1);
     });
 
+    // First click acknowledges the error (click suppression was cleared during cleanup)
+    controller.handleRibbonClick();
+    expect(controller.getState()).toBe('idle');
+
+    // Second click starts a new session
     controller.handleRibbonClick();
     await vi.waitFor(() => {
       expect(sidecarConnection.startSession).toHaveBeenCalledTimes(2);
@@ -429,7 +437,6 @@ function createController(overrides: {
     notice: overrides.notice ?? (() => {}),
     pressAndHoldGateCommandId: 'obsidian-local-stt:press-and-hold-gate',
     setRibbonState: () => {},
-    setStatusState: () => {},
     sidecarConnection: overrides.sidecarConnection ?? new FakeSidecarConnection(),
   });
 }

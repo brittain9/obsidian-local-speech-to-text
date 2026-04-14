@@ -20,7 +20,6 @@ import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
-import { StatusBarController } from './ui/status-bar';
 
 const SIDECAR_BINARY_BASENAME = 'obsidian-local-stt-sidecar';
 
@@ -33,13 +32,11 @@ export default class LocalSttPlugin extends Plugin {
   private ribbonController: DictationRibbonController | null = null;
   private settings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
   private sidecarConnection: SidecarConnection | null = null;
-  private statusBar: StatusBarController | null = null;
 
   override async onload(): Promise<void> {
     this.settings = resolvePluginSettings(await this.loadData());
 
     this.editorService = new EditorService(this.app);
-    this.statusBar = new StatusBarController(this.addStatusBarItem());
     this.sidecarConnection = new SidecarConnection({
       getRequestTimeoutMs: () => this.settings.sidecarRequestTimeoutMs,
       logger: this.logger,
@@ -58,7 +55,7 @@ export default class LocalSttPlugin extends Plugin {
       sidecarConnection: this.sidecarConnection,
     });
 
-    const ribbonElement = this.addRibbonIcon('mic', 'Local STT: Start Dictation Session', () => {
+    const ribbonElement = this.addRibbonIcon('mic', 'Local STT: Click to start', () => {
       this.requireDictationController().handleRibbonClick();
     });
     this.ribbonController = new DictationRibbonController(ribbonElement);
@@ -74,9 +71,6 @@ export default class LocalSttPlugin extends Plugin {
       pressAndHoldGateCommandId: `${this.manifest.id}:${PRESS_AND_HOLD_GATE_COMMAND_ID}`,
       setRibbonState: (state) => {
         this.ribbonController?.setState(state);
-      },
-      setStatusState: (state, detail) => {
-        this.statusBar?.setState(state, detail);
       },
       sidecarConnection: this.sidecarConnection,
     });
@@ -149,18 +143,13 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     this.ribbonController?.dispose();
-    this.statusBar?.dispose();
   }
 
   private async checkSidecarHealth(options: { showNotice?: boolean } = {}): Promise<void> {
     const sidecarConnection = this.requireSidecarConnection();
 
-    this.statusBar?.setState('starting', 'health check');
-
     try {
       const health = await sidecarConnection.healthCheck(this.settings.sidecarStartupTimeoutMs);
-
-      this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
 
       if (options.showNotice ?? true) {
         new Notice(`Local STT sidecar is ready (${health.sidecarVersion}).`);
@@ -172,11 +161,8 @@ export default class LocalSttPlugin extends Plugin {
   }
 
   private handleError(message: string, error: unknown, showNotice: boolean): void {
-    const detail = error instanceof Error ? error.message : String(error);
-
-    this.statusBar?.setState('error', detail);
-
     if (showNotice) {
+      const detail = error instanceof Error ? error.message : String(error);
       new Notice(`${message}: ${detail}`);
     }
   }
@@ -189,12 +175,9 @@ export default class LocalSttPlugin extends Plugin {
 
     const sidecarConnection = this.requireSidecarConnection();
 
-    this.statusBar?.setState('starting', 'restarting');
-
     try {
       const health = await sidecarConnection.restart(this.settings.sidecarStartupTimeoutMs);
 
-      this.statusBar?.setState('idle', `sidecar v${health.sidecarVersion}`);
       new Notice(`Restarted Local STT sidecar (${health.sidecarVersion}).`);
     } catch (error) {
       this.handleError('Sidecar restart failed', error, true);

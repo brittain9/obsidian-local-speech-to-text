@@ -1,179 +1,188 @@
-# Fix M1 / M2 / M3: Sidecar Correctness Bugs
+# Ribbon Listening Control and State Model
 
 ## Objective
 
-Fix three medium-severity defects identified in the 2026-04-13 code review:
+Make the ribbon icon the single, primary live status surface for dictation state. Remove the status bar text. Each state should be visually distinct and the icon should feel alive during active sessions.
 
-- **M1** — Concurrent `ensureStarted()` can orphan sidecar processes
-- **M2** — Worker thread has no `catch_unwind` around inference
-- **M3** — Frame parser not reset on sidecar exit / restart
-
-Add the remaining review findings (M4–M7, L1–L12) to the backlog.
+This is the first step toward polishing the app's listening behavior before adding pipeline complexity. The goal is that a user understands what the app is doing at a glance from the ribbon icon alone.
 
 ---
 
 ## Current State
 
-### M1 — `SidecarProcess.start()` double-spawn race
+### Ribbon Icon (`src/ui/dictation-ribbon.ts`)
 
-`src/sidecar/sidecar-process.ts:35–75`
+The ribbon icon currently shows two icons: `mic` (idle, error) and `square` (everything else). All active states look identical — a square stop button. No animation. No visual distinction between listening, speech detected, or transcribing. State is stored in `element.dataset.localSttState` (line 20).
 
-`start()` is `async` but the only guard is a synchronous `isRunning()` check at the top. Two concurrent callers both pass the check before `this.child` is assigned (lines 42–49 contain two `await` points: `resolveLaunchSpec()` and `waitForSpawn()`). The second spawn produces an orphan child with no reference and no cleanup path. This is reachable on plugin load: `checkSidecarHealth` (main.ts:121) and `modelInstallManager.init()` (main.ts:125) run concurrently, both call `sendCommandAndWait` → `ensureStarted`.
+Created in `src/main.ts:61` via `addRibbonIcon('mic', ...)`. Pointer events registered on lines 84-97 for press-and-hold support.
 
-### M2 — Worker thread panics are silent
+### Status Bar (`src/ui/status-bar.ts`)
 
-`native/sidecar/src/worker.rs:60, 96–167`
+Displays `"Local STT: {state}"` in the bottom-right. Carries optional detail text (e.g., `"starting (opening session)"`). Referenced in `main.ts` at lines 42, 78-79, 152, 158, 163, 177, 192, 197.
 
-The worker thread is spawned with a bare closure — no `catch_unwind`. If `engine.transcribe()` panics (corrupt model file, OOM, whisper-rs / ort invariant violation), the thread dies. The channel disconnects. `poll_event()` maps `TryRecvError::Disconnected` to `None` via `.ok()`, so the app loop silently stops receiving events. The session hangs in "transcribing" indefinitely.
+### State Flow
 
-The installer thread already follows the correct pattern (`installer.rs:150`): `catch_unwind(AssertUnwindSafe(...))` with a structured `failed_update` event sent on panic.
+`DictationSessionController` owns the canonical state. On state change, it calls two callbacks injected at construction:
 
-The two panic sites are:
-- `engine.transcribe()` inside `WorkerCommand::TranscribeUtterance` — `session_id` is in scope
-- `create_backend()` inside `WorkerCommand::BeginSession` — `session_id` is in `metadata.session_id`
+```
+applyUiState(state, detail?)
+  → this.state = state
+  → setRibbonState(state)        // main.ts:75-77 → ribbonController.setState()
+  → setStatusState(state, detail) // main.ts:78-80 → statusBar.setState()
+```
 
-Note: the outer `thread::spawn` closure needs `catch_unwind` too, but the primary risk is the transcription call. Protect both sites.
+### Type Coupling
 
-### M3 — Frame parser retains stale bytes across sidecar restarts
+`DictationControllerState` is aliased to `PluginRuntimeState` (defined in `status-bar.ts:1-8`). This creates a dependency from the dictation controller to the status bar module.
 
-`src/sidecar/sidecar-connection.ts:77–84` (constructor `onExit` handler)
+### Sidecar Speech Priority
 
-`this.frameParser` (a `FramedMessageParser`) is constructed once at startup and shared across process lifetimes. Its `reset()` method exists (`protocol.ts:338`) and is already called in the `catch` block of `handleStdoutChunk` (line 365). However, it is never called in `onExit`. When the sidecar crashes mid-frame, the next instance's stdout is appended to stale bytes. The first parse fails, the `catch` fires and resets the parser — but the event lost in the reset is the `health_ok` that the restart health check (4 s timeout) is waiting for.
+The sidecar's `derive_session_state` in `app.rs:879-907` already checks `SpeechDetected` before `Transcribing`:
+
+```rust
+if base_state == SessionBaseState::SpeechDetected {
+    return SessionState::SpeechDetected;  // Speech always wins
+}
+if transcription_active {
+    return SessionState::Transcribing;    // Only if no speech
+}
+```
+
+This means speech-during-processing already produces `speech_detected` events on the wire. No client-side composite tracking is needed — the sidecar handles the priority.
 
 ---
 
 ## Constraints
 
-- Zero behaviour changes outside the three target defects.
-- No new external dependencies.
-- Existing tests must continue to pass.
-- Rust: follow the `catch_unwind(AssertUnwindSafe(...))` pattern already established in `installer.rs`. No additional crate imports needed — `std::panic` suffices.
-- TypeScript: the fix for M1 must keep `start()` idempotent and must not change the public interface of `SidecarProcess`.
+- Zero change to the sidecar or protocol. All changes are TypeScript/CSS.
+- Existing tests must pass after adapting to removed `setStatusState`.
+- All icons must be from Lucide (included with Obsidian) — no custom SVGs in this PR.
+- Animations use CSS only (no JS timers for visual state).
+- Respect `prefers-reduced-motion`.
+- Error state persists until user clicks the ribbon to acknowledge.
 
 ---
 
 ## Approach
 
-### M3 (one line — do this first)
+### 1. Move `DictationControllerState` out of `status-bar.ts`
 
-Add `this.frameParser.reset()` to the `onExit` handler in the `SidecarConnection` constructor, before `rejectPendingWaiters`. Resetting before rejecting means any partial parse state is cleared before any new data could arrive from a future restart.
+Define the type inline in `dictation-session-controller.ts`. This breaks the import dependency before we delete the status bar module.
 
-### M1 (deduplicating promise)
+### 2. Update ribbon icon mapping
 
-Add a `private startPromise: Promise<void> | null = null` field to `SidecarProcess`. In `start()`, after the `isRunning()` guard, check if `startPromise` is non-null and return it if so. Otherwise create the promise from the existing start body (extracted to `private doStart()`), store it, and chain a `.finally()` that clears `startPromise` to null. This means concurrent callers share the same spawn operation. On failure, the promise clears and the next caller retries.
+Replace the two-icon system (`mic` / `square`) with state-specific icons:
 
-No changes to `SidecarConnection` or callers — `ensureStarted()` delegates directly to `process.start()`.
+| State | Icon | Animation | Tooltip |
+|-------|------|-----------|---------|
+| `idle` | `mic` | None | "Local STT: Click to start" |
+| `starting` | `loader-circle` | Spin | "Local STT: Starting..." |
+| `listening` | `audio-lines` | Static | "Local STT: Listening" |
+| `speech_detected` | `audio-lines` | Pulse | "Local STT: Hearing speech" |
+| `transcribing` | `loader-circle` | Spin | "Local STT: Transcribing..." |
+| `paused` | `loader-circle` | Spin | "Local STT: Processing..." |
+| `error` | `mic-off` | Shake (once) | "Local STT: Error" |
 
-### M2 (catch_unwind on inference and backend creation)
+### 3. Add CSS animations
 
-Wrap the two panic-susceptible sites inside `worker_main`:
+Target the SVG inside the ribbon element using the existing `data-local-stt-state` attribute. Three keyframe animations:
 
-1. **`WorkerCommand::TranscribeUtterance` arm** — wrap `engine.transcribe(...)` in `catch_unwind(AssertUnwindSafe(...))`. On `Err(payload)`, format the panic message and `event_tx.send(WorkerEvent::SessionError { ... })`. Pattern the message extraction from `installer.rs:155–161`.
+- **Spin** (`local-stt-spin`): 360deg rotation, linear, infinite. For `starting`, `transcribing`, `paused`.
+- **Pulse** (`local-stt-pulse`): Scale 1→1.15→1 with slight opacity shift. For `speech_detected`.
+- **Shake** (`local-stt-shake`): Horizontal wiggle, plays once. For `error`.
 
-2. **`WorkerCommand::BeginSession` arm** — wrap the `create_backend(metadata.engine_id)` call similarly. On panic, emit `WorkerEvent::SessionError` with `metadata.session_id`. After the panic, `continue` the command loop (the worker remains alive with the previous engine).
+Selector pattern: `.side-dock-ribbon-action[data-local-stt-state="X"] > svg`
 
-Do **not** wrap the outer `thread::spawn` closure in `catch_unwind` — the inner guards cover the reachable panic sites. If a future panic occurs outside those sites, a hard crash is acceptable and more visible than a silent hang.
+### 4. Delete status bar
+
+Remove `StatusBarController`, its import, instantiation, callbacks, and disposal. Remove `setStatusState` from the controller dependency interface.
+
+### 5. Handle error-persists-until-click
+
+Currently, `abortSessionAfterError` resets to idle after the cancel completes (line 419). With error persisting until click, the ribbon click handler needs to check: if state is `error` and no session is active, reset to `idle` instead of starting a new session.
 
 ---
 
 ## Execution Steps
 
-- [ ] **M3** — Add `this.frameParser.reset()` to the `onExit` handler in `SidecarConnection` constructor (`sidecar-connection.ts:79`), before the `rejectPendingWaiters` call. Confirm `FramedMessageParser.reset()` sets `this.buffered = new Uint8Array(0)` (verified: `protocol.ts:338–340`).
-
-- [ ] **M1** — In `SidecarProcess` (`sidecar-process.ts`):
-  - Add field: `private startPromise: Promise<void> | null = null`
-  - Extract the body of `start()` (lines 40–74) into `private async doStart(): Promise<void>`
-  - Rewrite `start()`:
+- [ ] **Step 1: Move `DictationControllerState` type**
+  - In `src/dictation/dictation-session-controller.ts`: Replace `import type { PluginRuntimeState } from '../ui/status-bar'` and `export type DictationControllerState = PluginRuntimeState` with a direct type definition:
     ```typescript
-    async start(): Promise<void> {
-      if (this.isRunning()) return;
-      if (this.startPromise !== null) return this.startPromise;
-      this.startPromise = this.doStart().finally(() => {
-        this.startPromise = null;
-      });
-      return this.startPromise;
-    }
+    export type DictationControllerState =
+      | 'idle' | 'starting' | 'listening' | 'speech_detected'
+      | 'transcribing' | 'paused' | 'error';
     ```
-  - No changes elsewhere. `SidecarConnection.ensureStarted()` already delegates to `process.start()`.
+  - Verify: `npm run typecheck` passes. No behavior change.
 
-- [ ] **M2** — In `native/sidecar/src/worker.rs`:
-  - Add `use std::panic::{self, AssertUnwindSafe};` to imports
-  - In the `WorkerCommand::TranscribeUtterance` arm, wrap only the `engine.transcribe(...)` call:
-    ```rust
-    let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        engine.transcribe(&TranscriptionRequest { ... })
-    }));
-    match result {
-        Ok(Ok(transcript)) => { /* existing TranscriptReady send */ }
-        Ok(Err(error)) => { /* existing SessionError send */ }
-        Err(payload) => {
-            let message = /* same extraction as installer.rs:155–161 */;
-            let _ = event_tx.send(WorkerEvent::SessionError {
-                code: "worker_panic".to_string(),
-                details: None,
-                message,
-                session_id,
-            });
-        }
-    }
-    ```
-  - In the `WorkerCommand::BeginSession` arm, wrap `create_backend(metadata.engine_id)`:
-    ```rust
-    let backend_result = panic::catch_unwind(AssertUnwindSafe(|| {
-        create_backend(metadata.engine_id)
-    }));
-    match backend_result {
-        Ok(backend) => {
-            engine = backend;
-            active_engine_id = metadata.engine_id;
-            active_session = Some(metadata);
-        }
-        Err(payload) => {
-            let message = /* same extraction */;
-            let _ = event_tx.send(WorkerEvent::SessionError {
-                code: "worker_panic".to_string(),
-                details: None,
-                message,
-                session_id: metadata.session_id,
-            });
-            // Leave engine and active_session unchanged; worker loop continues.
-        }
-    }
-    ```
+- [ ] **Step 2: Rewrite `dictation-ribbon.ts` with new icon mapping**
+  - Write `src/ui/dictation-ribbon.ts` fresh. Same class name, same interface (`setState`, `getElement`, `dispose`), same import path. No consumer changes needed.
+  - Icon type union: `'mic' | 'mic-off' | 'audio-lines' | 'loader-circle'`.
+  - `buildRibbonState()` switch cases per the mapping table above.
+  - Verify: `npm run typecheck` passes. Ribbon shows new icons for each state.
 
-- [ ] **Backlog** — Append M4, M5, M6, M7, and all L-findings to `docs/backlog.md` under a new `## Code Review 2026-04-13` section.
+- [ ] **Step 3: Add CSS animations to `styles.css`**
+  - Add keyframes: `local-stt-spin`, `local-stt-pulse`, `local-stt-shake`.
+  - Add state selectors targeting `.side-dock-ribbon-action[data-local-stt-state="X"] > svg`.
+  - Add `@media (prefers-reduced-motion: reduce)` to disable all animations.
+  - Verify: Start dictation → see static audio-lines. Speak → see pulse. Stop speaking → see spinner.
 
-- [ ] **Verification** — Run full test suite and Rust build. See Verification section.
+- [ ] **Step 4: Remove status bar**
+  - Delete `src/ui/status-bar.ts`.
+  - In `src/main.ts`:
+    - Remove `import { StatusBarController } from './ui/status-bar'` (line 23).
+    - Remove `private statusBar: StatusBarController | null = null` (line 36).
+    - Remove `this.statusBar = new StatusBarController(this.addStatusBarItem())` (line 42).
+    - Remove `setStatusState` callback from controller dependencies (lines 78-80).
+    - Remove `this.statusBar?.setState(...)` calls in `checkSidecarHealth` (lines 158, 163), `handleError` (line 177), `restartSidecar` (lines 192, 197).
+    - Remove `this.statusBar?.dispose()` in `onunload` (line 152).
+  - In `src/dictation/dictation-session-controller.ts`:
+    - Remove `setStatusState` from `DictationSessionControllerDependencies` interface (line 28).
+    - Remove `this.dependencies.setStatusState(state, detail)` from `applyUiState` (line 237).
+  - In `test/dictation-session-controller.test.ts`:
+    - Remove `setStatusState: () => {}` from `createController` (line 432).
+  - Note: `checkSidecarHealth` (lines 158, 163) and `restartSidecar` (lines 192, 197) used the status bar as a transient progress indicator (`"starting (health check)"`, `"starting (restarting)"`). The `Notice` popups in those methods already cover the result. The transient progress indicator is intentionally dropped — these operations take 1-2 seconds and the status bar text was barely visible in practice.
+  - Verify: `npm run typecheck` passes. `npm test` passes. No status bar text visible.
+
+- [ ] **Step 5: Error persists until click**
+  - In `dictation-session-controller.ts`, modify `abortSessionAfterError` (lines 395-423): Remove the auto-reset to idle in the `finally` block (lines 419-421). The error state should remain.
+  - In `toggleDictation` (called by `handleRibbonClick`): Add a check at the top — if `this.state === 'error'` and `this.sessionId === null`, call `this.applyUiState('idle')` and return. This lets clicking the ribbon acknowledge the error.
+  - **Interaction with `handleSessionStopped`:** Error state persists until click only when no `session_stopped` event follows the error. If the sidecar confirms session teardown via `session_stopped`, `handleSessionStopped` unconditionally resets to `idle` (line 297) — this is correct because the sidecar has resolved the error condition. Error persistence applies to the case where the cancel itself fails and no `session_stopped` arrives, which is exactly when the user needs to acknowledge.
+  - **Test update required** in `test/dictation-session-controller.test.ts`:
+    - Line 271 (`returns to idle after cancel cleanup fails for an errored session`): This test mocks `cancelSession` to throw, so no `session_stopped` event fires. Currently expects `'idle'` at line 295 because the `finally` block auto-resets. After removing the auto-reset, the test must expect `'error'`, then call `controller.handleRibbonClick()` and expect `'idle'`.
+    - Line 300 (`cancels an errored session only once`): No change needed. The `resolveCancel()` emits `session_stopped` → `handleSessionStopped` resets to `idle`. This test still passes as-is.
+  - Verify: `npm test` passes. Trigger an error → ribbon shows `mic-off` with shake → click ribbon → returns to `idle` `mic`.
 
 ---
 
 ## Verification
 
 ```bash
-# TypeScript type-check and tests
 npm run typecheck
 npm test
-
-# Rust build (both feature configs)
-cargo build --manifest-path native/sidecar/Cargo.toml
-cargo build --manifest-path native/sidecar/Cargo.toml --features engine-cohere
-cargo test --manifest-path native/sidecar/Cargo.toml
+npm run build
 ```
 
-**What to confirm by inspection:**
+**Manual testing matrix (per listening mode):**
 
-- M3: `frameParser.reset()` is called in `onExit` before `rejectPendingWaiters`. No functional change for clean shutdowns — reset on an already-empty buffer is a no-op.
-- M1: Two concurrent calls to `SidecarProcess.start()` return the same `Promise<void>`. The promise clears after resolution or rejection. A third call after resolution re-enters `doStart()` only if `isRunning()` is false.
-- M2: `worker_main` compiles with `catch_unwind`. Worker thread does not crash on a transcription panic — it emits a `SessionError` and continues processing commands. A panic in `BeginSession` leaves `active_session` unchanged and emits a `SessionError`.
+| Mode | Flow | Expected visuals |
+|------|------|------------------|
+| Always-on | Click start → speak → stop speaking → speak again → click stop | mic → audio-lines(static) → audio-lines(pulse) → loader(spin) → audio-lines(pulse) → mic |
+| Press-and-hold | Hold key → speak → release | mic → audio-lines(static) → audio-lines(pulse) → loader(spin) → mic |
+| One-sentence | Click start → speak → auto-stop | mic → audio-lines(static) → audio-lines(pulse) → loader(spin) → mic |
+| Error | Start with no model selected | mic → mic-off(shake) → stays until click → mic |
+
+**Accessibility:** Enable `prefers-reduced-motion` in browser devtools → all animations should be disabled.
+
+**Theme check:** Verify icon visibility in both light and dark Obsidian themes.
 
 ---
 
 ## Risks and Open Questions
 
-**M1 — rejection semantics:** If `doStart()` rejects, all concurrent callers receive the same rejection. This is correct — none of them should proceed if the spawn failed. The `startPromise = null` in `finally` means the next caller (e.g. a retry) will attempt a fresh spawn.
+**CSS selector specificity**: `.side-dock-ribbon-action` is Obsidian's internal class for ribbon icons. It's stable across versions but not an official API. If Obsidian changes this class name, our animations break silently (icons still work, just no animation). Low risk — the class has been stable for years.
 
-**M2 — `AssertUnwindSafe`:** `Sender<WorkerEvent>` and `Box<dyn TranscriptionBackend>` are not `UnwindSafe`. `AssertUnwindSafe` is appropriate here (same assertion the installer thread makes) because we don't rely on any invariant of these values after a panic — the match arm either resets state or continues with unchanged state.
+**`loader-circle` icon availability**: This icon requires Obsidian ≥1.4 (Lucide). Our `minAppVersion` is `1.8.7` — safe.
 
-**M2 — `create_backend` panic in practice:** The `panic!()` in `create_backend` for `CohereOnnx` without the `engine-cohere` feature is a programming error, not a runtime condition. It should never fire in a correctly packaged binary. Catching it turns a hard crash into a `SessionError`, which is more graceful but also less visible. The error code `"worker_panic"` in the event will surface in the status bar — acceptable.
+**Error persistence edge case**: If an error occurs during `abortSessionAfterError` and the cancel also fails, we currently clean up locally and show error then reset to idle. With the new behavior, we show error and stop. If a subsequent auto-cleanup runs (from `handleSessionStopped`), it will reset to idle, which is correct — the session actually ended.
 
-**M3 — ordering:** Resetting before rejecting pending waiters is intentional. There is no async code between the reset and the reject, so no new stdout can arrive in between.
+**No status bar replacement**: Removing the status bar means the detail text (e.g., `"starting (opening session)"`, `"error (connection timeout)"`) is lost. The tooltip partially replaces this, but detailed error messages will only be visible via the Notice popup. This is acceptable — the ribbon is a glanceable indicator, not a log.

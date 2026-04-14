@@ -6,14 +6,20 @@ import type { PluginSettings } from '../settings/plugin-settings';
 import type { PluginLogger } from '../shared/plugin-logger';
 import type { SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
-import type { PluginRuntimeState } from '../ui/status-bar';
 import {
   matchesAnyHotkey,
   resolveCommandHotkeys,
   shouldIgnoreHeldKeyEvent,
 } from './shortcut-matcher';
 
-export type DictationControllerState = PluginRuntimeState;
+export type DictationControllerState =
+  | 'idle'
+  | 'starting'
+  | 'listening'
+  | 'speech_detected'
+  | 'transcribing'
+  | 'paused'
+  | 'error';
 
 interface DictationSessionControllerDependencies {
   app: App;
@@ -25,7 +31,6 @@ interface DictationSessionControllerDependencies {
   pressAndHoldGateCommandId: string;
   pressAndHoldGateDefaultHotkeys?: Hotkey[];
   setRibbonState: (state: DictationControllerState) => void;
-  setStatusState: (state: PluginRuntimeState, detail?: string) => void;
   sidecarConnection: Pick<
     SidecarConnection,
     'cancelSession' | 'sendAudioFrame' | 'setGate' | 'startSession' | 'stopSession' | 'subscribe'
@@ -171,7 +176,7 @@ export class DictationSessionController {
     this.dependencies.editorService.assertActiveEditorAvailable();
     this.sessionId = sessionId;
     this.gateOpen = false;
-    this.applyUiState('starting', 'opening session');
+    this.applyUiState('starting');
     this.dependencies.logger?.debug('session', `starting dictation session ${sessionId}`);
 
     try {
@@ -223,6 +228,11 @@ export class DictationSessionController {
   }
 
   private async toggleDictation(): Promise<void> {
+    if (this.state === 'error' && this.sessionId === null) {
+      this.applyUiState('idle');
+      return;
+    }
+
     if (this.sessionId !== null) {
       await this.stopDictation();
       return;
@@ -231,10 +241,9 @@ export class DictationSessionController {
     await this.startDictation();
   }
 
-  private applyUiState(state: DictationControllerState, detail?: string): void {
+  private applyUiState(state: DictationControllerState): void {
     this.state = state;
     this.dependencies.setRibbonState(state);
-    this.dependencies.setStatusState(state, detail);
   }
 
   private async cleanupLocalSession(): Promise<void> {
@@ -274,7 +283,7 @@ export class DictationSessionController {
     }
 
     const detail = event.details ? `${event.message} (${event.details})` : event.message;
-    this.applyUiState('error', detail);
+    this.applyUiState('error');
     this.dependencies.notice(`Local STT: ${detail}`);
 
     if (event.sessionId !== undefined && event.sessionId === this.sessionId) {
@@ -360,7 +369,7 @@ export class DictationSessionController {
     const detail = error instanceof Error ? error.message : String(error);
 
     this.dependencies.logger?.error('session', message, error);
-    this.applyUiState('error', detail);
+    this.applyUiState('error');
     this.dependencies.notice(`${message}: ${detail}`);
   }
 
@@ -414,10 +423,6 @@ export class DictationSessionController {
     } finally {
       if (this.abortingSessionId === sessionId) {
         this.abortingSessionId = null;
-      }
-
-      if (this.sessionId === null && this.abortingSessionId === null && this.state === 'error') {
-        this.applyUiState('idle');
       }
     }
   }
