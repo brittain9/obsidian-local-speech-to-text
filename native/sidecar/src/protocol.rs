@@ -7,10 +7,10 @@ use crate::catalog::{CatalogModel, ModelCollection, ModelEngine};
 use crate::model_store::InstalledModelRecord;
 
 pub const PROTOCOL_VERSION: &str = "v3";
-pub const JSON_FRAME_KIND: u8 = 0x01;
-pub const AUDIO_FRAME_KIND: u8 = 0x02;
-pub const FRAME_HEADER_LENGTH: usize = 5;
-pub const MAX_FRAME_PAYLOAD: usize = 16 * 1024 * 1024;
+const JSON_FRAME_KIND: u8 = 0x01;
+const AUDIO_FRAME_KIND: u8 = 0x02;
+const FRAME_HEADER_LENGTH: usize = 5;
+const MAX_FRAME_PAYLOAD: usize = 16 * 1024 * 1024;
 
 pub const PCM_SAMPLE_RATE_HZ: usize = 16_000;
 pub const PCM_CHANNEL_COUNT: usize = 1;
@@ -50,16 +50,6 @@ pub enum SelectedModel {
         #[serde(rename = "filePath")]
         file_path: String,
     },
-}
-
-impl SelectedModel {
-    pub fn engine_id(&self) -> EngineId {
-        match self {
-            Self::CatalogModel { engine_id, .. } | Self::ExternalFile { engine_id, .. } => {
-                *engine_id
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,7 +134,7 @@ pub struct RuntimeCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommandEnvelope {
+struct CommandEnvelope {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
     #[serde(flatten)]
@@ -218,7 +208,7 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventEnvelope {
+struct EventEnvelope {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
     #[serde(flatten)]
@@ -411,7 +401,7 @@ pub fn write_event_frame<W: Write>(writer: &mut W, event: &Event) -> Result<()> 
     write_frame(writer, JSON_FRAME_KIND, &payload)
 }
 
-pub fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> Result<()> {
+fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> Result<()> {
     let payload_length = u32::try_from(payload.len())
         .map_err(|_| anyhow!("payload exceeds maximum frame length"))?;
     let mut header = [0_u8; FRAME_HEADER_LENGTH];

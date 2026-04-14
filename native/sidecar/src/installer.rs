@@ -226,6 +226,10 @@ impl InstallCancellation {
         let notified = self.notify.notified();
         tokio::pin!(notified);
 
+        // Register as a waiter BEFORE the re-check so that a notify_waiters()
+        // call racing between the re-check and the .await is not lost.
+        notified.as_mut().enable();
+
         if self.is_cancelled() {
             return;
         }
@@ -1005,7 +1009,10 @@ mod tests {
             .join()
             .expect("cancellation helper thread should join");
 
-        assert!(matches!(error, InstallError::Cancelled));
+        assert!(
+            matches!(error, InstallError::Cancelled),
+            "expected Cancelled, got: {error:?}"
+        );
         assert!(
             started_at.elapsed() < Duration::from_secs(1),
             "cancel should unblock the stalled stream promptly"

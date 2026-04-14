@@ -847,11 +847,7 @@ function readModelArtifacts(value: unknown, fieldName: string): CatalogModelReco
     const record = readRecord(artifact, `${fieldName}[${index}]`);
     const role = readString(record.role, `${fieldName}[${index}].role`);
 
-    if (
-      role !== 'punctuation_model' &&
-      role !== 'supporting_file' &&
-      role !== 'transcription_model'
-    ) {
+    if (role !== 'supporting_file' && role !== 'transcription_model') {
       throw new Error(`Unsupported model artifact role: ${role}`);
     }
 

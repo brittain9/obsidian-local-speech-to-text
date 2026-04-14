@@ -18,7 +18,7 @@ export interface ExternalFileModelSelection {
 
 export type SelectedModel = CatalogModelSelection | ExternalFileModelSelection;
 
-export type ModelArtifactRole = 'punctuation_model' | 'supporting_file' | 'transcription_model';
+type ModelArtifactRole = 'supporting_file' | 'transcription_model';
 
 export interface ModelArtifactRecord {
   artifactId: string;
@@ -82,7 +82,7 @@ export interface ModelStoreRecord {
   usingDefaultPath: boolean;
 }
 
-export type ModelProbeStatus = 'invalid' | 'missing' | 'ready';
+type ModelProbeStatus = 'invalid' | 'missing' | 'ready';
 
 export interface ModelProbeResultRecord {
   available: boolean;

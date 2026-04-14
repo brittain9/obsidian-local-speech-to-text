@@ -49,7 +49,7 @@ export function matchesAnyHotkey(event: KeyboardEvent, hotkeys: Hotkey[]): boole
   return hotkeys.some((hotkey) => matchesHotkey(event, hotkey));
 }
 
-export function matchesHotkey(event: KeyboardEvent, hotkey: Hotkey): boolean {
+function matchesHotkey(event: KeyboardEvent, hotkey: Hotkey): boolean {
   const normalizedEventKey = normalizeKey(event.key);
   const normalizedHotkeyKey = normalizeKey(hotkey.key);
 

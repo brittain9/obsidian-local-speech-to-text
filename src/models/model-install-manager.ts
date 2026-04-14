@@ -29,7 +29,7 @@ export interface ActiveInstallInfo {
   phase: InstallPhase;
 }
 
-export type LoadStatus = 'error' | 'loading' | 'ready';
+type LoadStatus = 'error' | 'loading' | 'ready';
 
 export interface ModelManagerState {
   activeInstall: ActiveInstallInfo | null;
@@ -42,7 +42,7 @@ export interface ModelManagerState {
   supportedEngineIds: EngineId[];
 }
 
-export interface ModelInstallManagerDependencies {
+interface ModelInstallManagerDependencies {
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
   saveSettings: (settings: PluginSettings) => Promise<void>;
@@ -61,7 +61,7 @@ export interface ModelInstallManagerDependencies {
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers (exported for tests and downstream consumers)
+// Shared helpers
 // ---------------------------------------------------------------------------
 
 export function isTerminalInstallState(state: ModelInstallUpdateRecord['state']): boolean {
@@ -397,6 +397,11 @@ export class ModelInstallManager {
     }
   }
 
+  async clearSelection(): Promise<void> {
+    this.deps.logger?.debug('model', 'cleared selected model');
+    await this.updateSettings({ selectedModel: null });
+  }
+
   async validateAndSelectExternalFile(filePath: string): Promise<ModelProbeResultEvent> {
     const selection: SelectedModel = {
       engineId: 'whisper_cpp',
@@ -404,11 +409,6 @@ export class ModelInstallManager {
       kind: 'external_file',
     };
     return this.select(selection);
-  }
-
-  async clearSelection(): Promise<void> {
-    this.deps.logger?.debug('model', 'cleared selected model');
-    await this.updateSettings({ selectedModel: null });
   }
 
   // -----------------------------------------------------------------------

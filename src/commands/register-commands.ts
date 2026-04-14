@@ -1,8 +1,8 @@
 import type { Plugin } from 'obsidian';
 
-export const START_DICTATION_COMMAND_ID = 'start-dictation-session';
-export const STOP_DICTATION_COMMAND_ID = 'stop-dictation-session';
-export const CANCEL_DICTATION_COMMAND_ID = 'cancel-dictation-session';
+const START_DICTATION_COMMAND_ID = 'start-dictation-session';
+const STOP_DICTATION_COMMAND_ID = 'stop-dictation-session';
+const CANCEL_DICTATION_COMMAND_ID = 'cancel-dictation-session';
 export const PRESS_AND_HOLD_GATE_COMMAND_ID = 'press-and-hold-gate';
 
 interface CommandDependencies {

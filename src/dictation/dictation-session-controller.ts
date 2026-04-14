@@ -222,7 +222,7 @@ export class DictationSessionController {
     }
   }
 
-  async toggleDictation(): Promise<void> {
+  private async toggleDictation(): Promise<void> {
     if (this.sessionId !== null) {
       await this.stopDictation();
       return;

@@ -9,7 +9,7 @@ export interface InstallProgressState
   isCancelling: boolean;
 }
 
-export interface InstallProgressViewModel {
+interface InstallProgressViewModel {
   bytesLabel: string | null;
   isCancelling: boolean;
   primaryLine: string;

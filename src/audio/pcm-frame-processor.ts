@@ -1,6 +1,6 @@
 import { PCM_FRAME_DURATION_MS, PCM_SAMPLE_RATE_HZ } from '../shared/pcm-format';
 
-export interface PcmFrameProcessorOptions {
+interface PcmFrameProcessorOptions {
   samplesPerFrame?: number;
   sourceSampleRate: number;
   targetSampleRate?: number;

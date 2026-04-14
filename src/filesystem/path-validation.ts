@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 
-export type ExistingPathKind = 'directory' | 'file' | 'missing' | 'other';
+type ExistingPathKind = 'directory' | 'file' | 'missing' | 'other';
 
 export async function getExistingPathKind(path: string): Promise<ExistingPathKind> {
   try {

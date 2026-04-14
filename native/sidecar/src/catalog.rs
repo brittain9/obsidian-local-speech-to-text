@@ -82,7 +82,6 @@ pub struct ModelArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactRole {
-    PunctuationModel,
     SupportingFile,
     TranscriptionModel,
 }

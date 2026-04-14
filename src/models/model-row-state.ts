@@ -13,7 +13,7 @@ import {
 // Public types
 // ---------------------------------------------------------------------------
 
-export type ModelRowAction = 'install' | 'use' | 'selected' | 'cancel' | 'remove' | 'details';
+type ModelRowAction = 'install' | 'use' | 'selected' | 'cancel' | 'remove' | 'details';
 
 export interface ModelRowState {
   model: CatalogModelRecord;
