@@ -1,5 +1,5 @@
-import { Platform } from 'obsidian';
 import type { App, Hotkey, Modifier } from 'obsidian';
+import { Platform } from 'obsidian';
 
 interface InternalAppShape extends App {
   commands?: {
@@ -104,4 +104,3 @@ function normalizeKey(key: string): string {
 
   return key.toLowerCase();
 }
-

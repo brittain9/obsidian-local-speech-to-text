@@ -2,7 +2,7 @@
 
 Status: Shelved — reference material for future distribution work.
 
-Tracked follow-up: see `Sidecar distribution strategy for community-plugin releases (CPU/CUDA packaging, binary selection, updates, CUDA licensing)` in [tasks/backlog.md](../tasks/backlog.md).
+Tracked follow-up: see `Sidecar distribution strategy for community-plugin releases (CPU/CUDA packaging, binary selection, updates, CUDA licensing)` in [backlog.md](backlog.md).
 
 ## CI runner migration
 

@@ -1,77 +1,48 @@
-# Obsidian Local STT
+# Obsidian Speech-to-Text
 
-Local, private speech-to-text for Obsidian. Transcription runs entirely on your machine — no accounts, no cloud, no telemetry.
+Run cutting-edge local transcription directly in Obsidian. Choose between Cohere Transcribe, a Hugging Face Open ASR Leaderboard-topping model, and Whisper, a mature and well-supported standard for offline speech recognition.
 
 ## Features
-
-- Streaming dictation directly into your notes
-- Three listening modes: always-on, press-and-hold, and one-sentence
-- Managed model catalog with one-click downloads (SHA-256 verified)
-- Two local transcription engines: Whisper (mature, smaller models) and Cohere Transcribe (newer, higher quality, larger models, still experimental)
-- Transcript placement at the cursor, end of note, or as a new paragraph
-- Optional GPU acceleration where supported
-- Works entirely offline after initial model download
-
-## Design Principles
-
-- **Desktop-first** — built for Obsidian on desktop operating systems
-- **Privacy-first** — transcription stays on your machine; no accounts, no cloud, no telemetry
+- **Cross-platform design** — built for desktop Obsidian on macOS, Linux, and Windows, with Windows support planned for a later release.
+- **Cohere Transcribe support** — use a [Hugging Face Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)-topping speech recognition model directly inside Obsidian.
+- **Mature Whisper support** — choose a well-known, well-supported offline transcription model with a wide range of size and performance options.
+- **One-click model management** — browse, download, and remove models from inside the plugin.
+- **Hardware acceleration** — supports Metal on macOS and CUDA on Linux, with Windows hardware acceleration planned alongside Windows support.
+- **Obsidian-native experience** — integrates cleanly with the app through native settings, commands, and interface elements.
 - **English-first** — optimized for English; other languages supported where engines allow
+- **Privacy-first** — transcription happens locally, with no cloud processing, no telemetry, and no account required for model downloads.
 - **Offline after setup** — only model downloads require a network connection
+
+## Platform Support
+
+| Platform | Support Status | Hardware Acceleration |
+|---|---|---|
+| macOS | Supported | Metal support for Whisper. |
+| Linux Native | Supported | CUDA support for Whisper and Cohere. |
+| Linux Flatpak | Supported | CUDA supported - [Flatpak GPU setup](docs/linux-flatpak-gpu-setup.md). |
+| Windows | Planned | Not supported yet. |
 
 ## Quick Start
 
 1. Clone this repo into `<vault>/.obsidian/plugins/obsidian-local-stt` and enable it in Obsidian's community plugins settings.
 2. Open `Settings -> Local STT`.
-3. Click `Manage models` and install a model — start with `Whisper Small English Q5_1` for a quick first test. The Cohere tab includes higher-accuracy experimental models.
+3. Click `Manage models` and install a model.
 4. Open a note, click the microphone ribbon button or run `Local STT: Start Dictation Session`.
 5. Talk. Text appears in your note.
 
-## How It Works
-
-An Obsidian plugin (TypeScript) handles the UI, settings, mic capture, and editor insertion. A native Rust sidecar handles audio processing, VAD, and Whisper and Cohere inference. They communicate over framed stdio IPC — the sidecar runs as a managed child process, no server or port binding.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `Local STT: Start Dictation Session` | Begin transcribing |
-| `Local STT: Stop Dictation Session` | Stop and finalize |
-| `Local STT: Cancel Dictation Session` | Discard the current session |
-| `Local STT: Check Sidecar Health` | Verify the sidecar is running |
-| `Local STT: Restart Sidecar` | Restart the sidecar process |
-| `Local STT: Press-And-Hold Gate` | Hotkey-only — hold to record, release to transcribe |
-
-## GPU Acceleration
-
-The default build is CPU-only and works everywhere. GPU acceleration is opt-in via a separate sidecar build.
-
-| Platform | GPU | Notes |
-|---|---|---|
-| Windows | Planned | Runtime support is planned, but Windows is not yet tested or supported in this repo. |
-| macOS | Metal | Whisper can use Metal. Cohere runs CPU-only on macOS and performs well there. |
-| Linux native | CUDA | Whisper and Cohere can use CUDA when built with the CUDA sidecar. |
-| Linux Flatpak | CUDA | Whisper and Cohere can use CUDA with manual overrides — see [Flatpak GPU setup](docs/linux-flatpak-gpu-setup.md) |
-
-Engine/backend matrix: Whisper supports Metal on macOS and CUDA on Linux. Cohere supports CUDA on Linux only; on macOS it stays CPU-only, and there is no planned Metal/CoreML path.
-
-Build the CUDA sidecar on Linux:
-
-```sh
-npm run build:sidecar:cuda           # debug
-```
-
-Then point `Settings -> Local STT -> Advanced -> Sidecar path override` to the CUDA binary. On Linux Flatpak, also set `CUDA library path` so the plugin scopes `LD_LIBRARY_PATH` to the sidecar child process only. `GPU acceleration` defaults to `Use when available`, which uses a working GPU backend when one is available for the selected engine.
-
 ## Development
 
-### Toolchain
+### Prerequisites
 
 - Node.js `24.14.1`, npm `11.12.1`
 - TypeScript `6.0.2`
 - Rust `1.94.1`
 
-Versions are pinned in `package.json` (`engines`, `packageManager`) and `rust-toolchain.toml`.
+Versions are pinned in `package.json` (`engines`, `packageManager`) and `rust-toolchain.toml`. If you use [mise](https://mise.jdx.dev), `mise install` will set up the correct toolchain automatically.
+
+### Project Structure
+
+The plugin has two runtime boundaries: a TypeScript Obsidian plugin in `src/` and a Rust native sidecar in `native/sidecar/`. See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture details.
 
 ### Setup
 
@@ -83,14 +54,34 @@ npm run dev
 
 Symlink or clone this repo into `<vault>/.obsidian/plugins/obsidian-local-stt`, enable the plugin, and reload Obsidian after rebuilds.
 
-### Build and Check
+### Scripts
 
+**Build:**
 ```sh
-npm run build          # build sidecar + bundle plugin
-npm run dev            # watch mode for plugin
-npm run test           # TypeScript unit tests
-npm run check          # full quality gates (TS + Rust)
+npm run build            # build sidecar + bundle plugin
+npm run build:frontend   # bundle plugin only (skip sidecar rebuild)
+npm run build:sidecar    # build sidecar only
+npm run dev              # watch mode for plugin
 ```
+
+**Test and check:**
+```sh
+npm run test             # TypeScript unit tests
+npm run typecheck        # type checking
+npm run lint             # Biome linting
+npm run check            # full quality gate (TS + Rust)
+```
+
+`npm run check` is the gate that must pass before a PR.
+
+**Format:**
+```sh
+npm run format           # auto-format with Biome
+```
+
+### Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branching conventions, PR workflow, and architecture overview.
 
 ## License
 

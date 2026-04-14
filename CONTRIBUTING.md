@@ -59,8 +59,7 @@ Incomplete work that touches `main` must be behind a gate — a settings flag, a
 ## Documentation
 
 - **User-facing behavior changes** — update [README.md](README.md).
-- **Architecture changes** — update [AGENTS.md](AGENTS.md).
-- **Durable decisions** — record in [tasks/decisions.md](tasks/decisions.md) in the same PR that changes behavior.
+- **Durable decisions** — record in [docs/decisions.md](docs/decisions.md) in the same PR that changes behavior.
 
 ## Architecture Overview
 
@@ -69,4 +68,4 @@ The plugin has two runtime boundaries:
 - **TypeScript plugin** (`src/`) — Obsidian UX, settings, editor insertion, audio capture
 - **Rust sidecar** (`native/sidecar/`) — inference, audio processing, model loading
 
-See [AGENTS.md](AGENTS.md) for detailed architecture rules and [docs/pipeline-architecture.md](docs/pipeline-architecture.md) for the transcript pipeline design.
+See [docs/pipeline-architecture.md](docs/pipeline-architecture.md) for the transcript pipeline design.
