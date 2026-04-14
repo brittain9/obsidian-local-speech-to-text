@@ -2,7 +2,7 @@ import { setIcon } from 'obsidian';
 
 import type { DictationControllerState } from '../dictation/dictation-session-controller';
 
-type RibbonIcon = 'audio-lines' | 'loader-circle' | 'mic' | 'mic-off';
+type RibbonIcon = 'audio-lines' | 'loader' | 'mic' | 'mic-off';
 
 export class DictationRibbonController {
   constructor(private readonly element: HTMLElement) {
@@ -37,7 +37,7 @@ function buildRibbonState(state: DictationControllerState): {
       return { icon: 'mic', label: 'Local STT: Click to start' };
 
     case 'starting':
-      return { icon: 'loader-circle', label: 'Local STT: Starting...' };
+      return { icon: 'loader', label: 'Local STT: Starting...' };
 
     case 'listening':
       return { icon: 'audio-lines', label: 'Local STT: Listening' };
@@ -46,10 +46,10 @@ function buildRibbonState(state: DictationControllerState): {
       return { icon: 'audio-lines', label: 'Local STT: Hearing speech' };
 
     case 'transcribing':
-      return { icon: 'loader-circle', label: 'Local STT: Transcribing...' };
+      return { icon: 'loader', label: 'Local STT: Transcribing...' };
 
     case 'paused':
-      return { icon: 'loader-circle', label: 'Local STT: Processing...' };
+      return { icon: 'loader', label: 'Local STT: Processing...' };
 
     case 'error':
       return { icon: 'mic-off', label: 'Local STT: Error' };

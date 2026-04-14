@@ -283,9 +283,11 @@
 
 /* --- Ribbon icon animations --------------------------------------- */
 
-@keyframes local-stt-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+/* Opacity chase: one spoke bright at a time, cycling clockwise */
+@keyframes local-stt-chase {
+  0%, 100% { opacity: 0.2; }
+  12.5% { opacity: 1; }
+  25% { opacity: 0.2; }
 }
 
 /* Three depth variants: edges stay tall, center moves most */
@@ -312,10 +314,48 @@
   80% { transform: translateX(1px); }
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg,
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg,
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg {
-  animation: local-stt-spin 1s linear infinite;
+/* 8 spokes, each offset by 0.15s = 1.2s full cycle */
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path,
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path,
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path {
+  animation: local-stt-chase 1.2s ease-in-out infinite;
+  opacity: 0.2;
+}
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(1),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(1),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(1) { animation-delay: 0s; }
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(2),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(2),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(2) { animation-delay: 0.15s; }
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(3),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(3),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(3) { animation-delay: 0.3s; }
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(4),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(4),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(4) { animation-delay: 0.45s; }
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(5),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(5),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(5) { animation-delay: 0.6s; }
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(6),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(6),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(6) { animation-delay: 0.75s; }
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(7),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(7),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(7) { animation-delay: 0.9s; }
+
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(8),
+.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(8),
+.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(8) { animation-delay: 1.05s; }
+
+.side-dock-ribbon-action[data-local-stt-state="listening"] > svg {
+  opacity: 0.7;
 }
 
 /* Unique durations per bar create pseudo-random phasing (pattern won't repeat for ~30s).
@@ -339,5 +379,6 @@
   .side-dock-ribbon-action[data-local-stt-state] > svg,
   .side-dock-ribbon-action[data-local-stt-state] > svg > path {
     animation: none;
+    opacity: 1;
   }
 }
