@@ -1,3 +1,4 @@
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -93,6 +94,16 @@ fn create_backend(engine_id: EngineId) -> Box<dyn TranscriptionBackend> {
     }
 }
 
+fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>, prefix: &str) -> String {
+    match payload.downcast_ref::<&str>() {
+        Some(s) => format!("{prefix}: {s}"),
+        None => match payload.downcast_ref::<String>() {
+            Some(s) => format!("{prefix}: {s}"),
+            None => format!("{prefix}."),
+        },
+    }
+}
+
 fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent>) {
     let mut engine: Box<dyn TranscriptionBackend> = Box::new(WhisperBackend::default());
     let mut active_engine_id = EngineId::WhisperCpp;
@@ -102,10 +113,32 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
         match command {
             WorkerCommand::BeginSession(metadata) => {
                 if metadata.engine_id != active_engine_id {
-                    engine = create_backend(metadata.engine_id);
-                    active_engine_id = metadata.engine_id;
+                    let backend_result = panic::catch_unwind(AssertUnwindSafe(|| {
+                        create_backend(metadata.engine_id)
+                    }));
+
+                    match backend_result {
+                        Ok(backend) => {
+                            engine = backend;
+                            active_engine_id = metadata.engine_id;
+                            active_session = Some(metadata);
+                        }
+                        Err(payload) => {
+                            let message = extract_panic_message(
+                                &payload,
+                                "Worker thread panicked creating backend",
+                            );
+                            let _ = event_tx.send(WorkerEvent::SessionError {
+                                code: "worker_panic".to_string(),
+                                details: None,
+                                message,
+                                session_id: metadata.session_id,
+                            });
+                        }
+                    }
+                } else {
+                    active_session = Some(metadata);
                 }
-                active_session = Some(metadata);
             }
             WorkerCommand::EndSession { session_id } => {
                 if active_session
@@ -135,16 +168,18 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
                     .map(|&sample| sample as f32 / 32768.0)
                     .collect();
 
-                let started_at = Instant::now();
-                let result = engine.transcribe(&TranscriptionRequest {
+                let request = TranscriptionRequest {
                     audio_samples,
                     gpu_config: metadata.gpu_config,
                     language: metadata.language.clone(),
                     model_file_path: metadata.model_file_path.clone(),
-                });
+                };
+
+                let started_at = Instant::now();
+                let result = panic::catch_unwind(AssertUnwindSafe(|| engine.transcribe(&request)));
 
                 match result {
-                    Ok(transcript) => {
+                    Ok(Ok(transcript)) => {
                         let _ = event_tx.send(WorkerEvent::TranscriptReady {
                             processing_duration_ms: started_at.elapsed().as_millis() as u64,
                             session_id,
@@ -152,11 +187,23 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
                             utterance_duration_ms: duration_ms,
                         });
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         let _ = event_tx.send(WorkerEvent::SessionError {
                             code: error.code.to_string(),
                             details: error.details,
                             message: error.message.to_string(),
+                            session_id,
+                        });
+                    }
+                    Err(payload) => {
+                        let message = extract_panic_message(
+                            &payload,
+                            "Worker thread panicked during transcription",
+                        );
+                        let _ = event_tx.send(WorkerEvent::SessionError {
+                            code: "worker_panic".to_string(),
+                            details: None,
+                            message,
                             session_id,
                         });
                     }

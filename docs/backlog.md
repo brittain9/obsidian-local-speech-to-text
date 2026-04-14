@@ -17,6 +17,45 @@
 - [ ] Tiny model for language detection. Option to use a tiny model for auto language detection instead of the selected model — faster but less accurate. Reference pattern from upstream app.
 - [ ] Performance options. Expose engine tuning via profile presets (Best performance / Best quality / Custom). Custom exposes threads, beam width, audio context size, flash attention.
 
+## Code Review 2026-04-13
+
+Medium findings deferred from the M1/M2/M3 fix batch:
+
+- [ ] **M4** `dictation-session-controller.ts:173–208` — Race during dictation start: `this.sessionId` is set before `captureStream.start()`, so a stale sidecar error from a prior session can pass the session filter and call `abortSessionAfterError` on a not-yet-started session. Fix: defer setting `this.sessionId` until after sidecar confirms session start, or add an explicit "starting" state.
+- [ ] **M5** `src/sidecar/protocol.ts:333–383` — `FramedMessageParser.pushChunk` has no upper bound on buffered data. A corrupt frame header can cause unbounded memory growth. Add a `MAX_BUFFERED` check matching the Rust side's `MAX_FRAME_PAYLOAD` (16 MiB). The `concatBytes` loop is also quadratic on accumulation — flatten on first write instead.
+- [ ] **M6** `native/sidecar/src/cohere.rs:70,451` — Two `unwrap()` calls in production code on the worker thread. Convert to `expect()` with invariant documentation. Also `transcription.rs:182`, `app.rs:132`. Becomes safe to defer once M2 (`catch_unwind`) is in.
+- [ ] **M7** `native/sidecar/src/worker.rs:148,156` — `let _ = event_tx.send(...)` silently discards send errors. Log a warning on failure, or detect channel disconnect and exit the worker loop.
+
+Low findings (cleanup, no correctness impact):
+
+- [ ] **L1** Remove `isInsertionMode` duplicate in `settings-tab.ts:49` — import from `plugin-settings.ts:110` instead.
+- [ ] **L2** Replace inline `error instanceof Error ? error.message : String(error)` in `main.ts:174` and `dictation-session-controller.ts:359` with `formatErrorMessage` from `shared/format-utils.ts:17`.
+- [ ] **L3** Remove dead export `DEFAULT_PCM_SAMPLES_PER_FRAME` from `src/audio/pcm-frame-processor.ts:139`.
+- [ ] **L4** Extract `matchesGateHotkey(event)` private method to deduplicate keydown/keyup handler blocks in `dictation-session-controller.ts:88–93` and `113–118`.
+- [ ] **L5** Extract a helper on `AppState` for the repeated `resolve_model_store_info(model_store_path_override.as_deref())` + error-map pattern in `native/sidecar/src/app.rs` (appears 6+ times).
+- [ ] **L6** `native/sidecar/src/session.rs:170` — `push_pre_roll_frame(frame.clone())` clones ~32 KB/s during active speech. Check `speech_started` before cloning, or restructure.
+- [ ] **L7** `native/sidecar/src/session.rs:70` — `Vec<Vec<i16>>` utterance storage allocates one heap object per 20 ms frame. Flatten to `Vec<i16>`; `maybe_finalize_utterance` already flattens for output.
+- [ ] **L8** `settings-tab.ts:456–458` — bare `catch {}` swallows sidecar errors with no logging. Add a debug-level log.
+- [ ] **L9** `model-install-manager.ts:493–498` — `fetchSupportedEngineIds` silently falls back to `['whisper_cpp']` on error. Log a warning on the fallback path.
+- [ ] **L10** `native/sidecar/src/app.rs:238` — `RemoveModel` error detail is discarded at the protocol boundary (`removed: false` with no message). Include the error string in the event or emit a warning event.
+- [ ] **L11** `native/sidecar/src/protocol.rs:409` — every outbound event is cloned to wrap in `EventEnvelope`. Take `Event` by value to avoid the clone.
+- [ ] **L12** Structural: PCM constants (`PCM_SAMPLE_RATE_HZ`, `PCM_BYTES_PER_FRAME`, etc.) are independently defined in `src/shared/pcm-format.ts` and `native/sidecar/src/protocol.rs`. A mismatch would produce silent audio corruption undetected by the version string. Options: add PCM parameters to the health handshake, generate one side from the other, or document as a protocol invariant.
+
+Test coverage gaps (from the review's Top 10 list — add when touching the relevant module):
+
+- [ ] `shortcut-matcher`: `matchesHotkey` with `Mod` on macOS (`Platform.isMacOS = true`) — platform branch not exercised by mock
+- [ ] `shortcut-matcher`: `resolveCommandHotkeys` fallback chain — four-level fallback controls whether press-and-hold works
+- [ ] `shortcut-matcher`: `shouldIgnoreHeldKeyEvent` in editable contexts
+- [ ] `sidecar-connection`: `sendCommandAndWait` timeout behaviour
+- [ ] `sidecar-connection`: `rejectPendingWaiters` on process exit
+- [ ] `protocol (TS)`: `FramedMessageParser.pushChunk` with a header-level split across two chunks
+- [ ] `pcm-frame-processor`: state continuity across multiple `push()` calls
+- [ ] `dictation-session-controller`: transcript fallback to segment text (real Whisper edge case)
+- [ ] `editor-service`: `assertActiveEditorAvailable` throws when no editor
+- [ ] `worker.rs (Rust)`: session matching and engine switching
+
+Fixture deduplication: `sampleCatalog()`, `sampleCatalogModel()`, `sampleInstalledModel()`, `sampleInstallUpdate()` are defined independently in `model-install-manager.test.ts:87–186` and `model-row-state.test.ts:20–119`. Extract to a shared fixture module when touching either test file.
+
 ## Blocked
 
 - [ ] Finalize native sidecar distribution and update strategy for community-plugin releases. This includes CPU/CUDA dual-binary packaging where needed, runtime binary selection, checksum/update flow, and CUDA redistribution/licensing constraints.

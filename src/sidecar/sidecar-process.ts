@@ -20,6 +20,7 @@ export type ResolveSidecarLaunchSpec = () => Promise<SidecarLaunchSpec>;
 
 export class SidecarProcess {
   private child: ChildProcessWithoutNullStreams | null = null;
+  private startPromise: Promise<void> | null = null;
   private stderrReader: ReadLineInterface | null = null;
   private stdinDead = false;
 
@@ -37,6 +38,18 @@ export class SidecarProcess {
       return;
     }
 
+    if (this.startPromise !== null) {
+      return this.startPromise;
+    }
+
+    this.startPromise = this.doStart().finally(() => {
+      this.startPromise = null;
+    });
+
+    return this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     assertDesktopRuntime();
 
     const launchSpec = await this.resolveLaunchSpec();

@@ -76,6 +76,7 @@ export class SidecarConnection {
   constructor(private readonly options: SidecarConnectionOptions) {
     const handlers = {
       onExit: (code: number | null, signal: NodeJS.Signals | null) => {
+        this.frameParser.reset();
         this.rejectPendingWaiters(
           new Error(
             `Sidecar exited unexpectedly (code: ${String(code)}, signal: ${String(signal)}).`,
