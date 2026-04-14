@@ -1,9 +1,9 @@
 {
-  "id": "obsidian-local-stt",
-  "name": "Local STT",
+  "id": "local-transcript",
+  "name": "Local Transcript",
   "version": "2026.4.14.0",
   "minAppVersion": "1.8.7",
   "description": "Desktop-only local speech-to-text for Obsidian with a Rust sidecar.",
-  "author": "Alex",
+  "author": "Alexander Brittain",
   "isDesktopOnly": true
 }

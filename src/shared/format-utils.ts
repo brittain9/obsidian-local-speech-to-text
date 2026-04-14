@@ -14,6 +14,6 @@ export function formatBytes(sizeBytes: number): string {
   return `${(sizeBytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
 }
 
-export function formatErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+export function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

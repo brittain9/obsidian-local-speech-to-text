@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(grep -n \"whisper_full_result\\\\|whisper_full_get_segment\\\\|pub struct.*segment\" native/sidecar/target/debug/build/whisper-rs-sys-*/out/bindings.rs)",
+      "Bash(ls -t native/sidecar/target/debug/build/whisper-rs-sys-*/out/bindings.rs)",
+      "Bash(xargs sed:*)",
+      "Bash(/home/Alex/Projects/obsidian-local-speech-to-text/native/sidecar/target-cuda/debug/obsidian-local-stt-sidecar --help)",
+      "Bash(npx tsc *)",
+      "Bash(npx vitest *)"
     ]
   }
 }

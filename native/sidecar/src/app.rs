@@ -38,6 +38,7 @@ pub struct AppState {
 }
 
 struct ActiveSession {
+    draining: bool,
     last_reported_state: Option<SessionState>,
     queued_utterances: usize,
     session: ListeningSession,
@@ -97,6 +98,10 @@ impl AppState {
 
     pub fn handle_audio_frame(&mut self, frame_bytes: Vec<u8>) -> Vec<Event> {
         let mut events = Vec::new();
+        if self.active_session.as_ref().is_some_and(|s| s.draining) {
+            return events;
+        }
+
         if self.active_session.is_none() {
             events.push(Event::Warning {
                 code: "audio_without_active_session".to_string(),
@@ -367,6 +372,7 @@ impl AppState {
                         let session = ListeningSession::new(config);
 
                         self.active_session = Some(ActiveSession {
+                            draining: false,
                             last_reported_state: None,
                             queued_utterances: 0,
                             session,
@@ -516,6 +522,10 @@ impl AppState {
     }
 
     fn finish_active_session(&mut self, reason: SessionStopReason) -> Option<Vec<Event>> {
+        if reason == SessionStopReason::UserStop {
+            return self.graceful_stop();
+        }
+
         let active_session = self.active_session.take()?;
         let session_id = active_session.session.config().session_id.clone();
         let _ = self.transcription_worker.send(WorkerCommand::EndSession {
@@ -523,6 +533,62 @@ impl AppState {
         });
 
         Some(vec![Event::SessionStopped { reason, session_id }])
+    }
+
+    fn graceful_stop(&mut self) -> Option<Vec<Event>> {
+        let active_session = self.active_session.as_mut()?;
+        let mut events = Vec::new();
+
+        // Flush the VAD buffer — finalize any accumulated audio as a last utterance.
+        let final_utterance = active_session.session.maybe_finalize_utterance();
+        active_session.session.clear_activity();
+
+        if let Some(utterance) = final_utterance {
+            self.enqueue_utterance(utterance, &mut events);
+        }
+
+        // If no transcription work is pending, stop immediately.
+        let active_session = self.active_session.as_mut()?;
+        if !active_session.transcription_active {
+            let session_id = active_session.session.config().session_id.clone();
+            self.active_session = None;
+            let _ = self.transcription_worker.send(WorkerCommand::EndSession {
+                session_id: session_id.clone(),
+            });
+            events.push(Event::SessionStopped {
+                reason: SessionStopReason::UserStop,
+                session_id,
+            });
+            return Some(events);
+        }
+
+        // Transcription is in flight — mark as draining. SessionStopped will be
+        // emitted when the last TranscriptReady comes back from the worker.
+        active_session.draining = true;
+        self.emit_state_if_changed(&mut events);
+        Some(events)
+    }
+
+    /// If the session is draining and no transcription work remains, tear it
+    /// down and emit `SessionStopped`. Returns `true` when the drain completed.
+    fn maybe_complete_drain(&mut self, session_id: &str, events: &mut Vec<Event>) -> bool {
+        let Some(active_session) = self.active_session.as_ref() else {
+            return false;
+        };
+
+        if !active_session.draining || active_session.transcription_active {
+            return false;
+        }
+
+        self.active_session = None;
+        let _ = self.transcription_worker.send(WorkerCommand::EndSession {
+            session_id: session_id.to_owned(),
+        });
+        events.push(Event::SessionStopped {
+            reason: SessionStopReason::UserStop,
+            session_id: session_id.to_owned(),
+        });
+        true
     }
 
     fn handle_session_action(&mut self, action: SessionAction, events: &mut Vec<Event>) {
@@ -546,21 +612,29 @@ impl AppState {
                 message,
                 session_id,
             } => {
-                let Some(active_session) = self.active_session.as_mut() else {
-                    return;
-                };
+                {
+                    let Some(active_session) = self.active_session.as_mut() else {
+                        return;
+                    };
 
-                if active_session.session.config().session_id != session_id {
-                    return;
+                    if active_session.session.config().session_id != session_id {
+                        return;
+                    }
+
+                    advance_transcription_queue(active_session);
                 }
 
-                advance_transcription_queue(active_session);
                 events.push(Event::Error {
                     code,
                     details,
                     message,
-                    session_id: Some(session_id),
+                    session_id: Some(session_id.clone()),
                 });
+
+                if self.maybe_complete_drain(&session_id, events) {
+                    return;
+                }
+
                 self.emit_state_if_changed(events);
             }
             WorkerEvent::TranscriptReady {
@@ -569,15 +643,18 @@ impl AppState {
                 transcript,
                 utterance_duration_ms,
             } => {
-                let Some(active_session) = self.active_session.as_mut() else {
-                    return;
-                };
+                {
+                    let Some(active_session) = self.active_session.as_mut() else {
+                        return;
+                    };
 
-                if active_session.session.config().session_id != session_id {
-                    return;
+                    if active_session.session.config().session_id != session_id {
+                        return;
+                    }
+
+                    advance_transcription_queue(active_session);
                 }
 
-                advance_transcription_queue(active_session);
                 events.push(Event::TranscriptReady {
                     processing_duration_ms,
                     segments: transcript.segments,
@@ -586,8 +663,14 @@ impl AppState {
                     utterance_duration_ms,
                 });
 
-                let should_stop =
-                    active_session.session.config().mode == ListeningMode::OneSentence;
+                if self.maybe_complete_drain(&session_id, events) {
+                    return;
+                }
+
+                let should_stop = self
+                    .active_session
+                    .as_ref()
+                    .is_some_and(|s| s.session.config().mode == ListeningMode::OneSentence);
 
                 if should_stop {
                     if let Some(stop_events) =

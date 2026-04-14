@@ -224,7 +224,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             .collect()
     }
 
-    fn maybe_finalize_utterance(&mut self) -> Option<FinalizedUtterance> {
+    pub fn maybe_finalize_utterance(&mut self) -> Option<FinalizedUtterance> {
         if !self.speech_started || self.utterance_frames.is_empty() {
             return None;
         }

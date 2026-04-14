@@ -52,9 +52,7 @@ export class ExternalModelFileModal extends Modal {
             new Notice('Local STT: External model file validated and selected.');
             this.close();
           } catch (error) {
-            new Notice(
-              `Local STT: ${formatErrorMessage(error, 'Failed to validate the external model file.')}`,
-            );
+            new Notice(`Local STT: ${formatErrorMessage(error)}`);
           }
         });
     });
