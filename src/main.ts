@@ -15,6 +15,7 @@ import {
   resolvePluginSettings,
 } from './settings/plugin-settings';
 import { LocalSttSettingTab } from './settings/settings-tab';
+import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
@@ -162,8 +163,7 @@ export default class LocalSttPlugin extends Plugin {
 
   private handleError(message: string, error: unknown, showNotice: boolean): void {
     if (showNotice) {
-      const detail = error instanceof Error ? error.message : String(error);
-      new Notice(`${message}: ${detail}`);
+      new Notice(`${message}: ${formatErrorMessage(error)}`);
     }
   }
 

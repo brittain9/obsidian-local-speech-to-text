@@ -345,7 +345,7 @@ export class ManageModelsModal extends Modal {
       new Notice(`Local STT: ${successMessage}`);
       this.deps.onChanged();
     } catch (error) {
-      new Notice(`Local STT: ${formatErrorMessage(error, 'The model action failed.')}`);
+      new Notice(`Local STT: ${formatErrorMessage(error)}`);
     } finally {
       this.actionInProgress = false;
       this.renderModelList();

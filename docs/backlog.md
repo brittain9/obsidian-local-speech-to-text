@@ -29,7 +29,7 @@ Medium findings deferred from the M1/M2/M3 fix batch:
 Low findings (cleanup, no correctness impact):
 
 - [ ] **L1** Remove `isInsertionMode` duplicate in `settings-tab.ts:49` — import from `plugin-settings.ts:110` instead.
-- [ ] **L2** Replace inline `error instanceof Error ? error.message : String(error)` in `main.ts:174` and `dictation-session-controller.ts:359` with `formatErrorMessage` from `shared/format-utils.ts:17`.
+- [x] **L2** Replace inline `error instanceof Error ? error.message : String(error)` in `main.ts:174` and `dictation-session-controller.ts:359` with `formatErrorMessage` from `shared/format-utils.ts:17`.
 - [ ] **L3** Remove dead export `DEFAULT_PCM_SAMPLES_PER_FRAME` from `src/audio/pcm-frame-processor.ts:139`.
 - [ ] **L4** Extract `matchesGateHotkey(event)` private method to deduplicate keydown/keyup handler blocks in `dictation-session-controller.ts:88–93` and `113–118`.
 - [ ] **L5** Extract a helper on `AppState` for the repeated `resolve_model_store_info(model_store_path_override.as_deref())` + error-map pattern in `native/sidecar/src/app.rs` (appears 6+ times).
@@ -55,6 +55,11 @@ Test coverage gaps (from the review's Top 10 list — add when touching the rele
 - [ ] `worker.rs (Rust)`: session matching and engine switching
 
 Fixture deduplication: `sampleCatalog()`, `sampleCatalogModel()`, `sampleInstalledModel()`, `sampleInstallUpdate()` are defined independently in `model-install-manager.test.ts:87–186` and `model-row-state.test.ts:20–119`. Extract to a shared fixture module when touching either test file.
+
+Graceful stop (added 2026-04-14):
+
+- [ ] **L13** Drain timeout: if the transcription worker hangs or panics during a graceful stop, the session stays in `draining` indefinitely. The plugin-side `isBusy()` returns true, blocking new sessions. Add a watchdog timeout or detect worker channel disconnect during drain.
+- [ ] **L14** Rust test for drain path: `stop_session_emits_stopped_event` only covers immediate stop (no in-flight transcription). Add a test that starts a session, ingests enough audio to enqueue a transcription, then calls `StopSession` and verifies the drain-then-stop sequence.
 
 ## Blocked
 

@@ -3,6 +3,7 @@ import type { App, Hotkey } from 'obsidian';
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
 import type { EditorService } from '../editor/editor-service';
 import type { PluginSettings } from '../settings/plugin-settings';
+import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import type { SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
@@ -219,6 +220,12 @@ export class DictationSessionController {
       return;
     }
 
+    // Stop capture immediately so the mic turns off, but keep sessionId alive
+    // so transcript_ready events are still accepted while the sidecar drains.
+    if (this.dependencies.captureStream.isCapturing()) {
+      await this.dependencies.captureStream.stop();
+    }
+
     try {
       await this.dependencies.sidecarConnection.stopSession(this.sessionId);
     } catch (error) {
@@ -366,11 +373,9 @@ export class DictationSessionController {
   }
 
   private handleError(message: string, error: unknown): void {
-    const detail = error instanceof Error ? error.message : String(error);
-
     this.dependencies.logger?.error('session', message, error);
     this.applyUiState('error');
-    this.dependencies.notice(`${message}: ${detail}`);
+    this.dependencies.notice(`${message}: ${formatErrorMessage(error)}`);
   }
 
   private isPressAndHoldMode(): boolean {
