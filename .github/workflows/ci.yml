@@ -104,7 +104,7 @@ jobs:
             dist/sidecar-linux-${{ steps.arch.outputs.value }}
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sidecar-linux-${{ steps.arch.outputs.value }}
           path: dist/sidecar-linux-${{ steps.arch.outputs.value }}
@@ -151,7 +151,7 @@ jobs:
         run: codesign --force --sign - dist/sidecar-macos-${{ steps.arch.outputs.value }}
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sidecar-macos-${{ steps.arch.outputs.value }}
           path: dist/sidecar-macos-${{ steps.arch.outputs.value }}
