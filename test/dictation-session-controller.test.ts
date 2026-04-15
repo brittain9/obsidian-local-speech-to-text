@@ -34,13 +34,11 @@ class FakeCaptureStream {
 class FakeSidecarConnection {
   public cancelSession = vi.fn(async (sessionId: string) => {
     this.emit({
-      protocolVersion: 'v3',
       reason: 'user_cancel',
       sessionId,
       type: 'session_stopped',
     });
     return {
-      protocolVersion: 'v3',
       reason: 'user_cancel',
       sessionId,
       type: 'session_stopped',
@@ -50,39 +48,32 @@ class FakeSidecarConnection {
   public lastSessionId: string | null = null;
   public sendAudioFrame = vi.fn(() => {});
   public setGate = vi.fn(async () => {});
-  public startSession = vi.fn(
-    async (payload: Omit<StartSessionCommand, 'protocolVersion' | 'type'>) => {
-      this.lastSessionId = payload.sessionId;
-      this.emit({
-        mode: payload.mode,
-        protocolVersion: 'v3',
-        sessionId: payload.sessionId,
-        type: 'session_started',
-      });
-      this.emit({
-        protocolVersion: 'v3',
-        sessionId: payload.sessionId,
-        state: payload.mode === 'press_and_hold' ? 'idle' : 'listening',
-        type: 'session_state_changed',
-      });
+  public startSession = vi.fn(async (payload: Omit<StartSessionCommand, 'type'>) => {
+    this.lastSessionId = payload.sessionId;
+    this.emit({
+      mode: payload.mode,
+      sessionId: payload.sessionId,
+      type: 'session_started',
+    });
+    this.emit({
+      sessionId: payload.sessionId,
+      state: payload.mode === 'press_and_hold' ? 'idle' : 'listening',
+      type: 'session_state_changed',
+    });
 
-      return {
-        mode: payload.mode,
-        protocolVersion: 'v3',
-        sessionId: payload.sessionId,
-        type: 'session_started',
-      } as const;
-    },
-  );
+    return {
+      mode: payload.mode,
+      sessionId: payload.sessionId,
+      type: 'session_started',
+    } as const;
+  });
   public stopSession = vi.fn(async (sessionId: string) => {
     this.emit({
-      protocolVersion: 'v3',
       reason: 'user_stop',
       sessionId,
       type: 'session_stopped',
     });
     return {
-      protocolVersion: 'v3',
       reason: 'user_stop',
       sessionId,
       type: 'session_stopped',
@@ -203,7 +194,6 @@ describe('DictationSessionController', () => {
 
     sidecarConnection.emit({
       processingDurationMs: 75,
-      protocolVersion: 'v3',
       segments: [],
       sessionId: sidecarConnection.lastSessionId ?? 'session-1',
       text: 'hello obsidian',
@@ -232,7 +222,6 @@ describe('DictationSessionController', () => {
 
     sidecarConnection.emit({
       processingDurationMs: 75,
-      protocolVersion: 'v3',
       segments: [],
       sessionId: sidecarConnection.lastSessionId ?? 'session-1',
       text: '   ',
@@ -285,7 +274,6 @@ describe('DictationSessionController', () => {
     sidecarConnection.emit({
       code: 'session_failed',
       message: 'The engine crashed.',
-      protocolVersion: 'v3',
       sessionId: sidecarConnection.lastSessionId ?? 'session-1',
       type: 'error',
     });
@@ -310,13 +298,11 @@ describe('DictationSessionController', () => {
         await new Promise((resolve) => {
           resolveCancel = () => {
             sidecarConnection.emit({
-              protocolVersion: 'v3',
               reason: 'user_cancel',
               sessionId,
               type: 'session_stopped',
             });
             resolve({
-              protocolVersion: 'v3',
               reason: 'user_cancel',
               sessionId,
               type: 'session_stopped',
@@ -335,14 +321,13 @@ describe('DictationSessionController', () => {
     sidecarConnection.emit({
       code: 'session_failed',
       message: 'The engine crashed.',
-      protocolVersion: 'v3',
+
       sessionId,
       type: 'error',
     });
     sidecarConnection.emit({
       code: 'session_failed',
       message: 'The engine crashed again.',
-      protocolVersion: 'v3',
       sessionId,
       type: 'error',
     });

@@ -211,7 +211,7 @@ export class SidecarConnection {
   }
 
   async startSession(
-    payload: Omit<StartSessionCommand, 'protocolVersion' | 'type'>,
+    payload: Omit<StartSessionCommand, 'type'>,
     timeoutMs = this.options.getRequestTimeoutMs(),
   ): Promise<SessionStartedEvent> {
     return this.sendCommandAndWait(

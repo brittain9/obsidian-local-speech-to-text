@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use crate::catalog::{CatalogModel, ModelCollection, ModelEngine};
 use crate::model_store::InstalledModelRecord;
 
-pub const PROTOCOL_VERSION: &str = "v3";
 const JSON_FRAME_KIND: u8 = 0x01;
 const AUDIO_FRAME_KIND: u8 = 0x02;
 const FRAME_HEADER_LENGTH: usize = 5;
@@ -135,8 +134,6 @@ pub struct RuntimeCapability {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct CommandEnvelope {
-    #[serde(rename = "protocolVersion")]
-    pub protocol_version: String,
     #[serde(flatten)]
     pub command: Command,
 }
@@ -209,8 +206,6 @@ pub enum Command {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct EventEnvelope {
-    #[serde(rename = "protocolVersion")]
-    pub protocol_version: String,
     #[serde(flatten)]
     pub event: Event,
 }
@@ -348,22 +343,13 @@ impl CommandEnvelope {
         let envelope: Self =
             serde_json::from_str(json_text).context("failed to deserialize command envelope")?;
 
-        ensure!(
-            envelope.protocol_version == PROTOCOL_VERSION,
-            "unsupported protocol version {}",
-            envelope.protocol_version
-        );
-
         Ok(envelope.command)
     }
 }
 
 impl EventEnvelope {
     pub fn new(event: Event) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            event,
-        }
+        Self { event }
     }
 }
 
@@ -482,14 +468,13 @@ mod tests {
     use super::{
         AUDIO_FRAME_KIND, AccelerationPreference, Command, EngineId, Event, EventEnvelope,
         FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, MAX_FRAME_PAYLOAD,
-        PCM_BYTES_PER_FRAME, PROTOCOL_VERSION, RuntimeCapability, SelectedModel, compiled_backends,
-        compiled_engines, read_frame, write_event_frame, write_frame,
+        PCM_BYTES_PER_FRAME, RuntimeCapability, SelectedModel, compiled_backends, compiled_engines,
+        read_frame, write_event_frame, write_frame,
     };
 
     #[test]
     fn command_frame_round_trip_preserves_start_session_shape() {
         let payload = serde_json::to_vec(&serde_json::json!({
-            "protocolVersion": PROTOCOL_VERSION,
             "type": "start_session",
             "sessionId": "session-1",
             "mode": "always_on",
@@ -529,7 +514,6 @@ mod tests {
     #[test]
     fn start_session_with_acceleration_preference_auto() {
         let payload = serde_json::to_vec(&serde_json::json!({
-            "protocolVersion": PROTOCOL_VERSION,
             "type": "start_session",
             "sessionId": "session-3",
             "mode": "always_on",
@@ -570,7 +554,6 @@ mod tests {
     #[test]
     fn get_system_info_round_trip() {
         let payload = serde_json::to_vec(&serde_json::json!({
-            "protocolVersion": PROTOCOL_VERSION,
             "type": "get_system_info"
         }))
         .expect("payload should serialize");
