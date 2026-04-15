@@ -44,12 +44,13 @@ describe('resolvePluginSettings', () => {
     });
   });
 
-  it.each(['insert_at_cursor', 'append_on_new_line', 'append_as_new_paragraph'] as const)(
-    'accepts the supported insertion mode %s',
-    (insertionMode) => {
-      expect(resolvePluginSettings({ insertionMode }).insertionMode).toBe(insertionMode);
-    },
-  );
+  it.each([
+    'insert_at_cursor',
+    'append_on_new_line',
+    'append_as_new_paragraph',
+  ] as const)('accepts the supported insertion mode %s', (insertionMode) => {
+    expect(resolvePluginSettings({ insertionMode }).insertionMode).toBe(insertionMode);
+  });
 
   it('falls back when persisted values are invalid', () => {
     expect(
