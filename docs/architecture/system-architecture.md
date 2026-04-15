@@ -123,7 +123,6 @@ sequenceDiagram
 - **Node.js child_process.spawn** with `stdio: 'pipe'` -- the sidecar is a subprocess of Obsidian
 - **Custom binary framing** (5-byte header: 1 byte kind + 4 byte LE length + payload) -- no HTTP, no WebSocket, no IPC library
 - **FramedMessageParser** (TS) and **read_frame** (Rust) handle stream reassembly across chunk boundaries
-- Protocol version `v3` is checked on every JSON envelope; mismatches are hard errors
 
 **Frame direction rules:**
 - `stdin` (TS → Rust): Both audio frames (`0x02`) and JSON command frames (`0x01`)

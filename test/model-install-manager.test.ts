@@ -199,7 +199,6 @@ function emitInstallUpdate(
 ) {
   harness.emit({
     ...sampleInstallUpdate(overrides),
-    protocolVersion: 'v3',
     type: 'model_install_update',
   });
 }

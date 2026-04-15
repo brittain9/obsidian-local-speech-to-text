@@ -18,8 +18,6 @@ import {
 import { PCM_BYTES_PER_FRAME } from '../shared/pcm-format';
 import { isRecord } from '../shared/type-guards';
 
-export const SIDECAR_PROTOCOL_VERSION = 'v3' as const;
-
 export const JSON_FRAME_KIND = 0x01;
 export const AUDIO_FRAME_KIND = 0x02;
 export const FRAME_HEADER_LENGTH = 5;
@@ -48,7 +46,6 @@ export interface TranscriptSegment {
 }
 
 interface EnvelopeBase<TType extends string> {
-  protocolVersion: typeof SIDECAR_PROTOCOL_VERSION;
   type: TType;
 }
 
@@ -223,7 +220,7 @@ export function createGetSystemInfoCommand(): GetSystemInfoCommand {
 }
 
 export function createStartSessionCommand(
-  payload: Omit<StartSessionCommand, 'protocolVersion' | 'type'>,
+  payload: Omit<StartSessionCommand, 'type'>,
 ): StartSessionCommand {
   return {
     ...createEnvelope('start_session'),
@@ -252,7 +249,7 @@ export function createListInstalledModelsCommand(
 }
 
 export function createProbeModelSelectionCommand(
-  payload: Omit<ProbeModelSelectionCommand, 'protocolVersion' | 'type'>,
+  payload: Omit<ProbeModelSelectionCommand, 'type'>,
 ): ProbeModelSelectionCommand {
   return {
     ...createEnvelope('probe_model_selection'),
@@ -261,7 +258,7 @@ export function createProbeModelSelectionCommand(
 }
 
 export function createRemoveModelCommand(
-  payload: Omit<RemoveModelCommand, 'protocolVersion' | 'type'>,
+  payload: Omit<RemoveModelCommand, 'type'>,
 ): RemoveModelCommand {
   return {
     ...createEnvelope('remove_model'),
@@ -270,7 +267,7 @@ export function createRemoveModelCommand(
 }
 
 export function createInstallModelCommand(
-  payload: Omit<InstallModelCommand, 'protocolVersion' | 'type'>,
+  payload: Omit<InstallModelCommand, 'type'>,
 ): InstallModelCommand {
   return {
     ...createEnvelope('install_model'),
@@ -390,13 +387,11 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
     throw new Error('Sidecar event must be a JSON object.');
   }
 
-  const protocolVersion = readProtocolVersion(parsedValue.protocolVersion);
   const type = readString(parsedValue.type, 'event.type');
 
   switch (type) {
     case 'health_ok':
       return {
-        protocolVersion,
         sidecarVersion: readString(parsedValue.sidecarVersion, 'event.sidecarVersion'),
         status: readReadyStatus(parsedValue.status),
         type,
@@ -406,7 +401,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
       return {
         overridePath: readNullableString(parsedValue.overridePath, 'event.overridePath'),
         path: readString(parsedValue.path, 'event.path'),
-        protocolVersion,
         type,
         usingDefaultPath: readBoolean(parsedValue.usingDefaultPath, 'event.usingDefaultPath'),
       };
@@ -417,14 +411,12 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         collections: readModelCollections(parsedValue.collections),
         engines: readModelEngines(parsedValue.engines),
         models: readCatalogModels(parsedValue.models),
-        protocolVersion,
         type,
       };
 
     case 'installed_models':
       return {
         models: readInstalledModels(parsedValue.models),
-        protocolVersion,
         type,
       };
 
@@ -437,7 +429,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         installed: readBoolean(parsedValue.installed, 'event.installed'),
         message: readString(parsedValue.message, 'event.message'),
         modelId: readNullableString(parsedValue.modelId, 'event.modelId'),
-        protocolVersion,
         resolvedPath: readNullableString(parsedValue.resolvedPath, 'event.resolvedPath'),
         selection: readSelectedModel(parsedValue.selection, 'event.selection'),
         sizeBytes: readNullableNumber(parsedValue.sizeBytes, 'event.sizeBytes'),
@@ -449,7 +440,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
       return {
         engineId: readEngineId(parsedValue.engineId, 'event.engineId'),
         modelId: readString(parsedValue.modelId, 'event.modelId'),
-        protocolVersion,
         removed: readBoolean(parsedValue.removed, 'event.removed'),
         type,
       };
@@ -462,7 +452,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         installId: readString(parsedValue.installId, 'event.installId'),
         message: readNullableString(parsedValue.message, 'event.message'),
         modelId: readString(parsedValue.modelId, 'event.modelId'),
-        protocolVersion,
         state: readModelInstallState(parsedValue.state, 'event.state'),
         totalBytes: readNullableNumber(parsedValue.totalBytes, 'event.totalBytes'),
         type,
@@ -472,7 +461,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
       return {
         compiledBackends: readStringArray(parsedValue.compiledBackends, 'event.compiledBackends'),
         compiledEngines: readStringArray(parsedValue.compiledEngines, 'event.compiledEngines'),
-        protocolVersion,
         runtimeCapabilities: readRuntimeCapabilities(parsedValue.runtimeCapabilities),
         systemInfo: readString(parsedValue.systemInfo, 'event.systemInfo'),
         type,
@@ -481,14 +469,12 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
     case 'session_started':
       return {
         mode: readListeningMode(parsedValue.mode, 'event.mode'),
-        protocolVersion,
         sessionId: readString(parsedValue.sessionId, 'event.sessionId'),
         type,
       };
 
     case 'session_state_changed':
       return {
-        protocolVersion,
         sessionId: readString(parsedValue.sessionId, 'event.sessionId'),
         state: readSessionState(parsedValue.state, 'event.state'),
         type,
@@ -500,7 +486,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
           parsedValue.processingDurationMs,
           'event.processingDurationMs',
         ),
-        protocolVersion,
         segments: readTranscriptSegments(parsedValue.segments),
         sessionId: readString(parsedValue.sessionId, 'event.sessionId'),
         text: readString(parsedValue.text, 'event.text'),
@@ -512,18 +497,17 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
       };
 
     case 'warning':
-      return createWarningEvent(parsedValue, protocolVersion);
+      return createWarningEvent(parsedValue);
 
     case 'session_stopped':
       return {
-        protocolVersion,
         reason: readSessionStopReason(parsedValue.reason, 'event.reason'),
         sessionId: readString(parsedValue.sessionId, 'event.sessionId'),
         type,
       };
 
     case 'error':
-      return createErrorEvent(parsedValue, protocolVersion);
+      return createErrorEvent(parsedValue);
 
     default:
       throw new Error(`Unsupported sidecar event type: ${type}`);
@@ -533,10 +517,7 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
 function createEnvelope<TType extends SidecarCommand['type']>(
   type: TType,
 ): Extract<SidecarCommand, { type: TType }> {
-  return {
-    protocolVersion: SIDECAR_PROTOCOL_VERSION,
-    type,
-  } as Extract<SidecarCommand, { type: TType }>;
+  return { type } as Extract<SidecarCommand, { type: TType }>;
 }
 
 function encodeFrame(kind: number, payload: Uint8Array): Uint8Array {
@@ -622,16 +603,6 @@ function readPositiveInteger(value: unknown, fieldName: string): number {
   }
 
   return value;
-}
-
-function readProtocolVersion(value: unknown): typeof SIDECAR_PROTOCOL_VERSION {
-  const protocolVersion = readString(value, 'event.protocolVersion');
-
-  if (protocolVersion !== SIDECAR_PROTOCOL_VERSION) {
-    throw new Error(`Unsupported sidecar protocol version: ${protocolVersion}`);
-  }
-
-  return protocolVersion;
 }
 
 function readReadyStatus(value: unknown): 'ready' {
@@ -913,28 +884,20 @@ function readRecord(value: unknown, fieldName: string): Record<string, unknown> 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-function createWarningEvent(
-  value: Record<string, unknown>,
-  protocolVersion: typeof SIDECAR_PROTOCOL_VERSION,
-): WarningEvent {
+function createWarningEvent(value: Record<string, unknown>): WarningEvent {
   return {
     code: readString(value.code, 'event.code'),
     ...readOptionalEventFields(value),
     message: readString(value.message, 'event.message'),
-    protocolVersion,
     type: 'warning',
   };
 }
 
-function createErrorEvent(
-  value: Record<string, unknown>,
-  protocolVersion: typeof SIDECAR_PROTOCOL_VERSION,
-): ErrorEvent {
+function createErrorEvent(value: Record<string, unknown>): ErrorEvent {
   return {
     code: readString(value.code, 'event.code'),
     ...readOptionalEventFields(value),
     message: readString(value.message, 'event.message'),
-    protocolVersion,
     type: 'error',
   };
 }

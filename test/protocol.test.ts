@@ -12,7 +12,6 @@ import {
   FramedMessageParser,
   JSON_FRAME_KIND,
   parseEventFrame,
-  SIDECAR_PROTOCOL_VERSION,
 } from '../src/sidecar/protocol';
 
 describe('sidecar protocol', () => {
@@ -21,7 +20,6 @@ describe('sidecar protocol', () => {
 
     expect(frame[0]).toBe(JSON_FRAME_KIND);
     expect(readPayload(frame)).toEqual({
-      protocolVersion: SIDECAR_PROTOCOL_VERSION,
       type: 'health',
     });
   });
@@ -55,7 +53,6 @@ describe('sidecar protocol', () => {
     const frame = encodeJsonFrame(createGetSystemInfoCommand());
 
     expect(readPayload(frame)).toEqual({
-      protocolVersion: SIDECAR_PROTOCOL_VERSION,
       type: 'get_system_info',
     });
   });
@@ -65,7 +62,6 @@ describe('sidecar protocol', () => {
     const frame = encodeJsonFrame({
       compiledBackends: ['cpu', 'cuda'],
       compiledEngines: ['whisper_cpp', 'cohere_onnx'],
-      protocolVersion: SIDECAR_PROTOCOL_VERSION,
       runtimeCapabilities: [
         {
           available: true,
@@ -84,7 +80,6 @@ describe('sidecar protocol', () => {
       envelope: {
         compiledBackends: ['cpu', 'cuda'],
         compiledEngines: ['whisper_cpp', 'cohere_onnx'],
-        protocolVersion: SIDECAR_PROTOCOL_VERSION,
         runtimeCapabilities: [
           {
             available: true,
@@ -105,7 +100,6 @@ describe('sidecar protocol', () => {
     const frame = encodeRawJsonFrame({
       compiledBackends: ['cpu', 'cuda'],
       compiledEngines: ['whisper_cpp'],
-      protocolVersion: SIDECAR_PROTOCOL_VERSION,
       systemInfo: 'AVX = 1 | CUDA = 1',
       type: 'system_info',
     });
@@ -116,7 +110,6 @@ describe('sidecar protocol', () => {
       envelope: {
         compiledBackends: ['cpu', 'cuda'],
         compiledEngines: ['whisper_cpp'],
-        protocolVersion: SIDECAR_PROTOCOL_VERSION,
         runtimeCapabilities: [],
         systemInfo: 'AVX = 1 | CUDA = 1',
         type: 'system_info',
@@ -131,26 +124,17 @@ describe('sidecar protocol', () => {
   });
 
   it('rejects missing type field in parseEventFrame', () => {
-    expect(() =>
-      parseEventFrame(JSON.stringify({ protocolVersion: SIDECAR_PROTOCOL_VERSION })),
-    ).toThrow('event.type must be a string.');
+    expect(() => parseEventFrame(JSON.stringify({}))).toThrow('event.type must be a string.');
   });
 
   it('rejects unknown event type in parseEventFrame', () => {
     expect(() =>
       parseEventFrame(
         JSON.stringify({
-          protocolVersion: SIDECAR_PROTOCOL_VERSION,
           type: 'nonexistent_event',
         }),
       ),
     ).toThrow('Unsupported sidecar event type: nonexistent_event');
-  });
-
-  it('rejects wrong protocol version in parseEventFrame', () => {
-    expect(() =>
-      parseEventFrame(JSON.stringify({ protocolVersion: 'v999', type: 'health_ok' })),
-    ).toThrow('Unsupported sidecar protocol version: v999');
   });
 
   it('rejects unknown frame kind byte in FramedMessageParser.pushChunk', () => {
@@ -177,7 +161,6 @@ describe('sidecar protocol', () => {
       parseEventFrame(
         JSON.stringify({
           processingDurationMs: 100,
-          protocolVersion: SIDECAR_PROTOCOL_VERSION,
           segments: [],
           text: 'hello',
           type: 'transcript_ready',
@@ -191,7 +174,6 @@ describe('sidecar protocol', () => {
     const parser = new FramedMessageParser(parseEventFrame);
     const transcriptFrame = encodeJsonFrame({
       processingDurationMs: 125,
-      protocolVersion: SIDECAR_PROTOCOL_VERSION,
       segments: [],
       sessionId: 'session-1',
       text: 'hello world',
@@ -213,7 +195,6 @@ describe('sidecar protocol', () => {
     expect(frames[0]).toEqual({
       envelope: {
         processingDurationMs: 125,
-        protocolVersion: SIDECAR_PROTOCOL_VERSION,
         segments: [],
         sessionId: 'session-1',
         text: 'hello world',
