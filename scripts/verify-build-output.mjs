@@ -7,8 +7,8 @@ const MAIN_BUNDLE_PATH = 'main.js';
 const RECORDER_WORKLET_PATH = 'assets/pcm-recorder.worklet.js';
 const SIDECAR_BINARY_PATH =
   process.platform === 'win32'
-    ? `native/sidecar/target/${profile}/obsidian-local-stt-sidecar.exe`
-    : `native/sidecar/target/${profile}/obsidian-local-stt-sidecar`;
+    ? `native/target/${profile}/obsidian-local-stt-sidecar.exe`
+    : `native/target/${profile}/obsidian-local-stt-sidecar`;
 
 async function main() {
   const mainBundle = await readFile(MAIN_BUNDLE_PATH, 'utf8');

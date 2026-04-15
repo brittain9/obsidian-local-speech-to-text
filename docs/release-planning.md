@@ -55,7 +55,7 @@ CI signing workflow sketch:
 
 ## Sidecar distribution
 
-The current `resolveSidecarExecutablePath()` implementation only resolves the dev path `native/sidecar/target/debug/`. Release distribution needs a packaged lookup path.
+The current `resolveSidecarExecutablePath()` implementation only resolves the dev path `native/target/debug/`. Release distribution needs a packaged lookup path.
 
 Recommended binary layout:
 
@@ -79,7 +79,7 @@ Naming convention: align with Node.js `process.platform` + `process.arch` for di
 | Linux x86_64 | `sidecar-linux-x64` |
 | Windows x86_64 | `sidecar-win32-x64.exe` |
 
-Resolution order: `sidecarPathOverride` > `bin/sidecar-{platform}-{arch}` > dev-mode `native/sidecar/target/debug/`.
+Resolution order: `sidecarPathOverride` > `bin/sidecar-{platform}-{arch}` > dev-mode `native/target/debug/`.
 
 ## References
 

@@ -75,6 +75,6 @@ Listening mode and speech segmentation happen upstream of transcription. How aud
 | `src/editor/editor-service.ts` | Insertion dispatch |
 | `src/editor/transcript-placement.ts` | Append placement calculations |
 | `src/settings/plugin-settings.ts` | Settings interface and defaults |
-| `native/sidecar/src/cohere.rs` | Cohere backend (Slice 1 target) |
-| `native/sidecar/src/transcription.rs` | Transcript struct and TranscriptionBackend trait |
+| `native/src/cohere.rs` | Cohere backend (Slice 1 target) |
+| `native/src/transcription.rs` | Transcript struct and TranscriptionBackend trait |
 | `src/sidecar/protocol.ts` | TranscriptSegment and TranscriptReadyEvent types |

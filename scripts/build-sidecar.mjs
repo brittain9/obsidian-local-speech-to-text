@@ -5,7 +5,7 @@ const args = new Set(process.argv.slice(2));
 
 const features = process.platform === 'darwin' ? 'engine-cohere,gpu-metal' : 'engine-cohere';
 
-const cargoArgs = ['build', '--manifest-path', 'native/sidecar/Cargo.toml', '--features', features];
+const cargoArgs = ['build', '--manifest-path', 'native/Cargo.toml', '--features', features];
 
 if (args.has('--release')) cargoArgs.push('--release');
 

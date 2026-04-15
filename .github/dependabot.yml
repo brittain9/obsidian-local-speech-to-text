@@ -20,7 +20,7 @@ updates:
           - patch
 
   - package-ecosystem: cargo
-    directory: /native/sidecar
+    directory: /native
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
