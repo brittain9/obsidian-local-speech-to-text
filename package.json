@@ -28,9 +28,9 @@
     "check": "npm run check:js && npm run check:rust"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.2.2",
+    "@biomejs/biome": "2.4.12",
     "@types/node": "25.6.0",
-    "esbuild": "0.25.9",
+    "esbuild": "0.28.0",
     "obsidian": "1.8.7",
     "tslib": "2.8.1",
     "typescript": "6.0.2",
