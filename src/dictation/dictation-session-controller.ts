@@ -361,9 +361,16 @@ export class DictationSessionController {
       `transcript received (${event.text.length} chars, ${event.processingDurationMs}ms processing)`,
     );
 
+    const text = normalizeTranscriptText(event);
+
+    if (text === null) {
+      this.dependencies.logger?.debug('session', 'discarding empty transcript');
+      return;
+    }
+
     try {
       this.dependencies.editorService.insertTranscript(
-        normalizeTranscriptText(event),
+        text,
         this.dependencies.getSettings().insertionMode,
       );
     } catch (error) {
@@ -447,7 +454,7 @@ function createSessionId(): string {
   return `session-${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
 }
 
-function normalizeTranscriptText(event: TranscriptReadyEvent): string {
+function normalizeTranscriptText(event: TranscriptReadyEvent): string | null {
   const text = event.text.trim();
 
   if (text.length > 0) {
@@ -459,9 +466,5 @@ function normalizeTranscriptText(event: TranscriptReadyEvent): string {
     .join(' ')
     .trim();
 
-  if (fallbackText.length === 0) {
-    throw new Error('Transcription completed but returned no text.');
-  }
-
-  return fallbackText;
+  return fallbackText.length > 0 ? fallbackText : null;
 }
