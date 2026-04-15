@@ -1,6 +1,6 @@
 {
   "name": "local-transcript",
-  "version": "2026.4.14.0",
+  "version": "2026.4.15",
   "description": "Desktop-only local speech-to-text for Obsidian with a Rust sidecar.",
   "private": true,
   "license": "MIT",
@@ -24,7 +24,7 @@
     "test": "vitest run",
     "verify:build-output": "node scripts/verify-build-output.mjs",
     "check:js": "npm run typecheck && npm run lint && npm run test && npm run build",
-    "check:rust": "npm run build:sidecar && cargo fmt --manifest-path native/sidecar/Cargo.toml --check && DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1 cargo clippy --manifest-path native/sidecar/Cargo.toml --all-targets --features engine-cohere -- -D warnings && cargo test --manifest-path native/sidecar/Cargo.toml --features engine-cohere",
+    "check:rust": "npm run build:sidecar && cargo fmt --manifest-path native/Cargo.toml --check && DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1 cargo clippy --manifest-path native/Cargo.toml --all-targets --features engine-cohere -- -D warnings && cargo test --manifest-path native/Cargo.toml --features engine-cohere",
     "check": "npm run check:js && npm run check:rust"
   },
   "devDependencies": {

@@ -1,11 +1,11 @@
 # Obsidian Speech-to-Text
 
-Run cutting-edge local transcription directly in Obsidian. Choose between Cohere Transcribe, a Hugging Face Open ASR Leaderboard-topping model, and Whisper, a mature and well-supported standard for offline speech recognition.
+Run cutting-edge local transcription directly in Obsidian. Choose between Cohere Transcribe, a new best-in-class model, and Whisper, a well-known standard for offline speech recognition.
 
 ## Features
 - **Cross-platform design** — built for desktop Obsidian on macOS, Linux, and Windows, with Windows support planned for a later release.
 - **Cohere Transcribe support** — use a [Hugging Face Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)-topping speech recognition model directly inside Obsidian.
-- **Mature Whisper support** — choose a well-known, well-supported offline transcription model with a wide range of size and performance options.
+- **Whisper support** — choose a mature offline transcription model with a wide range of size and performance options.
 - **One-click model management** — browse, download, and remove models from inside the plugin.
 - **Hardware acceleration** — supports Metal on macOS and CUDA on Linux, with Windows hardware acceleration planned alongside Windows support.
 - **Obsidian-native experience** — integrates cleanly with the app through native settings, commands, and interface elements.
@@ -42,7 +42,7 @@ Versions are pinned in `package.json` (`engines`, `packageManager`) and `rust-to
 
 ### Project Structure
 
-The plugin has two runtime boundaries: a TypeScript Obsidian plugin in `src/` and a Rust native sidecar in `native/sidecar/`. See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture details.
+The plugin has two runtime boundaries: a TypeScript Obsidian plugin in `src/` and a Rust native sidecar in `native/`. See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture details.
 
 ### Setup
 

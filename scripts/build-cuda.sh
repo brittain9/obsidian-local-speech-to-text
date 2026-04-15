@@ -8,7 +8,7 @@ usage() {
 Usage: bash scripts/build-cuda.sh [OPTIONS]
 
 Build the CUDA-enabled native sidecar (Whisper+CUDA, Cohere+CUDA).
-Output: native/sidecar/target-cuda/{debug|release}/obsidian-local-stt-sidecar
+Output: native/target-cuda/{debug|release}/obsidian-local-stt-sidecar
 
 Options:
   --release   Build release binary instead of debug.
@@ -59,7 +59,7 @@ stage_runtime_artifact() {
 # ---------------------------------------------------------------------------
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-MANIFEST="$REPO_ROOT/native/sidecar/Cargo.toml"
+MANIFEST="$REPO_ROOT/native/Cargo.toml"
 
 [[ -f "$MANIFEST" ]] || die "sidecar manifest not found at $MANIFEST"
 [[ "$(uname -s)" == "Linux" ]] || die "CUDA build is Linux-only"
@@ -112,7 +112,7 @@ cuda_root=$(dirname "$(dirname "$CUDACXX")")
 cuda_lib="${CUDA_LIB_PATH:-${cuda_root}/targets/$(uname -m)-linux/lib}"
 [[ -d "$cuda_lib" ]] || die "CUDA lib directory not found: $cuda_lib (override with CUDA_LIB_PATH)"
 
-target_dir="$REPO_ROOT/native/sidecar/target-cuda"
+target_dir="$REPO_ROOT/native/target-cuda"
 
 # ---------------------------------------------------------------------------
 # Preflight

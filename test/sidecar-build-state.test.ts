@@ -33,7 +33,7 @@ describe('assertSidecarExecutableIsFresh', () => {
     await setFileTime(join(projectDirectory, 'src', 'main.rs'), 2_000);
 
     await expect(assertSidecarExecutableIsFresh(executablePath, projectDirectory)).rejects.toThrow(
-      'native/sidecar/src/main.rs is newer',
+      'native/src/main.rs is newer',
     );
   });
 });

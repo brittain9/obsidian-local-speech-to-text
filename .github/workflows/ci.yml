@@ -48,7 +48,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/sidecar -> target
+          workspaces: native -> target
           shared-key: ${{ matrix.rust_cache_key }}
           cache-on-failure: true
 
@@ -87,7 +87,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/sidecar -> target
+          workspaces: native -> target
           shared-key: release-linux-cpu
 
       - name: Build Linux CPU sidecar
@@ -100,7 +100,7 @@ jobs:
       - name: Prepare release artifact
         run: |
           mkdir -p dist
-          cp native/sidecar/target/release/obsidian-local-stt-sidecar \
+          cp native/target/release/obsidian-local-stt-sidecar \
             dist/sidecar-linux-${{ steps.arch.outputs.value }}
 
       - name: Upload release artifact
@@ -131,7 +131,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/sidecar -> target
+          workspaces: native -> target
           shared-key: release-macos-gpu-metal
 
       - name: Build macOS Metal sidecar
@@ -144,7 +144,7 @@ jobs:
       - name: Prepare release artifact
         run: |
           mkdir -p dist
-          cp native/sidecar/target/release/obsidian-local-stt-sidecar \
+          cp native/target/release/obsidian-local-stt-sidecar \
             dist/sidecar-macos-${{ steps.arch.outputs.value }}
 
       - name: Ad-hoc sign macOS binary

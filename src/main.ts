@@ -240,7 +240,7 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     const pluginDirectory = await this.resolvePluginDirectoryPath();
-    const sidecarProjectDirectory = join(pluginDirectory, 'native', 'sidecar');
+    const sidecarProjectDirectory = join(pluginDirectory, 'native');
     const executablePath = join(
       sidecarProjectDirectory,
       'target',
@@ -251,7 +251,7 @@ export default class LocalSttPlugin extends Plugin {
 
     if (pathKind === 'missing') {
       throw new Error(
-        `Sidecar executable was not found at ${executablePath}. Build native/sidecar first or configure Sidecar path override.`,
+        `Sidecar executable was not found at ${executablePath}. Build native first or configure Sidecar path override.`,
       );
     }
 

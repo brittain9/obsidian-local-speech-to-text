@@ -74,8 +74,8 @@ bash scripts/build-cuda.sh --release
 
 Artifacts:
 
-- CPU build: `native/sidecar/target/{debug|release}/obsidian-local-stt-sidecar`
-- CUDA build: `native/sidecar/target-cuda/{debug|release}/obsidian-local-stt-sidecar`
+- CPU build: `native/target/{debug|release}/obsidian-local-stt-sidecar`
+- CUDA build: `native/target-cuda/{debug|release}/obsidian-local-stt-sidecar`
 
 ## Step 3: Apply Flatpak Overrides
 
@@ -114,7 +114,7 @@ For a stricter check, run `ldd` with the same library path you plan to paste int
 ```sh
 flatpak run --command=sh md.obsidian.Obsidian -c '
   export LD_LIBRARY_PATH=/run/host/usr/local/cuda-12.9/targets/x86_64-linux/lib:/run/host/usr/local/cuda-12.9/lib64:/run/host/usr/lib64
-  ldd /absolute/path/to/native/sidecar/target-cuda/debug/obsidian-local-stt-sidecar | grep -E "cuda|cudnn|cublas|not found"
+  ldd /absolute/path/to/native/target-cuda/debug/obsidian-local-stt-sidecar | grep -E "cuda|cudnn|cublas|not found"
 '
 ```
 
@@ -123,7 +123,7 @@ flatpak run --command=sh md.obsidian.Obsidian -c '
 1. Fully quit and reopen Obsidian after applying Flatpak overrides.
 2. Open `Settings -> Local STT -> Advanced: Sidecar`.
 3. Set `Sidecar path override` to the CUDA binary:
-   `/absolute/path/to/native/sidecar/target-cuda/debug/obsidian-local-stt-sidecar`
+   `/absolute/path/to/native/target-cuda/debug/obsidian-local-stt-sidecar`
 4. Set `CUDA library path` to the colon-separated `/run/host/...` value you built earlier.
 5. Under `Engine options`, leave `GPU acceleration` on `Use when available` unless you intentionally want CPU only.
 6. Run `Local STT: Check Sidecar Health`.

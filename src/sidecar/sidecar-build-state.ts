@@ -18,7 +18,7 @@ export async function assertSidecarExecutableIsFresh(
 
     if (watchedStats.mtimeMs > executableStats.mtimeMs) {
       throw new Error(
-        `Sidecar executable is stale. ${watchedPath.displayPath} is newer than ${executablePath}. Rebuild with \`npm run build\` or \`cargo build --manifest-path native/sidecar/Cargo.toml\`.`,
+        `Sidecar executable is stale. ${watchedPath.displayPath} is newer than ${executablePath}. Rebuild with \`npm run build\` or \`cargo build --manifest-path native/Cargo.toml\`.`,
       );
     }
   }
@@ -28,16 +28,16 @@ async function collectWatchedPaths(sidecarProjectDirectory: string): Promise<Wat
   const watchedPaths: WatchedPath[] = [
     {
       absolutePath: join(sidecarProjectDirectory, 'Cargo.toml'),
-      displayPath: 'native/sidecar/Cargo.toml',
+      displayPath: 'native/Cargo.toml',
     },
     {
       absolutePath: join(sidecarProjectDirectory, 'Cargo.lock'),
-      displayPath: 'native/sidecar/Cargo.lock',
+      displayPath: 'native/Cargo.lock',
     },
   ];
 
   watchedPaths.push(
-    ...(await collectRustSourcePaths(join(sidecarProjectDirectory, 'src'), 'native/sidecar/src')),
+    ...(await collectRustSourcePaths(join(sidecarProjectDirectory, 'src'), 'native/src')),
   );
 
   return watchedPaths;

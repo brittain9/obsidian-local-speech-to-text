@@ -66,6 +66,6 @@ Incomplete work that touches `main` must be behind a gate — a settings flag, a
 The plugin has two runtime boundaries:
 
 - **TypeScript plugin** (`src/`) — Obsidian UX, settings, editor insertion, audio capture
-- **Rust sidecar** (`native/sidecar/`) — inference, audio processing, model loading
+- **Rust sidecar** (`native/`) — inference, audio processing, model loading
 
 See [docs/pipeline-architecture.md](docs/pipeline-architecture.md) for the transcript pipeline design.
