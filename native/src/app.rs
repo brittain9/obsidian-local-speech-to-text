@@ -118,7 +118,6 @@ impl AppState {
             .map(|active_session| {
                 active_session.session.config().pause_while_processing
                     && active_session.transcription_active
-                    && active_session.session.base_state() != SessionBaseState::Idle
             })
             .unwrap_or(false);
 
@@ -928,7 +927,7 @@ fn derive_session_state(
     }
 
     if transcription_active {
-        if session.config().pause_while_processing && base_state != SessionBaseState::Idle {
+        if session.config().pause_while_processing {
             return SessionState::Paused;
         }
 
@@ -940,7 +939,6 @@ fn derive_session_state(
     }
 
     match base_state {
-        SessionBaseState::Idle => SessionState::Idle,
         SessionBaseState::Listening => SessionState::Listening,
         SessionBaseState::SpeechDetected => SessionState::SpeechDetected,
     }

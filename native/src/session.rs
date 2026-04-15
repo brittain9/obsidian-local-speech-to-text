@@ -37,7 +37,6 @@ pub enum SessionAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBaseState {
-    Idle,
     Listening,
     SpeechDetected,
 }

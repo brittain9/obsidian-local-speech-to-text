@@ -177,13 +177,12 @@ sequenceDiagram
 stateDiagram-v2
     direction LR
 
-    [*] --> Idle
-    Idle --> Listening : start / gate open
+    [*] --> Listening : start
     Listening --> SpeechDetected : speech start
     SpeechDetected --> Listening : utterance end
     SpeechDetected --> Listening : max length
-    Listening --> Idle : stop / gate close
-    SpeechDetected --> Idle : gate close + flush
+    Listening --> [*] : stop
+    SpeechDetected --> [*] : stop + flush
     Listening --> Timeout : one_sentence timeout
 ```
 
@@ -309,10 +308,10 @@ flowchart LR
 
 ### Listening Modes
 
-| Mode | Behavior | Gate | Auto-stop |
-|------|----------|------|-----------|
-| `one_sentence` | Capture one utterance, transcribe, stop | Always open | Yes (after first transcript or 10 s timeout) |
-| `always_on` | Continuous capture, transcribe every utterance | Always open | No (manual stop) |
+| Mode | Behavior | Auto-stop |
+|------|----------|-----------|
+| `one_sentence` | Capture one utterance, transcribe, stop | Yes (after first transcript or 10 s timeout) |
+| `always_on` | Continuous capture, transcribe every utterance | No (manual stop) |
 
 ### Ribbon UI States
 
