@@ -6,8 +6,8 @@ main.js.map
 assets/pcm-recorder.worklet.js
 *.tsbuildinfo
 
-native/target/
-native/target-cuda/
+native/**/target/
+native/**/target-cuda/
 
 *.wav
 *.pcm

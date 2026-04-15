@@ -49,7 +49,7 @@ The client sees "Transcribing" with the active loader animation after clicking s
 ### M3 — D-007 contradicts issue #6 on pipeline ownership
 
 **Severity:** Medium (strategic, not a code bug)
-**Files:** `docs/decisions.md` (D-007), `docs/pipeline-architecture.md`, GitHub issue #6
+**Files:** `docs/decisions.md` (D-007), `docs/architecture/pipeline-architecture.md`, GitHub issue #6
 
 D-007 says: "Insert a TranscriptFormatter and TextProcessor pipeline between engine output and editor insertion." The pipeline architecture doc's implementation slices (2-7) all target TypeScript. Issue #6 says: "the engine should return processed transcript output" — placing the pipeline in Rust.
 

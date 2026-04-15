@@ -66,7 +66,7 @@ Graceful stop (added 2026-04-14):
 - [ ] Finalize native sidecar distribution and update strategy for community-plugin releases. This includes CPU/CUDA dual-binary packaging where needed, runtime binary selection, checksum/update flow, and CUDA redistribution/licensing constraints.
 - [ ] Provision a CUDA-capable CI or release runner so automated release builds can emit Linux CUDA artifacts instead of relying on manual local builds.
 
-## Pipeline (D-007, see `docs/pipeline-architecture.md`)
+## Pipeline (D-007, see `docs/architecture/pipeline-architecture.md`)
 
 - [ ] Cohere synthetic segments — produce at least one segment with timing from Cohere backend (`feat/cohere-segments`)
 - [ ] TranscriptFormatter layer — extract formatting step between engine output and insertion (`feat/transcript-formatter`)

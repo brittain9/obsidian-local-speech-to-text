@@ -15,7 +15,7 @@ Durable workflow, product, and architecture decisions. Update in the same change
 ### D-002: Flatpak Is The Primary Linux Target
 
 - Status: active
-- Decision: Flatpak Obsidian is the primary Linux target. GPU on Flatpak requires advanced setup (`--filesystem=host-os`, `--device=all`, sidecar override, scoped `LD_LIBRARY_PATH`). Documented in `docs/linux-flatpak-gpu-setup.md`.
+- Decision: Flatpak Obsidian is the primary Linux target. GPU on Flatpak requires advanced setup (`--filesystem=host-os`, `--device=all`, sidecar override, scoped `LD_LIBRARY_PATH`). Documented in `docs/guides/linux-flatpak-gpu-setup.md`.
 - Why: Flatpak sandboxing hides host CUDA libraries. The override path works but requires manual configuration.
 
 ### D-003: Platform GPU Support Matrix
@@ -28,7 +28,7 @@ Durable workflow, product, and architecture decisions. Update in the same change
   | Windows | CUDA | CUDA | No sandbox, just works |
   | macOS | Metal | CPU only | CoreML not viable; CPU performance is acceptable |
   | Linux native | CUDA | CUDA | Host env inherited, RPATH resolves |
-  | Linux Flatpak | CUDA | CUDA | Requires advanced setup (see `docs/linux-flatpak-gpu-setup.md`) |
+  | Linux Flatpak | CUDA | CUDA | Requires advanced setup (see `docs/guides/linux-flatpak-gpu-setup.md`) |
 
 ### D-004: Ships Both Whisper And Cohere Transcribe
 
@@ -52,4 +52,4 @@ Durable workflow, product, and architecture decisions. Update in the same change
 
 - Status: active
 - Decision: Insert a TranscriptFormatter and TextProcessor pipeline between engine output and editor insertion. Formatter selects output format (plain text, inline timestamps). Processor applies composable text transforms (filtering, user rules). Each layer ships in its own PR.
-- Why: The current pipeline goes directly from engine output to insertion with no formatting or processing step. See `docs/pipeline-architecture.md`.
+- Why: The current pipeline goes directly from engine output to insertion with no formatting or processing step. See `docs/architecture/pipeline-architecture.md`.

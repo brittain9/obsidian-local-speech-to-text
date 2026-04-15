@@ -91,7 +91,7 @@ Flatpak is the hardest packaging case. Three things make it different:
 2. **CUDA symlinks break across the sandbox boundary.** The library path must use resolved real paths (e.g., `/run/host/usr/local/cuda-12.9/...`), not the `/usr/local/cuda` symlink.
 3. **Global `LD_LIBRARY_PATH` breaks Electron audio.** Setting it on the whole Obsidian Flatpak causes Electron to load host PulseAudio/ALSA/PipeWire libraries instead of the Flatpak runtime versions. The plugin's `CUDA library path` setting scopes `LD_LIBRARY_PATH` to the sidecar child process only.
 
-The full Flatpak GPU setup procedure is documented in `docs/linux-flatpak-gpu-setup.md`.
+The full Flatpak GPU setup procedure is documented in `docs/guides/linux-flatpak-gpu-setup.md`.
 
 ## Engine Runtime Paths
 

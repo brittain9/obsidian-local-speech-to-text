@@ -7,7 +7,9 @@
       "Bash(xargs sed:*)",
       "Bash(/home/Alex/Projects/obsidian-local-speech-to-text/native/sidecar/target-cuda/debug/obsidian-local-stt-sidecar --help)",
       "Bash(npx tsc *)",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(wc:*)",
+      "mcp__plugin_context7_context7__query-docs"
     ]
   }
 }
