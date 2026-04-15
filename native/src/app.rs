@@ -118,7 +118,6 @@ impl AppState {
             .map(|active_session| {
                 active_session.session.config().pause_while_processing
                     && active_session.transcription_active
-                    && active_session.session.base_state() != SessionBaseState::Idle
             })
             .unwrap_or(false);
 
@@ -383,49 +382,6 @@ impl AppState {
                         self.emit_state_if_changed(&mut events);
                     }
                     Err(error_event) => events.push(*error_event),
-                }
-
-                (ControlFlow::Continue, events)
-            }
-            Command::SetGate { open } => {
-                match self.active_session.as_ref() {
-                    None => events.push(invalid_gate_warning(
-                        None,
-                        "Cannot change the gate without an active session.",
-                    )),
-                    Some(active_session) => {
-                        if active_session.session.config().mode != ListeningMode::PressAndHold {
-                            events.push(invalid_gate_warning(
-                                Some(active_session.session.config().session_id.clone()),
-                                "Gate control is only valid in press-and-hold mode.",
-                            ));
-                        } else if open == active_session.session.gate_open() {
-                            events.push(invalid_gate_warning(
-                                Some(active_session.session.config().session_id.clone()),
-                                if open {
-                                    "The press-and-hold gate is already open."
-                                } else {
-                                    "The press-and-hold gate is already closed."
-                                },
-                            ));
-                        } else if open {
-                            if let Some(active_session) = self.active_session.as_mut() {
-                                active_session.session.open_gate();
-                            }
-                            self.emit_state_if_changed(&mut events);
-                        } else {
-                            let action = self
-                                .active_session
-                                .as_mut()
-                                .and_then(|active_session| active_session.session.close_gate());
-
-                            if let Some(action) = action {
-                                self.handle_session_action(action, &mut events);
-                            }
-
-                            self.emit_state_if_changed(&mut events);
-                        }
-                    }
                 }
 
                 (ControlFlow::Continue, events)
@@ -971,7 +927,7 @@ fn derive_session_state(
     }
 
     if transcription_active {
-        if session.config().pause_while_processing && base_state != SessionBaseState::Idle {
+        if session.config().pause_while_processing {
             return SessionState::Paused;
         }
 
@@ -983,7 +939,6 @@ fn derive_session_state(
     }
 
     match base_state {
-        SessionBaseState::Idle => SessionState::Idle,
         SessionBaseState::Listening => SessionState::Listening,
         SessionBaseState::SpeechDetected => SessionState::SpeechDetected,
     }
@@ -1006,15 +961,6 @@ fn internal_error_event(code: &str, message: &str, details: Option<String>) -> E
         details,
         message: message.to_string(),
         session_id: None,
-    }
-}
-
-fn invalid_gate_warning(session_id: Option<String>, message: &'static str) -> Event {
-    Event::Warning {
-        code: "invalid_gate_transition".to_string(),
-        details: None,
-        message: message.to_string(),
-        session_id,
     }
 }
 

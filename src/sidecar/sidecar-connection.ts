@@ -12,7 +12,6 @@ import {
   createListModelCatalogCommand,
   createProbeModelSelectionCommand,
   createRemoveModelCommand,
-  createSetGateCommand,
   createShutdownCommand,
   createStartSessionCommand,
   createStopSessionCommand,
@@ -272,10 +271,6 @@ export class SidecarConnection {
 
   sendAudioFrame(frameBytes: Uint8Array): void {
     this.process.write(encodeAudioFrame(frameBytes));
-  }
-
-  async setGate(open: boolean): Promise<void> {
-    await this.sendCommand(createSetGateCommand(open));
   }
 
   dispose(): void {

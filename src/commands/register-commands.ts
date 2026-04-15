@@ -3,7 +3,6 @@ import type { Plugin } from 'obsidian';
 const START_DICTATION_COMMAND_ID = 'start-dictation-session';
 const STOP_DICTATION_COMMAND_ID = 'stop-dictation-session';
 const CANCEL_DICTATION_COMMAND_ID = 'cancel-dictation-session';
-export const PRESS_AND_HOLD_GATE_COMMAND_ID = 'press-and-hold-gate';
 
 interface CommandDependencies {
   cancelDictation: () => Promise<void>;
@@ -37,14 +36,6 @@ export function registerCommands(dependencies: CommandDependencies): void {
     callback: async () => {
       await dependencies.cancelDictation();
     },
-  });
-
-  // Obsidian needs a registered command id for Hotkeys, but the actual gate behavior
-  // is driven by document keydown/keyup listeners and should not be runnable directly.
-  dependencies.plugin.addCommand({
-    id: PRESS_AND_HOLD_GATE_COMMAND_ID,
-    name: 'Press-And-Hold Gate',
-    checkCallback: () => false,
   });
 
   dependencies.plugin.addCommand({

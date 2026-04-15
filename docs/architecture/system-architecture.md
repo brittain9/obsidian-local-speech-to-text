@@ -128,14 +128,13 @@ sequenceDiagram
 - `stdin` (TS → Rust): Both audio frames (`0x02`) and JSON command frames (`0x01`)
 - `stdout` (Rust → TS): JSON event frames (`0x01`) only
 
-**Commands (TS → Rust): 14 types**
+**Commands (TS → Rust): 13 types**
 
 | Command | Purpose |
 |---------|---------|
 | `health` | Liveness ping |
 | `get_system_info` | Query compiled backends and runtime capabilities |
 | `start_session` | Begin transcription (specifies model, mode, sessionId) |
-| `set_gate` | Open/close audio gate (press-and-hold mode) |
 | `stop_session` | Graceful stop (drain pending transcriptions) |
 | `cancel_session` | Immediate cancel (discard pending) |
 | `shutdown` | Request sidecar exit |
@@ -178,13 +177,12 @@ sequenceDiagram
 stateDiagram-v2
     direction LR
 
-    [*] --> Idle
-    Idle --> Listening : start / gate open
+    [*] --> Listening : start
     Listening --> SpeechDetected : speech start
     SpeechDetected --> Listening : utterance end
     SpeechDetected --> Listening : max length
-    Listening --> Idle : stop / gate close
-    SpeechDetected --> Idle : gate close + flush
+    Listening --> [*] : stop
+    SpeechDetected --> [*] : stop + flush
     Listening --> Timeout : one_sentence timeout
 ```
 
@@ -205,8 +203,6 @@ stateDiagram-v2
 | `MAX_UTTERANCE_FRAMES` | 1000 | 20 s | Hard cap on utterance length |
 
 **Utterance finalization:** When the boundary condition is met (silence threshold or max length), trailing silence frames are trimmed, the i16 PCM samples are packaged as a `TranscribeUtterance` command, and sent to the worker thread.
-
-**Gate mechanism (press_and_hold):** Audio frames are accepted only while the gate is open. Closing the gate flushes any in-progress utterance immediately.
 
 **Code weight:** ~465 LOC (`session.rs`) + session management in `app.rs` (~400 LOC of the 1,319 total).
 
@@ -312,11 +308,10 @@ flowchart LR
 
 ### Listening Modes
 
-| Mode | Behavior | Gate | Auto-stop |
-|------|----------|------|-----------|
-| `one_sentence` | Capture one utterance, transcribe, stop | Always open | Yes (after first transcript or 10 s timeout) |
-| `always_on` | Continuous capture, transcribe every utterance | Always open | No (manual stop) |
-| `press_and_hold` | Session stays alive; audio processed only while gate is open | Key/pointer controlled | No (manual stop) |
+| Mode | Behavior | Auto-stop |
+|------|----------|-----------|
+| `one_sentence` | Capture one utterance, transcribe, stop | Yes (after first transcript or 10 s timeout) |
+| `always_on` | Continuous capture, transcribe every utterance | No (manual stop) |
 
 ### Ribbon UI States
 

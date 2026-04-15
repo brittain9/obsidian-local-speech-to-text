@@ -23,7 +23,7 @@ export const AUDIO_FRAME_KIND = 0x02;
 export const FRAME_HEADER_LENGTH = 5;
 
 export type AccelerationPreference = 'auto' | 'cpu_only';
-export type ListeningMode = 'always_on' | 'press_and_hold' | 'one_sentence';
+export type ListeningMode = 'always_on' | 'one_sentence';
 export type SessionState =
   | 'error'
   | 'idle'
@@ -100,10 +100,6 @@ export interface CancelModelInstallCommand extends EnvelopeBase<'cancel_model_in
   installId: string;
 }
 
-export interface SetGateCommand extends EnvelopeBase<'set_gate'> {
-  open: boolean;
-}
-
 export interface StopSessionCommand extends EnvelopeBase<'stop_session'> {}
 
 export interface CancelSessionCommand extends EnvelopeBase<'cancel_session'> {}
@@ -123,7 +119,6 @@ export type SidecarCommand =
   | ListModelCatalogCommand
   | ProbeModelSelectionCommand
   | RemoveModelCommand
-  | SetGateCommand
   | ShutdownCommand
   | StartSessionCommand
   | StopSessionCommand;
@@ -279,13 +274,6 @@ export function createCancelModelInstallCommand(installId: string): CancelModelI
   return {
     ...createEnvelope('cancel_model_install'),
     installId,
-  };
-}
-
-export function createSetGateCommand(open: boolean): SetGateCommand {
-  return {
-    ...createEnvelope('set_gate'),
-    open,
   };
 }
 
@@ -618,7 +606,7 @@ function readReadyStatus(value: unknown): 'ready' {
 function readListeningMode(value: unknown, fieldName: string): ListeningMode {
   const mode = readString(value, fieldName);
 
-  if (mode === 'always_on' || mode === 'press_and_hold' || mode === 'one_sentence') {
+  if (mode === 'always_on' || mode === 'one_sentence') {
     return mode;
   }
 

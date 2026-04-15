@@ -1,5 +1,3 @@
-import type { App, Hotkey } from 'obsidian';
-
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
 import type { EditorService } from '../editor/editor-service';
 import type { PluginSettings } from '../settings/plugin-settings';
@@ -7,11 +5,6 @@ import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import type { SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
-import {
-  matchesAnyHotkey,
-  resolveCommandHotkeys,
-  shouldIgnoreHeldKeyEvent,
-} from './shortcut-matcher';
 
 export type DictationControllerState =
   | 'idle'
@@ -23,27 +16,21 @@ export type DictationControllerState =
   | 'error';
 
 interface DictationSessionControllerDependencies {
-  app: App;
   captureStream: Pick<AudioCaptureStream, 'isCapturing' | 'start' | 'stop'>;
   editorService: Pick<EditorService, 'assertActiveEditorAvailable' | 'insertTranscript'>;
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
   notice: (message: string) => void;
-  pressAndHoldGateCommandId: string;
-  pressAndHoldGateDefaultHotkeys?: Hotkey[];
   setRibbonState: (state: DictationControllerState) => void;
   sidecarConnection: Pick<
     SidecarConnection,
-    'cancelSession' | 'sendAudioFrame' | 'setGate' | 'startSession' | 'stopSession' | 'subscribe'
+    'cancelSession' | 'sendAudioFrame' | 'startSession' | 'stopSession' | 'subscribe'
   >;
 }
 
 export class DictationSessionController {
   private abortingSessionId: string | null = null;
-  private gateOpen = false;
   private readonly releaseSidecarSubscription: () => void;
-  private ribbonHoldActive = false;
-  private suppressNextRibbonClick = false;
   private sessionId: string | null = null;
   private state: DictationControllerState = 'idle';
 
@@ -82,89 +69,11 @@ export class DictationSessionController {
     this.applyUiState('idle');
   }
 
-  handleDocumentKeyDown(event: KeyboardEvent): void {
-    if (!this.isPressAndHoldMode()) {
-      return;
-    }
-
-    if (shouldIgnoreHeldKeyEvent(event.target)) {
-      return;
-    }
-
-    const hotkeys = resolveCommandHotkeys(
-      this.dependencies.app,
-      this.dependencies.pressAndHoldGateCommandId,
-      this.dependencies.pressAndHoldGateDefaultHotkeys ?? [],
-    );
-
-    if (hotkeys.length === 0 || !matchesAnyHotkey(event, hotkeys)) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (event.repeat || this.gateOpen) {
-      return;
-    }
-
-    void this.openPressAndHoldGate();
-  }
-
-  handleDocumentKeyUp(event: KeyboardEvent): void {
-    if (!this.isPressAndHoldMode()) {
-      return;
-    }
-
-    const hotkeys = resolveCommandHotkeys(
-      this.dependencies.app,
-      this.dependencies.pressAndHoldGateCommandId,
-      this.dependencies.pressAndHoldGateDefaultHotkeys ?? [],
-    );
-
-    if (hotkeys.length === 0 || !matchesAnyHotkey(event, hotkeys)) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    void this.closePressAndHoldGate();
-  }
-
   handleRibbonClick(): void {
-    if (this.isPressAndHoldMode() && this.suppressNextRibbonClick) {
-      this.suppressNextRibbonClick = false;
-      return;
-    }
-
     void this.toggleDictation();
   }
 
-  handleRibbonPointerDown(): void {
-    if (!this.isPressAndHoldMode()) {
-      return;
-    }
-
-    this.ribbonHoldActive = true;
-    this.suppressNextRibbonClick = true;
-    void this.openPressAndHoldGate();
-  }
-
-  handleRibbonPointerUp(): void {
-    if (!this.ribbonHoldActive) {
-      return;
-    }
-
-    this.ribbonHoldActive = false;
-
-    if (!this.isPressAndHoldMode()) {
-      return;
-    }
-
-    void this.closePressAndHoldGate();
-  }
-
-  async startDictation(options: { openGateAfterStart?: boolean } = {}): Promise<void> {
+  async startDictation(): Promise<void> {
     if (this.sessionId !== null) {
       this.dependencies.notice('Dictation is already active.');
       return;
@@ -176,7 +85,6 @@ export class DictationSessionController {
 
     this.dependencies.editorService.assertActiveEditorAvailable();
     this.sessionId = sessionId;
-    this.gateOpen = false;
     this.applyUiState('starting');
     this.dependencies.logger?.debug('session', `starting dictation session ${sessionId}`);
 
@@ -203,11 +111,6 @@ export class DictationSessionController {
           ? { modelStorePathOverride: settings.modelStorePathOverride }
           : {}),
       });
-
-      if (options.openGateAfterStart && settings.listeningMode === 'press_and_hold') {
-        await this.dependencies.sidecarConnection.setGate(true);
-        this.gateOpen = true;
-      }
     } catch (error) {
       await this.cleanupLocalSession();
       this.handleError('Failed to start the dictation session', error);
@@ -255,28 +158,10 @@ export class DictationSessionController {
 
   private async cleanupLocalSession(): Promise<void> {
     this.abortingSessionId = null;
-    this.gateOpen = false;
-    this.ribbonHoldActive = false;
     this.sessionId = null;
-    this.suppressNextRibbonClick = false;
 
     if (this.dependencies.captureStream.isCapturing()) {
       await this.dependencies.captureStream.stop();
-    }
-  }
-
-  private async closePressAndHoldGate(): Promise<void> {
-    if (!this.isPressAndHoldMode() || !this.gateOpen || this.sessionId === null) {
-      return;
-    }
-
-    this.gateOpen = false;
-    this.dependencies.logger?.debug('session', 'gate closed');
-
-    try {
-      await this.dependencies.sidecarConnection.setGate(false);
-    } catch (error) {
-      this.handleError('Failed to close the press-and-hold gate', error);
     }
   }
 
@@ -376,34 +261,6 @@ export class DictationSessionController {
     this.dependencies.logger?.error('session', message, error);
     this.applyUiState('error');
     this.dependencies.notice(`${message}: ${formatErrorMessage(error)}`);
-  }
-
-  private isPressAndHoldMode(): boolean {
-    return this.dependencies.getSettings().listeningMode === 'press_and_hold';
-  }
-
-  private async openPressAndHoldGate(): Promise<void> {
-    if (!this.isPressAndHoldMode()) {
-      return;
-    }
-
-    if (this.sessionId === null) {
-      await this.startDictation({ openGateAfterStart: true });
-      return;
-    }
-
-    if (this.gateOpen) {
-      return;
-    }
-
-    this.gateOpen = true;
-    this.dependencies.logger?.debug('session', 'gate opened');
-
-    try {
-      await this.dependencies.sidecarConnection.setGate(true);
-    } catch (error) {
-      this.handleError('Failed to open the press-and-hold gate', error);
-    }
   }
 
   private async abortSessionAfterError(sessionId: string): Promise<void> {

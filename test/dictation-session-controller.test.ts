@@ -1,4 +1,3 @@
-import type { App, Hotkey } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 
 import { DictationSessionController } from '../src/dictation/dictation-session-controller';
@@ -47,7 +46,6 @@ class FakeSidecarConnection {
   public listeners = new Set<(event: SidecarEvent) => void>();
   public lastSessionId: string | null = null;
   public sendAudioFrame = vi.fn(() => {});
-  public setGate = vi.fn(async () => {});
   public startSession = vi.fn(async (payload: Omit<StartSessionCommand, 'type'>) => {
     this.lastSessionId = payload.sessionId;
     this.emit({
@@ -57,7 +55,7 @@ class FakeSidecarConnection {
     });
     this.emit({
       sessionId: payload.sessionId,
-      state: payload.mode === 'press_and_hold' ? 'idle' : 'listening',
+      state: 'listening',
       type: 'session_state_changed',
     });
 
@@ -342,72 +340,9 @@ describe('DictationSessionController', () => {
       expect(controller.getState()).toBe('idle');
     });
   });
-
-  it('opens and closes the press-and-hold gate on the configured hotkey', async () => {
-    const sidecarConnection = new FakeSidecarConnection();
-    const controller = createController({
-      app: createAppWithHotkeys([{ key: 'K', modifiers: ['Shift'] }]),
-      getSettings: () =>
-        createSettings({
-          listeningMode: 'press_and_hold',
-          selectedModel: createExternalModelSelection(),
-        }),
-      sidecarConnection,
-    });
-
-    controller.handleDocumentKeyDown(createKeyboardEvent('K', { shiftKey: true }));
-    await vi.waitFor(() => {
-      expect(sidecarConnection.startSession).toHaveBeenCalledTimes(1);
-      expect(sidecarConnection.setGate).toHaveBeenCalledWith(true);
-    });
-
-    controller.handleDocumentKeyUp(createKeyboardEvent('K', { shiftKey: true }));
-    await vi.waitFor(() => {
-      expect(sidecarConnection.setGate).toHaveBeenCalledWith(false);
-    });
-  });
-
-  it('clears ribbon click suppression during local cleanup', async () => {
-    const sidecarConnection = new FakeSidecarConnection();
-    sidecarConnection.startSession.mockImplementation(async () => {
-      throw new Error('session start failed');
-    });
-    const controller = createController({
-      getSettings: () =>
-        createSettings({
-          listeningMode: 'press_and_hold',
-          selectedModel: createExternalModelSelection(),
-        }),
-      sidecarConnection,
-    });
-
-    controller.handleRibbonPointerDown();
-    await vi.waitFor(() => {
-      expect(sidecarConnection.startSession).toHaveBeenCalledTimes(1);
-    });
-
-    // First click acknowledges the error (click suppression was cleared during cleanup)
-    controller.handleRibbonClick();
-    expect(controller.getState()).toBe('idle');
-
-    // Second click starts a new session
-    controller.handleRibbonClick();
-    await vi.waitFor(() => {
-      expect(sidecarConnection.startSession).toHaveBeenCalledTimes(2);
-    });
-  });
 });
 
-function createAppWithHotkeys(hotkeys: Hotkey[]): App {
-  return {
-    hotkeyManager: {
-      getHotkeys: () => hotkeys,
-    },
-  } as unknown as App;
-}
-
 function createController(overrides: {
-  app?: App;
   captureStream?: FakeCaptureStream;
   editorService?: FakeEditorService;
   getSettings?: () => PluginSettings;
@@ -415,32 +350,13 @@ function createController(overrides: {
   sidecarConnection?: FakeSidecarConnection;
 }): DictationSessionController {
   return new DictationSessionController({
-    app: overrides.app ?? createAppWithHotkeys([]),
     captureStream: overrides.captureStream ?? new FakeCaptureStream(),
     editorService: overrides.editorService ?? new FakeEditorService(),
     getSettings: overrides.getSettings ?? (() => createSettings({})),
     notice: overrides.notice ?? (() => {}),
-    pressAndHoldGateCommandId: 'obsidian-local-stt:press-and-hold-gate',
     setRibbonState: () => {},
     sidecarConnection: overrides.sidecarConnection ?? new FakeSidecarConnection(),
   });
-}
-
-function createKeyboardEvent(
-  key: string,
-  modifiers: Partial<Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'>> = {},
-): KeyboardEvent {
-  return {
-    altKey: modifiers.altKey ?? false,
-    ctrlKey: modifiers.ctrlKey ?? false,
-    key,
-    metaKey: modifiers.metaKey ?? false,
-    preventDefault: vi.fn(),
-    repeat: false,
-    shiftKey: modifiers.shiftKey ?? false,
-    stopPropagation: vi.fn(),
-    target: null,
-  } as unknown as KeyboardEvent;
 }
 
 function createSettings(overrides: Partial<PluginSettings>): PluginSettings {

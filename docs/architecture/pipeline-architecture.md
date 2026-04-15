@@ -45,7 +45,7 @@ The processor is a composable chain of text transforms that run after formatting
 
 ### Why Input Chunking Matters
 
-Listening mode and speech segmentation happen upstream of transcription. How audio is chunked affects transcription quality: cutting mid-phrase can produce worse results than waiting for a natural pause. VAD thresholds, sentence detection, and gate timing are all upstream quality concerns that feed into this pipeline.
+Listening mode and speech segmentation happen upstream of transcription. How audio is chunked affects transcription quality: cutting mid-phrase can produce worse results than waiting for a natural pause. VAD thresholds and sentence detection are upstream quality concerns that feed into this pipeline.
 
 ## Implementation Slices
 

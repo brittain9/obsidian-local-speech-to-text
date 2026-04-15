@@ -55,7 +55,6 @@ pub enum SelectedModel {
 #[serde(rename_all = "snake_case")]
 pub enum ListeningMode {
     AlwaysOn,
-    PressAndHold,
     OneSentence,
 }
 
@@ -195,9 +194,6 @@ pub enum Command {
     CancelModelInstall {
         #[serde(rename = "installId")]
         install_id: String,
-    },
-    SetGate {
-        open: bool,
     },
     StopSession,
     CancelSession,

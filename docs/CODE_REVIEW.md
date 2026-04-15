@@ -115,7 +115,6 @@ These areas were reviewed and found to be sound:
 - **Worker validity during drain.** The worker holds `active_session` metadata but receives no new `TranscribeUtterance` commands (audio frames are rejected, no new utterances enqueued). `EndSession` fires in `maybe_complete_drain` after the last result arrives.
 - **Double `graceful_stop` is safe.** Re-entering the function is a no-op: `maybe_finalize_utterance` returns `None`, `draining` is already true, `emit_state_if_changed` emits nothing.
 - **`isBusy()` covers drain.** `sessionId` remains non-null during drain, so `isBusy()` returns true. After `session_stopped` → `cleanupLocalSession()`, `sessionId` is nulled.
-- **Press-and-hold flag cleanup.** `suppressNextRibbonClick` and `ribbonHoldActive` are both reset in `cleanupLocalSession()`. Test at line 385 confirms.
 - **`DictationControllerState` `starting` is client-only.** Not in the wire protocol. Set at `startDictation()` before the RPC, overwritten by the first `session_state_changed` event.
 - **CSS `prefers-reduced-motion`.** Correctly resets `opacity: 1` and `animation: none` on all paths, preventing the `opacity: 0.2` base state from appearing with no animation.
 - **CSS animation child counts.** `loader` has 8 `<path>` children (8-spoke chase). `audio-lines` has 6 `<path>` children (6-bar wave). Both match the nth-child selectors. Fragile by nature but degrades gracefully.
@@ -151,12 +150,6 @@ These are product or architecture decisions that must be made before the corresp
 **Stakes:** Adding a `Draining` wire state is a protocol change. A client-only state requires a new event.
 **Recommendation:** For v1, accept "Transcribing" — the drain interval is typically short. If users report confusion, add a client-only "stopping" state keyed off a new "drain acknowledged" event.
 
-### OD-5 — Hold vs. toggle: setting scope
-
-**Context:** Issue #9 considers adding a toggle alternative to press-and-hold. The sidecar's `SetGate` command is already mode-agnostic.
-**Stakes:** If global, it's a simple settings addition. If per-session (#12), it needs to be in `StartSession`.
-**Recommendation:** Global preference. It's a UX choice, not a transcription behavior. Make it overridable via #12 later if needed.
-
 ---
 
 ## Issue Dependency Map
@@ -171,15 +164,13 @@ These are product or architecture decisions that must be made before the corresp
 
 #10 ◀──tradeoff──▶ #11       (longer utterances ↔ less queue pressure)
 
-#9 (press-and-hold)               (independent, ship anytime)
 ```
 
 **Recommended order:**
 1. Resolve OD-1 (pipeline location) — gates everything downstream
 2. #8 + #10 together — same change (make VAD constants configurable)
 3. #11 — investigation, not feature. Run in parallel with #8/#10
-4. #9 — independent, ship whenever
-5. #12 — last, as the integration point that bundles settings from #6, #8, #10
+4. #12 — last, as the integration point that bundles settings from #6, #8, #10
 
 ---
 

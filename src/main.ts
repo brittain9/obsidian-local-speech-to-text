@@ -4,7 +4,7 @@ import { FileSystemAdapter, Notice, Platform, Plugin } from 'obsidian';
 
 import { AudioCaptureStream } from './audio/audio-capture-stream';
 import { PCM_RECORDER_WORKLET_OUTPUT_PATH } from './audio/pcm-recorder-worklet-shared';
-import { PRESS_AND_HOLD_GATE_COMMAND_ID, registerCommands } from './commands/register-commands';
+import { registerCommands } from './commands/register-commands';
 import { DictationSessionController } from './dictation/dictation-session-controller';
 import { EditorService } from './editor/editor-service';
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
@@ -61,7 +61,6 @@ export default class LocalSttPlugin extends Plugin {
     });
     this.ribbonController = new DictationRibbonController(ribbonElement);
     this.dictationController = new DictationSessionController({
-      app: this.app,
       captureStream: this.audioCaptureStream,
       editorService: this.editorService,
       getSettings: () => this.settings,
@@ -69,28 +68,10 @@ export default class LocalSttPlugin extends Plugin {
       notice: (message) => {
         new Notice(message);
       },
-      pressAndHoldGateCommandId: `${this.manifest.id}:${PRESS_AND_HOLD_GATE_COMMAND_ID}`,
       setRibbonState: (state) => {
         this.ribbonController?.setState(state);
       },
       sidecarConnection: this.sidecarConnection,
-    });
-
-    this.registerDomEvent(this.ribbonController.getElement(), 'pointerdown', (event) => {
-      if (event.button !== 0) {
-        return;
-      }
-
-      this.requireDictationController().handleRibbonPointerDown();
-    });
-    this.registerDomEvent(window, 'pointerup', () => {
-      this.requireDictationController().handleRibbonPointerUp();
-    });
-    this.registerDomEvent(document, 'keydown', (event) => {
-      this.requireDictationController().handleDocumentKeyDown(event);
-    });
-    this.registerDomEvent(document, 'keyup', (event) => {
-      this.requireDictationController().handleDocumentKeyUp(event);
     });
 
     this.addSettingTab(

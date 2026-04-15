@@ -31,7 +31,6 @@ Low findings (cleanup, no correctness impact):
 - [ ] **L1** Remove `isInsertionMode` duplicate in `settings-tab.ts:49` — import from `plugin-settings.ts:110` instead.
 - [x] **L2** Replace inline `error instanceof Error ? error.message : String(error)` in `main.ts:174` and `dictation-session-controller.ts:359` with `formatErrorMessage` from `shared/format-utils.ts:17`.
 - [ ] **L3** Remove dead export `DEFAULT_PCM_SAMPLES_PER_FRAME` from `src/audio/pcm-frame-processor.ts:139`.
-- [ ] **L4** Extract `matchesGateHotkey(event)` private method to deduplicate keydown/keyup handler blocks in `dictation-session-controller.ts:88–93` and `113–118`.
 - [ ] **L5** Extract a helper on `AppState` for the repeated `resolve_model_store_info(model_store_path_override.as_deref())` + error-map pattern in `native/src/app.rs` (appears 6+ times).
 - [ ] **L6** `native/src/session.rs:170` — `push_pre_roll_frame(frame.clone())` clones ~32 KB/s during active speech. Check `speech_started` before cloning, or restructure.
 - [ ] **L7** `native/src/session.rs:70` — `Vec<Vec<i16>>` utterance storage allocates one heap object per 20 ms frame. Flatten to `Vec<i16>`; `maybe_finalize_utterance` already flattens for output.
@@ -43,9 +42,6 @@ Low findings (cleanup, no correctness impact):
 
 Test coverage gaps (from the review's Top 10 list — add when touching the relevant module):
 
-- [ ] `shortcut-matcher`: `matchesHotkey` with `Mod` on macOS (`Platform.isMacOS = true`) — platform branch not exercised by mock
-- [ ] `shortcut-matcher`: `resolveCommandHotkeys` fallback chain — four-level fallback controls whether press-and-hold works
-- [ ] `shortcut-matcher`: `shouldIgnoreHeldKeyEvent` in editable contexts
 - [ ] `sidecar-connection`: `sendCommandAndWait` timeout behaviour
 - [ ] `sidecar-connection`: `rejectPendingWaiters` on process exit
 - [ ] `protocol (TS)`: `FramedMessageParser.pushChunk` with a header-level split across two chunks
