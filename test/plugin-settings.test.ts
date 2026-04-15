@@ -13,7 +13,7 @@ describe('resolvePluginSettings', () => {
         accelerationPreference: 'cpu_only',
         cudaLibraryPath: ' /run/host/usr/lib64 ',
         insertionMode: 'append_as_new_paragraph',
-        listeningMode: 'press_and_hold',
+        listeningMode: 'always_on',
         modelStorePathOverride: ' /tmp/models ',
         pauseWhileProcessing: false,
         selectedModel: {
@@ -30,7 +30,7 @@ describe('resolvePluginSettings', () => {
       cudaLibraryPath: '/run/host/usr/lib64',
       developerMode: false,
       insertionMode: 'append_as_new_paragraph',
-      listeningMode: 'press_and_hold',
+      listeningMode: 'always_on',
       modelStorePathOverride: '/tmp/models',
       pauseWhileProcessing: false,
       selectedModel: {

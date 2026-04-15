@@ -63,7 +63,6 @@ pub struct WebRtcVadDetector {
 pub struct ListeningSession<TVad: VoiceActivityDetector = WebRtcVadDetector> {
     config: SessionConfig,
     elapsed_frames: usize,
-    gate_open: bool,
     pre_roll_frames: VecDeque<Vec<i16>>,
     speech_started: bool,
     trailing_silence_frames: usize,
@@ -80,12 +79,9 @@ impl ListeningSession<WebRtcVadDetector> {
 
 impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     pub fn with_vad(config: SessionConfig, vad: TVad) -> Self {
-        let gate_open = config.mode != ListeningMode::PressAndHold;
-
         Self {
             config,
             elapsed_frames: 0,
-            gate_open,
             pre_roll_frames: VecDeque::with_capacity(PRE_ROLL_FRAMES),
             speech_started: false,
             trailing_silence_frames: 0,
@@ -96,10 +92,6 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     }
 
     pub fn base_state(&self) -> SessionBaseState {
-        if self.config.mode == ListeningMode::PressAndHold && !self.gate_open {
-            return SessionBaseState::Idle;
-        }
-
         if self.speech_started {
             SessionBaseState::SpeechDetected
         } else {
@@ -116,21 +108,8 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         self.voiced_run_frames = 0;
     }
 
-    pub fn close_gate(&mut self) -> Option<SessionAction> {
-        self.gate_open = false;
-
-        let finalized = self.maybe_finalize_utterance();
-        self.clear_activity();
-
-        finalized.map(SessionAction::FinalizeUtterance)
-    }
-
     pub fn config(&self) -> &SessionConfig {
         &self.config
-    }
-
-    pub fn gate_open(&self) -> bool {
-        self.gate_open
     }
 
     pub fn ingest_audio_frame(
@@ -146,11 +125,6 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
                 )),
                 message: "Audio frame size does not match the configured 20 ms PCM format.",
             });
-        }
-
-        if self.config.mode == ListeningMode::PressAndHold && !self.gate_open {
-            self.clear_activity();
-            return Ok(Vec::new());
         }
 
         let frame = decode_pcm_frame(frame_bytes);
@@ -207,11 +181,6 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         }
 
         Ok(Vec::new())
-    }
-
-    pub fn open_gate(&mut self) {
-        self.clear_activity();
-        self.gate_open = true;
     }
 
     fn finalize_and_continue(&mut self) -> Vec<SessionAction> {
@@ -292,8 +261,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
-        SessionStopReason, VoiceActivityDetector,
+        ListeningSession, SessionAction, SessionBaseState, SessionConfig, SessionStopReason,
+        VoiceActivityDetector,
     };
     use crate::protocol::{
         ListeningMode, PCM_BYTES_PER_FRAME, PCM_FRAME_DURATION_MS, PCM_SAMPLES_PER_FRAME,
@@ -351,35 +320,6 @@ mod tests {
         assert_eq!(finalized.duration_ms, 10 * PCM_FRAME_DURATION_MS as u64);
         assert_eq!(finalized.samples.len(), 10 * PCM_SAMPLES_PER_FRAME);
         assert_eq!(session.base_state(), SessionBaseState::Listening);
-    }
-
-    #[test]
-    fn finalizes_on_gate_close_in_press_and_hold_mode() {
-        let decisions = std::iter::repeat_n(true, 10);
-        let mut session = create_session(
-            ListeningMode::PressAndHold,
-            FakeVad::with_decisions(decisions),
-        );
-
-        session.open_gate();
-
-        for _ in 0..10 {
-            let actions = session
-                .ingest_audio_frame(&speech_frame_bytes())
-                .expect("frame should succeed");
-            assert!(actions.is_empty());
-        }
-
-        let action = session.close_gate().expect("gate close should finalize");
-
-        assert_eq!(
-            action,
-            SessionAction::FinalizeUtterance(FinalizedUtterance {
-                duration_ms: 10 * PCM_FRAME_DURATION_MS as u64,
-                samples: vec![1_i16; 10 * PCM_SAMPLES_PER_FRAME],
-            })
-        );
-        assert_eq!(session.base_state(), SessionBaseState::Idle);
     }
 
     #[test]

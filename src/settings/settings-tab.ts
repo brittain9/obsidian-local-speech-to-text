@@ -207,20 +207,17 @@ export class LocalSttSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Listening mode')
       .setDesc(
-        'Choose whether dictation keeps listening continuously, waits for a held gate, or captures one utterance and stops.',
+        'Choose whether dictation keeps listening continuously or captures one utterance and stops.',
       )
       .addDropdown((dropdown) => {
         dropdown.addOption('always_on', 'Always on');
-        dropdown.addOption('press_and_hold', 'Press and hold');
         dropdown.addOption('one_sentence', 'One sentence');
         dropdown.setValue(settings.listeningMode);
         dropdown.onChange(async (value) => {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
             listeningMode:
-              value === 'always_on' || value === 'press_and_hold' || value === 'one_sentence'
-                ? value
-                : 'one_sentence',
+              value === 'always_on' || value === 'one_sentence' ? value : 'one_sentence',
           });
         });
       });
@@ -374,10 +371,6 @@ export class LocalSttSettingTab extends PluginSettingTab {
           });
         });
       });
-
-    containerEl.createEl('p', {
-      text: 'Assign a hotkey to "Local STT: Press-And-Hold Gate" in Obsidian Hotkeys for keyboard press-and-hold input. This hotkey target does not appear in the command palette.',
-    });
   }
 
   override hide(): void {

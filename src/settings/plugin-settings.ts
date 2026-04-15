@@ -112,7 +112,7 @@ export function isInsertionMode(value: unknown): value is InsertionMode {
 }
 
 function readListeningMode(value: unknown): ListeningMode {
-  return value === 'always_on' || value === 'press_and_hold' || value === 'one_sentence'
+  return value === 'always_on' || value === 'one_sentence'
     ? value
     : DEFAULT_PLUGIN_SETTINGS.listeningMode;
 }

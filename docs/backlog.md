@@ -43,9 +43,6 @@ Low findings (cleanup, no correctness impact):
 
 Test coverage gaps (from the review's Top 10 list — add when touching the relevant module):
 
-- [ ] `shortcut-matcher`: `matchesHotkey` with `Mod` on macOS (`Platform.isMacOS = true`) — platform branch not exercised by mock
-- [ ] `shortcut-matcher`: `resolveCommandHotkeys` fallback chain — four-level fallback controls whether press-and-hold works
-- [ ] `shortcut-matcher`: `shouldIgnoreHeldKeyEvent` in editable contexts
 - [ ] `sidecar-connection`: `sendCommandAndWait` timeout behaviour
 - [ ] `sidecar-connection`: `rejectPendingWaiters` on process exit
 - [ ] `protocol (TS)`: `FramedMessageParser.pushChunk` with a header-level split across two chunks

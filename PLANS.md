@@ -1,188 +1,186 @@
-# Ribbon Listening Control and State Model
+# Remove Press-and-Hold Listening Mode
+
+Closes #25.
 
 ## Objective
 
-Make the ribbon icon the single, primary live status surface for dictation state. Remove the status bar text. Each state should be visually distinct and the icon should feel alive during active sessions.
-
-This is the first step toward polishing the app's listening behavior before adding pipeline complexity. The goal is that a user understands what the app is doing at a glance from the ribbon icon alone.
+Remove the press-and-hold listening mode and all supporting infrastructure from both the TypeScript plugin and the Rust sidecar. The mode's use case (momentary dictation triggered by a key) is covered by always-on and one-sentence modes combined with the existing start/stop keybinds.
 
 ---
 
 ## Current State
 
-### Ribbon Icon (`src/ui/dictation-ribbon.ts`)
+Press-and-hold spans five layers:
 
-The ribbon icon currently shows two icons: `mic` (idle, error) and `square` (everything else). All active states look identical — a square stop button. No animation. No visual distinction between listening, speech detected, or transcribing. State is stored in `element.dataset.localSttState` (line 20).
-
-Created in `src/main.ts:61` via `addRibbonIcon('mic', ...)`. Pointer events registered on lines 84-97 for press-and-hold support.
-
-### Status Bar (`src/ui/status-bar.ts`)
-
-Displays `"Local STT: {state}"` in the bottom-right. Carries optional detail text (e.g., `"starting (opening session)"`). Referenced in `main.ts` at lines 42, 78-79, 152, 158, 163, 177, 192, 197.
-
-### State Flow
-
-`DictationSessionController` owns the canonical state. On state change, it calls two callbacks injected at construction:
-
-```
-applyUiState(state, detail?)
-  → this.state = state
-  → setRibbonState(state)        // main.ts:75-77 → ribbonController.setState()
-  → setStatusState(state, detail) // main.ts:78-80 → statusBar.setState()
-```
-
-### Type Coupling
-
-`DictationControllerState` is aliased to `PluginRuntimeState` (defined in `status-bar.ts:1-8`). This creates a dependency from the dictation controller to the status bar module.
-
-### Sidecar Speech Priority
-
-The sidecar's `derive_session_state` in `app.rs:879-907` already checks `SpeechDetected` before `Transcribing`:
-
-```rust
-if base_state == SessionBaseState::SpeechDetected {
-    return SessionState::SpeechDetected;  // Speech always wins
-}
-if transcription_active {
-    return SessionState::Transcribing;    // Only if no speech
-}
-```
-
-This means speech-during-processing already produces `speech_detected` events on the wire. No client-side composite tracking is needed — the sidecar handles the priority.
+1. **Protocol**: `set_gate` command (TS + Rust), `press_and_hold` variant in `ListeningMode` enum (TS + Rust).
+2. **Sidecar session logic**: `gate_open` field on `ListeningSession`, `open_gate()` / `close_gate()` methods, gate checks in `ingest_audio_frame()` and `base_state()`. Command handler in `app.rs:390–431` with `invalid_gate_warning` helper.
+3. **Controller**: `gateOpen` state, `openPressAndHoldGate()` / `closePressAndHoldGate()` methods, `isPressAndHoldMode()` helper, `handleDocumentKeyDown` / `handleDocumentKeyUp` / `handleRibbonPointerDown` / `handleRibbonPointerUp` methods, `ribbonHoldActive` / `suppressNextRibbonClick` fields.
+4. **Commands & UI wiring**: `PRESS_AND_HOLD_GATE_COMMAND_ID` export, hidden Obsidian command registration, pointer event listeners on ribbon, keydown/keyup document listeners, shortcut-matcher module (sole consumer), settings dropdown option, settings tab hint paragraph.
+5. **Settings persistence**: `press_and_hold` accepted in `readListeningMode()`, test fixtures use it.
 
 ---
 
 ## Constraints
 
-- Zero change to the sidecar or protocol. All changes are TypeScript/CSS.
-- Existing tests must pass after adapting to removed `setStatusState`.
-- All icons must be from Lucide (included with Obsidian) — no custom SVGs in this PR.
-- Animations use CSS only (no JS timers for visual state).
-- Respect `prefers-reduced-motion`.
-- Error state persists until user clicks the ribbon to acknowledge.
+- Both TS and Rust protocol definitions must stay in sync — remove the variant from both sides in the same logical step.
+- Existing users with `listeningMode: 'press_and_hold'` persisted in `data.json` must fall back to the default (`one_sentence`) on next load, not crash.
+- `shortcut-matcher.ts` has no consumers outside press-and-hold. It should be deleted entirely.
+- The three backlog items referencing `shortcut-matcher` test coverage should be removed (the module no longer exists).
+- Docs (`system-architecture.md`, `CODE_REVIEW.md`, `backlog.md`) must be updated to remove press-and-hold references.
 
 ---
 
 ## Approach
 
-### 1. Move `DictationControllerState` out of `status-bar.ts`
-
-Define the type inline in `dictation-session-controller.ts`. This breaks the import dependency before we delete the status bar module.
-
-### 2. Update ribbon icon mapping
-
-Replace the two-icon system (`mic` / `square`) with state-specific icons:
-
-| State | Icon | Animation | Tooltip |
-|-------|------|-----------|---------|
-| `idle` | `mic` | None | "Local STT: Click to start" |
-| `starting` | `loader-circle` | Spin | "Local STT: Starting..." |
-| `listening` | `audio-lines` | Static | "Local STT: Listening" |
-| `speech_detected` | `audio-lines` | Pulse | "Local STT: Hearing speech" |
-| `transcribing` | `loader-circle` | Spin | "Local STT: Transcribing..." |
-| `paused` | `loader-circle` | Spin | "Local STT: Processing..." |
-| `error` | `mic-off` | Shake (once) | "Local STT: Error" |
-
-### 3. Add CSS animations
-
-Target the SVG inside the ribbon element using the existing `data-local-stt-state` attribute. Three keyframe animations:
-
-- **Spin** (`local-stt-spin`): 360deg rotation, linear, infinite. For `starting`, `transcribing`, `paused`.
-- **Pulse** (`local-stt-pulse`): Scale 1→1.15→1 with slight opacity shift. For `speech_detected`.
-- **Shake** (`local-stt-shake`): Horizontal wiggle, plays once. For `error`.
-
-Selector pattern: `.side-dock-ribbon-action[data-local-stt-state="X"] > svg`
-
-### 4. Delete status bar
-
-Remove `StatusBarController`, its import, instantiation, callbacks, and disposal. Remove `setStatusState` from the controller dependency interface.
-
-### 5. Handle error-persists-until-click
-
-Currently, `abortSessionAfterError` resets to idle after the cancel completes (line 419). With error persisting until click, the ribbon click handler needs to check: if state is `error` and no session is active, reset to `idle` instead of starting a new session.
+Bottom-up removal: protocol → sidecar → controller → commands/UI → settings → docs. Each step removes a clean slice and the codebase compiles after each step.
 
 ---
 
 ## Execution Steps
 
-- [ ] **Step 1: Move `DictationControllerState` type**
-  - In `src/dictation/dictation-session-controller.ts`: Replace `import type { PluginRuntimeState } from '../ui/status-bar'` and `export type DictationControllerState = PluginRuntimeState` with a direct type definition:
-    ```typescript
-    export type DictationControllerState =
-      | 'idle' | 'starting' | 'listening' | 'speech_detected'
-      | 'transcribing' | 'paused' | 'error';
-    ```
-  - Verify: `npm run typecheck` passes. No behavior change.
+### Step 1: Remove gate from Rust protocol and session
 
-- [ ] **Step 2: Rewrite `dictation-ribbon.ts` with new icon mapping**
-  - Write `src/ui/dictation-ribbon.ts` fresh. Same class name, same interface (`setState`, `getElement`, `dispose`), same import path. No consumer changes needed.
-  - Icon type union: `'mic' | 'mic-off' | 'audio-lines' | 'loader-circle'`.
-  - `buildRibbonState()` switch cases per the mapping table above.
-  - Verify: `npm run typecheck` passes. Ribbon shows new icons for each state.
+**Files:** `native/src/protocol.rs`, `native/src/session.rs`
 
-- [ ] **Step 3: Add CSS animations to `styles.css`**
-  - Add keyframes: `local-stt-spin`, `local-stt-pulse`, `local-stt-shake`.
-  - Add state selectors targeting `.side-dock-ribbon-action[data-local-stt-state="X"] > svg`.
-  - Add `@media (prefers-reduced-motion: reduce)` to disable all animations.
-  - Verify: Start dictation → see static audio-lines. Speak → see pulse. Stop speaking → see spinner.
+- Remove `PressAndHold` from `ListeningMode` enum (`protocol.rs:58`).
+- Remove `SetGate` from `Command` enum (`protocol.rs:199–201`).
+- In `session.rs`:
+  - Remove `gate_open` field from `ListeningSession` struct (line 66).
+  - Remove `let gate_open = config.mode != ListeningMode::PressAndHold` and the field initializer (lines 83, 88).
+  - Remove `base_state()` press-and-hold branch (lines 99–101).
+  - Remove `close_gate()` method (lines 119–126).
+  - Remove `gate_open()` accessor (lines 132–134).
+  - Remove gate check in `ingest_audio_frame()` (lines 151–154).
+  - Remove `open_gate()` method (lines 212–215).
+  - Remove test `finalizes_on_gate_close_in_press_and_hold_mode` (lines 357–383).
+- **Verify:** `cargo test` passes, `cargo clippy` passes (with `DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1`).
 
-- [ ] **Step 4: Remove status bar**
-  - Delete `src/ui/status-bar.ts`.
-  - In `src/main.ts`:
-    - Remove `import { StatusBarController } from './ui/status-bar'` (line 23).
-    - Remove `private statusBar: StatusBarController | null = null` (line 36).
-    - Remove `this.statusBar = new StatusBarController(this.addStatusBarItem())` (line 42).
-    - Remove `setStatusState` callback from controller dependencies (lines 78-80).
-    - Remove `this.statusBar?.setState(...)` calls in `checkSidecarHealth` (lines 158, 163), `handleError` (line 177), `restartSidecar` (lines 192, 197).
-    - Remove `this.statusBar?.dispose()` in `onunload` (line 152).
-  - In `src/dictation/dictation-session-controller.ts`:
-    - Remove `setStatusState` from `DictationSessionControllerDependencies` interface (line 28).
-    - Remove `this.dependencies.setStatusState(state, detail)` from `applyUiState` (line 237).
-  - In `test/dictation-session-controller.test.ts`:
-    - Remove `setStatusState: () => {}` from `createController` (line 432).
-  - Note: `checkSidecarHealth` (lines 158, 163) and `restartSidecar` (lines 192, 197) used the status bar as a transient progress indicator (`"starting (health check)"`, `"starting (restarting)"`). The `Notice` popups in those methods already cover the result. The transient progress indicator is intentionally dropped — these operations take 1-2 seconds and the status bar text was barely visible in practice.
-  - Verify: `npm run typecheck` passes. `npm test` passes. No status bar text visible.
+### Step 2: Remove gate command handler from `app.rs`
 
-- [ ] **Step 5: Error persists until click**
-  - In `dictation-session-controller.ts`, modify `abortSessionAfterError` (lines 395-423): Remove the auto-reset to idle in the `finally` block (lines 419-421). The error state should remain.
-  - In `toggleDictation` (called by `handleRibbonClick`): Add a check at the top — if `this.state === 'error'` and `this.sessionId === null`, call `this.applyUiState('idle')` and return. This lets clicking the ribbon acknowledge the error.
-  - **Interaction with `handleSessionStopped`:** Error state persists until click only when no `session_stopped` event follows the error. If the sidecar confirms session teardown via `session_stopped`, `handleSessionStopped` unconditionally resets to `idle` (line 297) — this is correct because the sidecar has resolved the error condition. Error persistence applies to the case where the cancel itself fails and no `session_stopped` arrives, which is exactly when the user needs to acknowledge.
-  - **Test update required** in `test/dictation-session-controller.test.ts`:
-    - Line 271 (`returns to idle after cancel cleanup fails for an errored session`): This test mocks `cancelSession` to throw, so no `session_stopped` event fires. Currently expects `'idle'` at line 295 because the `finally` block auto-resets. After removing the auto-reset, the test must expect `'error'`, then call `controller.handleRibbonClick()` and expect `'idle'`.
-    - Line 300 (`cancels an errored session only once`): No change needed. The `resolveCancel()` emits `session_stopped` → `handleSessionStopped` resets to `idle`. This test still passes as-is.
-  - Verify: `npm test` passes. Trigger an error → ribbon shows `mic-off` with shake → click ribbon → returns to `idle` `mic`.
+**File:** `native/src/app.rs`
+
+- Remove the entire `Command::SetGate { open } => { ... }` match arm (lines 390–431).
+- Remove the `invalid_gate_warning` helper function (lines 1012–1019).
+- **Verify:** `cargo test` passes.
+
+### Step 3: Remove gate from TS protocol and sidecar connection
+
+**Files:** `src/sidecar/protocol.ts`, `src/sidecar/sidecar-connection.ts`
+
+- In `protocol.ts`:
+  - Remove `'press_and_hold'` from `ListeningMode` type (line 26).
+  - Remove `SetGateCommand` interface (lines 103–105).
+  - Remove `SetGateCommand` from `SidecarCommand` union (line 126).
+  - Remove `createSetGateCommand()` function (lines 285–290).
+  - Remove `'press_and_hold'` from `readListeningMode()` (line 621).
+- In `sidecar-connection.ts`:
+  - Remove `createSetGateCommand` import (line 15).
+  - Remove `setGate()` method (lines 277–279).
+- **Verify:** `npm run typecheck` passes.
+
+### Step 4: Remove press-and-hold from dictation controller
+
+**Files:** `src/dictation/dictation-session-controller.ts`, `src/dictation/shortcut-matcher.ts`
+
+- In `dictation-session-controller.ts`:
+  - Remove `shortcut-matcher` import (lines 11–14).
+  - Remove `pressAndHoldGateCommandId` and `pressAndHoldGateDefaultHotkeys` from `DictationSessionControllerDependencies` (lines 32–33).
+  - Remove `'setGate'` from sidecar connection `Pick` type (line 37).
+  - Remove `gateOpen` field (line 43).
+  - Remove `ribbonHoldActive` field (line 45).
+  - Remove `suppressNextRibbonClick` field (line 46).
+  - Remove `handleDocumentKeyDown()` method entirely (lines 85–112).
+  - Remove `handleDocumentKeyUp()` method entirely (lines 114–132).
+  - Simplify `handleRibbonClick()` — remove the `isPressAndHoldMode()` / suppress check (lines 135–138), keep only `void this.toggleDictation()`.
+  - Remove `handleRibbonPointerDown()` method entirely (lines 143–151).
+  - Remove `handleRibbonPointerUp()` method entirely (lines 153–165).
+  - In `startDictation()`: remove `openGateAfterStart` option and the gate-open block (lines 167, 207–210). Signature becomes `async startDictation(): Promise<void>`.
+  - In `cleanupLocalSession()`: remove `gateOpen`, `ribbonHoldActive`, `suppressNextRibbonClick` resets (lines 258–259, 261).
+  - Remove `closePressAndHoldGate()` method (lines 268–281).
+  - Remove `isPressAndHoldMode()` method (lines 381–383).
+  - Remove `openPressAndHoldGate()` method (lines 385–407).
+- Delete `src/dictation/shortcut-matcher.ts` entirely — no other consumers.
+- **Verify:** `npm run typecheck` passes.
+
+### Step 5: Remove press-and-hold from commands and main plugin wiring
+
+**Files:** `src/commands/register-commands.ts`, `src/main.ts`
+
+- In `register-commands.ts`:
+  - Remove `PRESS_AND_HOLD_GATE_COMMAND_ID` constant and export (line 6).
+  - Remove the hidden command registration block (lines 43–48).
+- In `main.ts`:
+  - Remove `PRESS_AND_HOLD_GATE_COMMAND_ID` import (line 7).
+  - Remove `pressAndHoldGateCommandId` from controller dependencies (line 72).
+  - Remove ribbon `pointerdown` event registration (lines 79–85).
+  - Remove window `pointerup` event registration (lines 86–88).
+  - Remove document `keydown` event registration (lines 89–91).
+  - Remove document `keyup` event registration (lines 92–94).
+- **Verify:** `npm run typecheck` passes.
+
+### Step 6: Remove press-and-hold from settings
+
+**Files:** `src/settings/plugin-settings.ts`, `src/settings/settings-tab.ts`
+
+- In `plugin-settings.ts`:
+  - Remove `'press_and_hold'` from `readListeningMode()` (line 115). Existing users with `press_and_hold` persisted will fall back to the default (`one_sentence`).
+- In `settings-tab.ts`:
+  - Remove the `press_and_hold` dropdown option (line 214).
+  - Remove `'press_and_hold'` from the onChange validation (line 221).
+  - Remove the press-and-hold hotkey hint paragraph (lines 378–380).
+- **Verify:** `npm run typecheck` passes.
+
+### Step 7: Update tests
+
+**Files:** `test/dictation-session-controller.test.ts`, `test/plugin-settings.test.ts`
+
+- In `dictation-session-controller.test.ts`:
+  - Remove `setGate` from `FakeSidecarConnection` (line 50).
+  - Remove `press_and_hold ? 'idle' : 'listening'` ternary — always emit `'listening'` (line 60).
+  - Remove test `opens and closes the press-and-hold gate on the configured hotkey` (lines 346–368).
+  - Remove test `clears ribbon click suppression during local cleanup` (lines 370–398).
+  - Remove `pressAndHoldGateCommandId` from `createController` (line 423).
+- In `plugin-settings.test.ts`:
+  - Change `listeningMode: 'press_and_hold'` to `'always_on'` in the "merges valid persisted values" test (lines 16, 33). This test exercises round-tripping a non-default listening mode.
+- **Verify:** `npm test` passes (all TS tests). `npm run check` passes (typecheck + lint + test + build).
+
+### Step 8: Update documentation
+
+**Files:** `docs/architecture/system-architecture.md`, `docs/backlog.md`, `docs/CODE_REVIEW.md`
+
+- In `system-architecture.md`:
+  - Remove `set_gate` row from commands table (line 138).
+  - Remove "Gate mechanism (press_and_hold)" paragraph (line 209).
+  - Remove `press_and_hold` row from listening modes table (line 319).
+- In `backlog.md`:
+  - Remove three `shortcut-matcher` test coverage items (lines 46–48).
+- In `CODE_REVIEW.md`:
+  - Remove OD-5 section "Hold vs. toggle: setting scope" (lines 154–158).
+  - Update issue dependency map — remove `#9 (press-and-hold)` line (line 174) and the recommended order entry (line 181).
 
 ---
 
 ## Verification
 
 ```bash
-npm run typecheck
-npm test
-npm run build
+cargo test                              # 65+ Rust tests
+cargo clippy -- -D warnings             # (with DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1)
+npm run check                           # typecheck + lint + 119 TS tests + build
 ```
 
-**Manual testing matrix (per listening mode):**
+Grep for residual references:
+```bash
+rg 'press.and.hold|press_and_hold|PressAndHold|pressAndHold|set_gate|setGate|SetGate|open_gate|close_gate|gate_open|gateOpen|shortcut-matcher' --type ts --type rust
+```
 
-| Mode | Flow | Expected visuals |
-|------|------|------------------|
-| Always-on | Click start → speak → stop speaking → speak again → click stop | mic → audio-lines(static) → audio-lines(pulse) → loader(spin) → audio-lines(pulse) → mic |
-| Press-and-hold | Hold key → speak → release | mic → audio-lines(static) → audio-lines(pulse) → loader(spin) → mic |
-| One-sentence | Click start → speak → auto-stop | mic → audio-lines(static) → audio-lines(pulse) → loader(spin) → mic |
-| Error | Start with no model selected | mic → mic-off(shake) → stays until click → mic |
-
-**Accessibility:** Enable `prefers-reduced-motion` in browser devtools → all animations should be disabled.
-
-**Theme check:** Verify icon visibility in both light and dark Obsidian themes.
+Expected: zero matches.
 
 ---
 
 ## Risks and Open Questions
 
-**CSS selector specificity**: `.side-dock-ribbon-action` is Obsidian's internal class for ribbon icons. It's stable across versions but not an official API. If Obsidian changes this class name, our animations break silently (icons still work, just no animation). Low risk — the class has been stable for years.
+**Settings migration**: Users with `listeningMode: 'press_and_hold'` in their persisted `data.json` will silently fall back to `one_sentence` (the default) on next load. This is the correct behavior — `readListeningMode()` already handles unknown values by returning the default. No migration code needed.
 
-**`loader-circle` icon availability**: This icon requires Obsidian ≥1.4 (Lucide). Our `minAppVersion` is `1.8.7` — safe.
+**Issue #9 references**: `CODE_REVIEW.md` references issue #9 (hold vs. toggle). Since press-and-hold is being removed, the open decision (OD-5) and the dependency map entry should be removed. Issue #9 itself can be closed separately.
 
-**Error persistence edge case**: If an error occurs during `abortSessionAfterError` and the cancel also fails, we currently clean up locally and show error then reset to idle. With the new behavior, we show error and stop. If a subsequent auto-cleanup runs (from `handleSessionStopped`), it will reset to idle, which is correct — the session actually ended.
-
-**No status bar replacement**: Removing the status bar means the detail text (e.g., `"starting (opening session)"`, `"error (connection timeout)"`) is lost. The tooltip partially replaces this, but detailed error messages will only be visible via the Notice popup. This is acceptable — the ribbon is a glanceable indicator, not a log.
+**`shortcut-matcher` deletion scope**: The module has zero consumers outside `dictation-session-controller.ts`'s press-and-hold key handlers, zero tests, and three backlog items requesting test coverage. Deleting it is cleaner than keeping dead code. If key-driven shortcuts are needed later (e.g., toggle dictation from keyboard), they should use Obsidian's built-in command hotkeys rather than a custom key matcher.
