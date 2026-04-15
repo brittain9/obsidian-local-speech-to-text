@@ -557,7 +557,7 @@ async fn install_model_with_downloader(
             ));
         }
 
-        let digest = format!("{:x}", hasher.finalize());
+        let digest = hex_encode(&hasher.finalize());
 
         if digest != artifact.sha256 {
             cleanup_stage_dir(&stage_dir);
@@ -747,6 +747,16 @@ fn failed_update(install_id: &str, engine_id: EngineId, model_id: &str, message:
         state: ModelInstallState::Failed,
         total_bytes: None,
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            use std::fmt::Write;
+            write!(s, "{b:02x}").unwrap();
+            s
+        })
 }
 
 #[cfg(test)]
@@ -1328,6 +1338,6 @@ mod tests {
     fn sha256_hex(bytes: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
-        format!("{:x}", hasher.finalize())
+        super::hex_encode(&hasher.finalize())
     }
 }
