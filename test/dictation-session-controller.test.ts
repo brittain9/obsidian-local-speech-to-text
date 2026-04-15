@@ -207,7 +207,7 @@ describe('DictationSessionController', () => {
     ]);
   });
 
-  it('notifies when a transcript completes with no usable text', async () => {
+  it('silently discards an empty transcript and continues the session', async () => {
     const notice = vi.fn();
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
@@ -228,10 +228,9 @@ describe('DictationSessionController', () => {
     });
 
     await vi.waitFor(() => {
-      expect(notice).toHaveBeenCalledWith(
-        'Failed to insert the local transcript: Transcription completed but returned no text.',
-      );
-      expect(sidecarConnection.cancelSession).toHaveBeenCalledTimes(1);
+      expect(notice).not.toHaveBeenCalled();
+      expect(sidecarConnection.cancelSession).not.toHaveBeenCalled();
+      expect(controller.getState()).not.toBe('error');
     });
   });
 
