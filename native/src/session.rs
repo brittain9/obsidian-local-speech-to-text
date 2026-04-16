@@ -38,27 +38,27 @@ impl SpeakingStyle {
         match self {
             Self::Responsive => VadTuning {
                 speech_threshold: 0.40,
-                silence_end_frames: 12,
+                silence_end_frames: 20,
                 min_speech_frames: 3,
                 pre_speech_pad_frames: 2,
                 post_speech_pad_frames: 2,
-                silence_gap_min_frames: 4,
+                silence_gap_min_frames: 6,
             },
             Self::Balanced => VadTuning {
                 speech_threshold: 0.50,
-                silence_end_frames: 14,
+                silence_end_frames: 50,
                 min_speech_frames: 5,
                 pre_speech_pad_frames: 2,
                 post_speech_pad_frames: 2,
-                silence_gap_min_frames: 4,
+                silence_gap_min_frames: 16,
             },
             Self::Patient => VadTuning {
                 speech_threshold: 0.55,
-                silence_end_frames: 25,
+                silence_end_frames: 100,
                 min_speech_frames: 6,
                 pre_speech_pad_frames: 2,
                 post_speech_pad_frames: 2,
-                silence_gap_min_frames: 8,
+                silence_gap_min_frames: 33,
             },
         }
     }
@@ -403,13 +403,13 @@ mod tests {
     #[test]
     fn finalizes_after_silence_end_frames_below_negative_threshold() {
         // Balanced preset: 5 speech frames trigger speech_started,
-        // then 14 silence frames must pass before finalization fires.
-        let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.0_f32, 14));
+        // then 50 silence frames must pass before finalization fires.
+        let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.0_f32, 50));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
         let mut finalized = None;
 
-        for _ in 0..19 {
+        for _ in 0..55 {
             let actions = session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -430,15 +430,15 @@ mod tests {
 
     #[test]
     fn start_and_end_apply_two_frames_of_padding_when_available() {
-        // 2 silence lead-in + 5 speech (min_speech gate) + 14 silence (silence_end gate).
+        // 2 silence lead-in + 5 speech (min_speech gate) + 50 silence (silence_end gate).
         let decisions = std::iter::repeat_n(0.0_f32, 2)
             .chain(std::iter::repeat_n(1.0_f32, 5))
-            .chain(std::iter::repeat_n(0.0_f32, 14));
+            .chain(std::iter::repeat_n(0.0_f32, 50));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
         let mut finalized = None;
 
-        for _ in 0..21 {
+        for _ in 0..57 {
             let actions = session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -480,16 +480,16 @@ mod tests {
 
     #[test]
     fn can_finalize_two_utterances_separated_by_silence() {
-        // Two back-to-back 5-speech / 14-silence cycles under Balanced.
+        // Two back-to-back 5-speech / 50-silence cycles under Balanced.
         let decisions = std::iter::repeat_n(1.0_f32, 5)
-            .chain(std::iter::repeat_n(0.0_f32, 14))
+            .chain(std::iter::repeat_n(0.0_f32, 50))
             .chain(std::iter::repeat_n(1.0_f32, 5))
-            .chain(std::iter::repeat_n(0.0_f32, 14));
+            .chain(std::iter::repeat_n(0.0_f32, 50));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
         let mut finalized_count = 0;
 
-        for _ in 0..38 {
+        for _ in 0..110 {
             let actions = session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -506,17 +506,17 @@ mod tests {
     #[test]
     fn intermediate_probabilities_do_not_cancel_a_pending_end() {
         // 5 speech frames, 1 silence frame (arms pending_end_start),
-        // then 13 frames at 0.4 (above negative_threshold=0.35 but below
+        // then 49 frames at 0.4 (above negative_threshold=0.35 but below
         // speech_threshold=0.5) — intermediate prob must not reset pending_end.
         let decisions = std::iter::repeat_n(1.0_f32, 5)
             .chain([0.0_f32])
-            .chain(std::iter::repeat_n(0.4_f32, 13));
+            .chain(std::iter::repeat_n(0.4_f32, 49));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
         let mut finalized = None;
         let mut finalized_at_frame = 0;
 
-        for i in 0..19 {
+        for i in 0..55 {
             let actions = session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -529,22 +529,22 @@ mod tests {
         }
 
         let finalized = finalized.expect("utterance should finalize");
-        assert_eq!(finalized_at_frame, 19);
+        assert_eq!(finalized_at_frame, 55);
         assert_eq!(finalized.duration_ms, 5 * PCM_FRAME_DURATION_MS as u64);
     }
 
     #[test]
     fn strong_speech_resets_a_pending_end() {
         // 5 speech frames + 1 silence (arms pending_end) + 1 strong speech (clears it)
-        // + 14 silence (fresh silence_end countdown).
+        // + 50 silence (fresh silence_end countdown).
         let decisions = std::iter::repeat_n(1.0_f32, 5)
             .chain([0.0_f32, 1.0_f32])
-            .chain(std::iter::repeat_n(0.0_f32, 14));
+            .chain(std::iter::repeat_n(0.0_f32, 50));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
         let mut finalized_at_frame = None;
 
-        for i in 0..21 {
+        for i in 0..57 {
             let actions = session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -558,19 +558,19 @@ mod tests {
             }
         }
 
-        assert_eq!(finalized_at_frame, Some(21));
+        assert_eq!(finalized_at_frame, Some(57));
     }
 
     #[test]
     fn speech_paused_state_during_brief_silence() {
-        // 5 speech frames start speech, then 14 frames at 0.4 (below 0.5 threshold but
+        // 5 speech frames start speech, then 50 frames at 0.4 (below 0.5 threshold but
         // above 0.35 negative_threshold) push frames_since_confident_speech to the
         // silence_end_frames threshold, transitioning to SpeechPaused.
-        let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.4_f32, 14));
+        let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.4_f32, 50));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
 
-        for _ in 0..19 {
+        for _ in 0..55 {
             session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -581,13 +581,13 @@ mod tests {
 
     #[test]
     fn speech_detected_before_pause_threshold() {
-        // 13 quiet-but-not-silent frames keep frames_since_confident_speech just
+        // 49 quiet-but-not-silent frames keep frames_since_confident_speech just
         // below silence_end_frames, so the state stays in SpeechDetected.
-        let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.4_f32, 13));
+        let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.4_f32, 49));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
 
-        for _ in 0..18 {
+        for _ in 0..54 {
             session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -602,7 +602,7 @@ mod tests {
         // so utterance_frames.len() = frame_count - FRAME_OFFSET from that point on.
         const FRAME_OFFSET: usize = 2;
         let gap_start = 1400;
-        let gap_len = 10;
+        let gap_len = 20;
         let total_frames = super::MAX_UTTERANCE_FRAMES + FRAME_OFFSET;
         let after_gap = total_frames - gap_start - gap_len;
 

@@ -6,6 +6,7 @@ Run cutting-edge local transcription directly in Obsidian. Choose between Cohere
 - **Cross-platform design** — built for desktop Obsidian on macOS, Linux, and Windows, with Windows support planned for a later release.
 - **Cohere Transcribe support** — use a [Hugging Face Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)-topping speech recognition model directly inside Obsidian.
 - **Whisper support** — choose a mature offline transcription model with a wide range of size and performance options.
+- **Silero v6 voice activity detection** — neural VAD for accurate, real-time speech boundary detection.
 - **One-click model management** — browse, download, and remove models from inside the plugin.
 - **Hardware acceleration** — supports Metal on macOS and CUDA on Linux, with Windows hardware acceleration planned alongside Windows support.
 - **Obsidian-native experience** — integrates cleanly with the app through native settings, commands, and interface elements.
