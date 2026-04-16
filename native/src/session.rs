@@ -10,9 +10,14 @@ use crate::protocol::{
 
 const PRE_ROLL_FRAMES: usize = 10;
 const SPEECH_START_THRESHOLD_FRAMES: usize = 10;
-const SPEECH_END_THRESHOLD_FRAMES: usize = 30;
+const SPEECH_END_THRESHOLD_FRAMES: usize = 75;
+const SPEECH_PAUSE_THRESHOLD_FRAMES: usize = 25;
+const SILENCE_GAP_MIN_FRAMES: usize = 5;
+const ADAPTIVE_PATIENCE_CAP_FRAMES: usize = 25;
+const BOUNDARY_STALENESS_CAP_FRAMES: usize = 250;
+const FRAMES_PER_SECOND: usize = 1_000 / PCM_FRAME_DURATION_MS;
 const ONE_SENTENCE_TIMEOUT_FRAMES: usize = 500;
-const MAX_UTTERANCE_FRAMES: usize = 1_000;
+const MAX_UTTERANCE_FRAMES: usize = 1_500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
@@ -39,6 +44,7 @@ pub enum SessionAction {
 pub enum SessionBaseState {
     Listening,
     SpeechDetected,
+    SpeechPaused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +68,7 @@ pub struct WebRtcVadDetector {
 pub struct ListeningSession<TVad: VoiceActivityDetector = WebRtcVadDetector> {
     config: SessionConfig,
     elapsed_frames: usize,
+    last_silence_boundary: Option<usize>,
     pre_roll_frames: VecDeque<Vec<i16>>,
     speech_started: bool,
     trailing_silence_frames: usize,
@@ -81,6 +88,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         Self {
             config,
             elapsed_frames: 0,
+            last_silence_boundary: None,
             pre_roll_frames: VecDeque::with_capacity(PRE_ROLL_FRAMES),
             speech_started: false,
             trailing_silence_frames: 0,
@@ -92,7 +100,11 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
 
     pub fn base_state(&self) -> SessionBaseState {
         if self.speech_started {
-            SessionBaseState::SpeechDetected
+            if self.trailing_silence_frames >= SPEECH_PAUSE_THRESHOLD_FRAMES {
+                SessionBaseState::SpeechPaused
+            } else {
+                SessionBaseState::SpeechDetected
+            }
         } else {
             SessionBaseState::Listening
         }
@@ -100,6 +112,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
 
     pub fn clear_activity(&mut self) {
         self.elapsed_frames = 0;
+        self.last_silence_boundary = None;
         self.pre_roll_frames.clear();
         self.speech_started = false;
         self.trailing_silence_frames = 0;
@@ -163,11 +176,15 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
                 self.trailing_silence_frames += 1;
             }
 
-            if self.utterance_frames.len() >= MAX_UTTERANCE_FRAMES {
-                return Ok(self.finalize_and_continue());
+            if self.trailing_silence_frames >= SILENCE_GAP_MIN_FRAMES {
+                self.last_silence_boundary = Some(self.utterance_frames.len());
             }
 
-            if self.trailing_silence_frames >= SPEECH_END_THRESHOLD_FRAMES {
+            if self.utterance_frames.len() >= MAX_UTTERANCE_FRAMES {
+                return Ok(self.split_at_boundary());
+            }
+
+            if self.trailing_silence_frames >= self.effective_end_threshold() {
                 return Ok(self.finalize_and_continue());
             }
         }
@@ -180,6 +197,37 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         }
 
         Ok(Vec::new())
+    }
+
+    fn effective_end_threshold(&self) -> usize {
+        let speech_seconds = self.utterance_frames.len() / FRAMES_PER_SECOND;
+        let bonus = speech_seconds.min(ADAPTIVE_PATIENCE_CAP_FRAMES);
+        SPEECH_END_THRESHOLD_FRAMES + bonus
+    }
+
+    fn split_at_boundary(&mut self) -> Vec<SessionAction> {
+        let len = self.utterance_frames.len();
+        let usable_boundary = self
+            .last_silence_boundary
+            .filter(|&idx| len - idx < BOUNDARY_STALENESS_CAP_FRAMES);
+
+        let Some(idx) = usable_boundary else {
+            return self.finalize_and_continue();
+        };
+
+        if idx == 0 {
+            return self.finalize_and_continue();
+        }
+
+        let finalized = flatten_frames(&self.utterance_frames[..idx]);
+
+        // Drain the prefix, leaving carry-forward frames in place
+        self.utterance_frames.drain(..idx);
+        self.trailing_silence_frames = 0;
+        self.voiced_run_frames = 0;
+        self.last_silence_boundary = None;
+
+        vec![SessionAction::FinalizeUtterance(finalized)]
     }
 
     fn finalize_and_continue(&mut self) -> Vec<SessionAction> {
@@ -206,16 +254,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             return None;
         }
 
-        let mut samples = Vec::with_capacity(retained_frames * PCM_SAMPLES_PER_FRAME);
-
-        for frame in self.utterance_frames.iter().take(retained_frames) {
-            samples.extend_from_slice(frame);
-        }
-
-        Some(FinalizedUtterance {
-            duration_ms: (retained_frames * PCM_FRAME_DURATION_MS) as u64,
-            samples,
-        })
+        Some(flatten_frames(&self.utterance_frames[..retained_frames]))
     }
 
     fn push_pre_roll_frame(&mut self, frame: Vec<i16>) {
@@ -244,6 +283,17 @@ impl VoiceActivityDetector for WebRtcVadDetector {
         self.vad
             .is_voice_segment(frame)
             .map_err(|_| VoiceActivityError)
+    }
+}
+
+fn flatten_frames(frames: &[Vec<i16>]) -> FinalizedUtterance {
+    let mut samples = Vec::with_capacity(frames.len() * PCM_SAMPLES_PER_FRAME);
+    for frame in frames {
+        samples.extend_from_slice(frame);
+    }
+    FinalizedUtterance {
+        duration_ms: (frames.len() * PCM_FRAME_DURATION_MS) as u64,
+        samples,
     }
 }
 
@@ -298,12 +348,14 @@ mod tests {
 
     #[test]
     fn finalizes_single_utterance_after_trailing_silence() {
-        let decisions = std::iter::repeat_n(true, 10).chain(std::iter::repeat_n(false, 30));
+        // 10 voiced + N silence: utterance_frames = 10+N, speech_seconds = (10+N)/50.
+        // At N=76: speech_seconds=1, threshold=76, 76>=76 → finalize.
+        let decisions = std::iter::repeat_n(true, 10).chain(std::iter::repeat_n(false, 76));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
         let mut finalized = None;
 
-        for _ in 0..40 {
+        for _ in 0..86 {
             let actions = session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -346,15 +398,16 @@ mod tests {
 
     #[test]
     fn can_finalize_two_utterances_separated_by_silence() {
+        // Each utterance: 10 voiced + 76 silence → finalize (see threshold reasoning above).
         let decisions = std::iter::repeat_n(true, 10)
-            .chain(std::iter::repeat_n(false, 30))
+            .chain(std::iter::repeat_n(false, 76))
             .chain(std::iter::repeat_n(true, 10))
-            .chain(std::iter::repeat_n(false, 30));
+            .chain(std::iter::repeat_n(false, 76));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
         let mut finalized_count = 0;
 
-        for _ in 0..80 {
+        for _ in 0..172 {
             let actions = session
                 .ingest_audio_frame(&speech_frame_bytes())
                 .expect("frame should succeed");
@@ -366,6 +419,138 @@ mod tests {
         }
 
         assert_eq!(finalized_count, 2);
+    }
+
+    #[test]
+    fn adaptive_threshold_increases_with_speech_duration() {
+        // 250 voiced + N silence: utterance_frames = 250+N, speech_seconds = (250+N)/50.
+        // At N=81: speech_seconds=6, threshold=81, 81>=81 → finalize.
+        let decisions = std::iter::repeat_n(true, 250).chain(std::iter::repeat_n(false, 81));
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+        let mut finalized = None;
+        let mut finalized_at_frame = 0;
+
+        for i in 0..331 {
+            let actions = session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed");
+
+            if let Some(SessionAction::FinalizeUtterance(utterance)) = actions.into_iter().next() {
+                finalized = Some(utterance);
+                finalized_at_frame = i + 1;
+                break;
+            }
+        }
+
+        let finalized = finalized.expect("utterance should finalize");
+        // Finalized after 250 voiced + 81 silence = frame 331
+        assert_eq!(finalized_at_frame, 331);
+        assert_eq!(finalized.duration_ms, 250 * PCM_FRAME_DURATION_MS as u64);
+    }
+
+    #[test]
+    fn speech_paused_state_during_brief_silence() {
+        // 10 voiced frames to start speech, then 25 silence frames → SpeechPaused
+        let decisions = std::iter::repeat_n(true, 10).chain(std::iter::repeat_n(false, 25));
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+
+        for _ in 0..35 {
+            session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed");
+        }
+
+        assert_eq!(session.base_state(), SessionBaseState::SpeechPaused);
+    }
+
+    #[test]
+    fn speech_detected_before_pause_threshold() {
+        // 10 voiced + 24 silence → still SpeechDetected (under SPEECH_PAUSE_THRESHOLD_FRAMES)
+        let decisions = std::iter::repeat_n(true, 10).chain(std::iter::repeat_n(false, 24));
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+
+        for _ in 0..34 {
+            session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed");
+        }
+
+        assert_eq!(session.base_state(), SessionBaseState::SpeechDetected);
+    }
+
+    #[test]
+    fn boundary_aware_split_carries_forward_at_cap() {
+        // Fill to just under cap with speech, insert a silence gap, then more speech to hit cap.
+        // Expect split at the silence boundary with carry-forward.
+        let gap_start = 1400;
+        let gap_len = 10; // > SILENCE_GAP_MIN_FRAMES
+        let after_gap = super::MAX_UTTERANCE_FRAMES - gap_start - gap_len;
+
+        let decisions = std::iter::repeat_n(true, 10) // trigger speech start
+            .chain(std::iter::repeat_n(true, gap_start - 10)) // speech up to gap
+            .chain(std::iter::repeat_n(false, gap_len)) // silence gap
+            .chain(std::iter::repeat_n(true, after_gap)); // speech to fill cap
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+
+        let mut finalized_count = 0;
+        let mut first_duration_ms = 0;
+
+        for _ in 0..super::MAX_UTTERANCE_FRAMES {
+            let actions = session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed");
+
+            for action in actions {
+                if let SessionAction::FinalizeUtterance(utterance) = action {
+                    finalized_count += 1;
+                    if finalized_count == 1 {
+                        first_duration_ms = utterance.duration_ms;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(finalized_count, 1);
+        // Split at boundary = frame index where silence gap ended (gap_start + gap_len)
+        let expected_boundary = gap_start + gap_len;
+        assert_eq!(
+            first_duration_ms,
+            (expected_boundary * PCM_FRAME_DURATION_MS) as u64
+        );
+        // Session still has carry-forward frames and speech is still active
+        assert!(session.speech_started);
+    }
+
+    #[test]
+    fn hard_cut_fallback_when_no_boundary() {
+        // All voiced frames up to cap — no silence gap recorded, so falls back to hard cut
+        let decisions = std::iter::repeat_n(true, super::MAX_UTTERANCE_FRAMES);
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+        let mut finalized = None;
+
+        for _ in 0..super::MAX_UTTERANCE_FRAMES {
+            let actions = session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed");
+
+            if let Some(SessionAction::FinalizeUtterance(utterance)) = actions.into_iter().next() {
+                finalized = Some(utterance);
+                break;
+            }
+        }
+
+        let finalized = finalized.expect("utterance should finalize at cap");
+        assert_eq!(
+            finalized.duration_ms,
+            (super::MAX_UTTERANCE_FRAMES * PCM_FRAME_DURATION_MS) as u64
+        );
+        // Hard cut resets everything
+        assert_eq!(session.base_state(), SessionBaseState::Listening);
     }
 
     fn create_session<TVad: VoiceActivityDetector>(

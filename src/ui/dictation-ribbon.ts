@@ -45,6 +45,9 @@ function buildRibbonState(state: DictationControllerState): {
     case 'speech_detected':
       return { icon: 'audio-lines', label: 'Local STT: Hearing speech' };
 
+    case 'speech_paused':
+      return { icon: 'audio-lines', label: 'Local STT: Paused speech' };
+
     case 'transcribing':
       return { icon: 'loader', label: 'Local STT: Transcribing...' };
 
