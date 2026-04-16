@@ -1,4 +1,4 @@
-# Obsidian Speech-to-Text
+# Local Transcript
 
 Run cutting-edge local transcription directly in Obsidian. Choose between Cohere Transcribe, a new best-in-class model, and Whisper, a well-known standard for offline speech recognition.
 
@@ -6,7 +6,7 @@ Run cutting-edge local transcription directly in Obsidian. Choose between Cohere
 - **Cross-platform design** — built for desktop Obsidian on macOS, Linux, and Windows, with Windows support planned for a later release.
 - **Cohere Transcribe support** — use a [Hugging Face Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)-topping speech recognition model directly inside Obsidian.
 - **Whisper support** — choose a mature offline transcription model with a wide range of size and performance options.
-- **Silero v6 voice activity detection** — neural VAD for accurate, real-time speech boundary detection.
+- **Silero v6 voice activity detection** — enterprise-grade neural VAD for accurate, real-time speech boundary detection.
 - **One-click model management** — browse, download, and remove models from inside the plugin.
 - **Hardware acceleration** — supports Metal on macOS and CUDA on Linux, with Windows hardware acceleration planned alongside Windows support.
 - **Obsidian-native experience** — integrates cleanly with the app through native settings, commands, and interface elements.
@@ -25,10 +25,10 @@ Run cutting-edge local transcription directly in Obsidian. Choose between Cohere
 
 ## Quick Start
 
-1. Clone this repo into `<vault>/.obsidian/plugins/obsidian-local-stt` and enable it in Obsidian's community plugins settings.
-2. Open `Settings -> Local STT`.
+1. Clone this repo into `<vault>/.obsidian/plugins/local-transcript` and enable it in Obsidian's community plugins settings.
+2. Open `Settings -> Local Transcript`.
 3. Click `Manage models` and install a model.
-4. Open a note, click the microphone ribbon button or run `Local STT: Start Dictation Session`.
+4. Open a note, click the microphone ribbon button or run `Local Transcript: Start Dictation Session`.
 5. Talk. Text appears in your note.
 
 ## Development
@@ -53,7 +53,7 @@ npm run build:sidecar
 npm run dev
 ```
 
-Symlink or clone this repo into `<vault>/.obsidian/plugins/obsidian-local-stt`, enable the plugin, and reload Obsidian after rebuilds.
+Symlink or clone this repo into `<vault>/.obsidian/plugins/local-transcript`, enable the plugin, and reload Obsidian after rebuilds.
 
 ### Scripts
 

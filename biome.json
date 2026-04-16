@@ -12,8 +12,8 @@
       "!main.js.map",
       "!node_modules",
       "!package-lock.json",
-      "!native/target",
-      "!native/target-cuda",
+      "!native/**/target",
+      "!native/**/target-cuda",
       "!references",
       "!tasks"
     ]
