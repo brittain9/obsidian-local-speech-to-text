@@ -13,7 +13,11 @@
       "Bash(cargo check:*)",
       "Bash(cargo clippy:*)",
       "Bash(npm test:*)",
-      "Bash(gh issue *)"
+      "Bash(gh issue *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "Bash(cargo --version)",
+      "Bash(npm run *)"
     ]
   }
 }
