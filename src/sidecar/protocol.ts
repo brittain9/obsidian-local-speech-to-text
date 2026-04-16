@@ -30,6 +30,7 @@ export type SessionState =
   | 'listening'
   | 'paused'
   | 'speech_detected'
+  | 'speech_paused'
   | 'transcribing';
 
 export type SessionStopReason =
@@ -622,6 +623,7 @@ function readSessionState(value: unknown, fieldName: string): SessionState {
     state === 'listening' ||
     state === 'paused' ||
     state === 'speech_detected' ||
+    state === 'speech_paused' ||
     state === 'transcribing'
   ) {
     return state;

@@ -926,6 +926,10 @@ fn derive_session_state(
         return SessionState::SpeechDetected;
     }
 
+    if base_state == SessionBaseState::SpeechPaused {
+        return SessionState::SpeechPaused;
+    }
+
     if transcription_active {
         if session.config().pause_while_processing {
             return SessionState::Paused;
@@ -940,7 +944,9 @@ fn derive_session_state(
 
     match base_state {
         SessionBaseState::Listening => SessionState::Listening,
-        SessionBaseState::SpeechDetected => SessionState::SpeechDetected,
+        SessionBaseState::SpeechDetected | SessionBaseState::SpeechPaused => {
+            unreachable!("handled above")
+        }
     }
 }
 

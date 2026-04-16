@@ -11,6 +11,7 @@ export type DictationControllerState =
   | 'starting'
   | 'listening'
   | 'speech_detected'
+  | 'speech_paused'
   | 'transcribing'
   | 'paused'
   | 'error';

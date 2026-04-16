@@ -78,6 +78,7 @@ pub enum SessionState {
     Idle,
     Listening,
     SpeechDetected,
+    SpeechPaused,
     Transcribing,
     Paused,
     Error,
