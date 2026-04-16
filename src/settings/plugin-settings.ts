@@ -4,7 +4,7 @@ import {
   type SelectedModel,
 } from '../models/model-management-types';
 import { isRecord } from '../shared/type-guards';
-import type { AccelerationPreference, ListeningMode } from '../sidecar/protocol';
+import type { AccelerationPreference, ListeningMode, SpeakingStyle } from '../sidecar/protocol';
 
 export const INSERTION_MODES = [
   'insert_at_cursor',
@@ -14,9 +14,11 @@ export const INSERTION_MODES = [
 
 export type InsertionMode = (typeof INSERTION_MODES)[number];
 
-export const SPEECH_THRESHOLD_MIN = 0.1;
-export const SPEECH_THRESHOLD_MAX = 0.95;
-export const SPEECH_THRESHOLD_STEP = 0.05;
+export const SPEAKING_STYLES = [
+  'responsive',
+  'balanced',
+  'patient',
+] as const satisfies readonly SpeakingStyle[];
 
 export interface PluginSettings {
   accelerationPreference: AccelerationPreference;
@@ -30,7 +32,7 @@ export interface PluginSettings {
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
-  speechThreshold: number;
+  speakingStyle: SpeakingStyle;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -45,7 +47,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
-  speechThreshold: 0.5,
+  speakingStyle: 'balanced',
 };
 
 export function resolvePluginSettings(data: unknown): PluginSettings {
@@ -78,12 +80,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.sidecarStartupTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
-    speechThreshold: readFloat(
-      raw.speechThreshold,
-      SPEECH_THRESHOLD_MIN,
-      SPEECH_THRESHOLD_MAX,
-      DEFAULT_PLUGIN_SETTINGS.speechThreshold,
-    ),
+    speakingStyle: readSpeakingStyle(raw.speakingStyle, raw.speechThreshold),
   };
 }
 
@@ -107,16 +104,26 @@ function readPositiveInteger(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function readFloat(value: unknown, min: number, max: number, fallback: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return Math.min(Math.max(value, min), max);
-}
-
 function readInsertionMode(value: unknown): InsertionMode {
   return isInsertionMode(value) ? value : DEFAULT_PLUGIN_SETTINGS.insertionMode;
+}
+
+function readSpeakingStyle(value: unknown, legacyThreshold: unknown): SpeakingStyle {
+  if (isSpeakingStyle(value)) {
+    return value;
+  }
+
+  if (typeof legacyThreshold === 'number' && Number.isFinite(legacyThreshold)) {
+    if (legacyThreshold < 0.45) return 'responsive';
+    if (legacyThreshold < 0.55) return 'balanced';
+    return 'patient';
+  }
+
+  return DEFAULT_PLUGIN_SETTINGS.speakingStyle;
+}
+
+export function isSpeakingStyle(value: unknown): value is SpeakingStyle {
+  return typeof value === 'string' && (SPEAKING_STYLES as readonly string[]).includes(value);
 }
 
 function readSelectedModel(selectedModel: unknown): SelectedModel | null {

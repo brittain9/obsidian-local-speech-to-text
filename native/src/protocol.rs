@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::{CatalogModel, ModelCollection, ModelEngine};
 use crate::model_store::InstalledModelRecord;
+use crate::session::SpeakingStyle;
 
 const JSON_FRAME_KIND: u8 = 0x01;
 const AUDIO_FRAME_KIND: u8 = 0x02;
@@ -138,10 +139,6 @@ struct CommandEnvelope {
     pub command: Command,
 }
 
-fn default_speech_threshold() -> f32 {
-    0.5
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
@@ -159,8 +156,8 @@ pub enum Command {
         pause_while_processing: bool,
         #[serde(rename = "sessionId")]
         session_id: String,
-        #[serde(rename = "speechThreshold", default = "default_speech_threshold")]
-        speech_threshold: f32,
+        #[serde(rename = "speakingStyle", default)]
+        speaking_style: SpeakingStyle,
     },
     GetSystemInfo,
     /// Internal-only. Not exposed to the plugin protocol.
@@ -471,8 +468,8 @@ mod tests {
     use super::{
         AUDIO_FRAME_KIND, AccelerationPreference, Command, EngineId, Event, EventEnvelope,
         FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, MAX_FRAME_PAYLOAD,
-        PCM_BYTES_PER_FRAME, RuntimeCapability, SelectedModel, compiled_backends, compiled_engines,
-        read_frame, write_event_frame, write_frame,
+        PCM_BYTES_PER_FRAME, RuntimeCapability, SelectedModel, SpeakingStyle, compiled_backends,
+        compiled_engines, read_frame, write_event_frame, write_frame,
     };
 
     #[test]
@@ -510,7 +507,7 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
-                speech_threshold: 0.5,
+                speaking_style: SpeakingStyle::Balanced,
             })
         );
     }
@@ -551,9 +548,45 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-3".to_string(),
-                speech_threshold: 0.5,
+                speaking_style: SpeakingStyle::Balanced,
             })
         );
+    }
+
+    #[test]
+    fn speaking_style_round_trips_for_all_three_values() {
+        for (wire, expected) in [
+            ("responsive", SpeakingStyle::Responsive),
+            ("balanced", SpeakingStyle::Balanced),
+            ("patient", SpeakingStyle::Patient),
+        ] {
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "type": "start_session",
+                "sessionId": "session-style",
+                "mode": "always_on",
+                "modelSelection": {
+                    "kind": "external_file",
+                    "engineId": "whisper_cpp",
+                    "filePath": "/tmp/model.bin"
+                },
+                "language": "en",
+                "pauseWhileProcessing": true,
+                "speakingStyle": wire,
+            }))
+            .expect("payload should serialize");
+            let mut framed = Vec::new();
+            write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
+
+            let parsed = read_frame(&mut framed.as_slice())
+                .expect("frame should parse")
+                .expect("frame should exist");
+
+            let IncomingFrame::Command(Command::StartSession { speaking_style, .. }) = parsed
+            else {
+                panic!("expected StartSession for wire={wire}");
+            };
+            assert_eq!(speaking_style, expected, "wire={wire}");
+        }
     }
 
     #[test]

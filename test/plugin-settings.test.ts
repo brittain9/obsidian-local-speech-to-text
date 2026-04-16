@@ -24,6 +24,7 @@ describe('resolvePluginSettings', () => {
         sidecarPathOverride: ' /tmp/sidecar ',
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
+        speakingStyle: 'patient',
       }),
     ).toEqual({
       accelerationPreference: 'cpu_only',
@@ -41,7 +42,7 @@ describe('resolvePluginSettings', () => {
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
-      speechThreshold: 0.5,
+      speakingStyle: 'patient',
     });
   });
 
@@ -79,5 +80,23 @@ describe('resolvePluginSettings', () => {
     expect(resolvePluginSettings({ accelerationPreference: 'gpu' }).accelerationPreference).toBe(
       'auto',
     );
+  });
+
+  it.each([
+    [0.3, 'responsive'],
+    [0.5, 'balanced'],
+    [0.9, 'patient'],
+  ] as const)('maps legacy speechThreshold %f to %s', (speechThreshold, expectedStyle) => {
+    expect(resolvePluginSettings({ speechThreshold }).speakingStyle).toBe(expectedStyle);
+  });
+
+  it('prefers explicit speakingStyle over legacy speechThreshold', () => {
+    expect(
+      resolvePluginSettings({ speakingStyle: 'patient', speechThreshold: 0.3 }).speakingStyle,
+    ).toBe('patient');
+  });
+
+  it('discards invalid legacy speechThreshold', () => {
+    expect(resolvePluginSettings({ speechThreshold: 'loud' }).speakingStyle).toBe('balanced');
   });
 });

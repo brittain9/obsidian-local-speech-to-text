@@ -7,6 +7,7 @@ import { getEngineDisplayName, isEngineId } from '../models/model-management-typ
 import type {
   AccelerationPreference,
   RuntimeCapability,
+  SpeakingStyle,
   SystemInfoEvent,
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
@@ -15,10 +16,8 @@ import {
   INSERTION_MODES,
   type InsertionMode,
   isInsertionMode,
+  isSpeakingStyle,
   type PluginSettings,
-  SPEECH_THRESHOLD_MAX,
-  SPEECH_THRESHOLD_MIN,
-  SPEECH_THRESHOLD_STEP,
 } from './plugin-settings';
 
 interface SettingsTabDependencies {
@@ -32,6 +31,12 @@ const INSERTION_MODE_OPTIONS: Array<{ label: string; value: InsertionMode }> = [
   { label: 'Insert at cursor', value: 'insert_at_cursor' },
   { label: 'Append on a new line', value: 'append_on_new_line' },
   { label: 'Append as a new paragraph', value: 'append_as_new_paragraph' },
+];
+
+const SPEAKING_STYLE_OPTIONS: Array<{ label: string; value: SpeakingStyle }> = [
+  { label: 'Responsive — ends utterances quickly after you stop talking', value: 'responsive' },
+  { label: 'Balanced — standard detection (default)', value: 'balanced' },
+  { label: 'Patient — waits longer through pauses', value: 'patient' },
 ];
 
 function formatBackendLabel(backend: string): string {
@@ -241,18 +246,21 @@ export class LocalSttSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Speech detection threshold')
-      .setDesc(
-        'Higher values require more confident speech detection (fewer false triggers), lower values are more sensitive.',
-      )
-      .addSlider((slider) => {
-        slider.setLimits(SPEECH_THRESHOLD_MIN, SPEECH_THRESHOLD_MAX, SPEECH_THRESHOLD_STEP);
-        slider.setValue(settings.speechThreshold);
-        slider.setDynamicTooltip();
-        slider.onChange(async (value) => {
+      .setName('Speaking style')
+      .setDesc('Tune how quickly utterances end after you stop speaking.')
+      .addDropdown((dropdown) => {
+        for (const option of SPEAKING_STYLE_OPTIONS) {
+          dropdown.addOption(option.value, option.label);
+        }
+
+        dropdown.setValue(settings.speakingStyle);
+        dropdown.onChange(async (value) => {
+          if (!isSpeakingStyle(value)) {
+            return;
+          }
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            speechThreshold: value,
+            speakingStyle: value,
           });
         });
       });

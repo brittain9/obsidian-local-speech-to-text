@@ -23,6 +23,7 @@ impl fmt::Display for SileroVadLoadError {
 
 pub struct SileroVadDetector {
     context: Vec<f32>,
+    input_scratch: Vec<f32>,
     last_probability: f32,
     sample_buffer: Vec<f32>,
     session: Session,
@@ -38,6 +39,7 @@ impl SileroVadDetector {
 
         Ok(Self {
             context: vec![0.0; SILERO_CONTEXT_SAMPLES],
+            input_scratch: Vec::with_capacity(SILERO_INPUT_SAMPLES),
             last_probability: 0.0,
             sample_buffer: Vec::with_capacity(SILERO_WINDOW_SAMPLES),
             session,
@@ -46,12 +48,13 @@ impl SileroVadDetector {
     }
 
     fn run_inference(&mut self, chunk: &[f32]) -> Result<f32, VoiceActivityError> {
-        let mut input_samples = Vec::with_capacity(SILERO_INPUT_SAMPLES);
-        input_samples.extend_from_slice(&self.context);
-        input_samples.extend_from_slice(chunk);
+        self.input_scratch.clear();
+        self.input_scratch.extend_from_slice(&self.context);
+        self.input_scratch.extend_from_slice(chunk);
 
-        let input = ndarray::Array2::from_shape_vec((1, SILERO_INPUT_SAMPLES), input_samples)
-            .map_err(|_| VoiceActivityError)?;
+        let input =
+            ndarray::Array2::from_shape_vec((1, SILERO_INPUT_SAMPLES), self.input_scratch.clone())
+                .map_err(|_| VoiceActivityError)?;
         let sr = ndarray::Array0::from_elem((), SILERO_SAMPLE_RATE);
 
         let input_value = Value::from_array(input).map_err(|_| VoiceActivityError)?;
@@ -75,11 +78,14 @@ impl SileroVadDetector {
         let (_, state_data) = outputs[1]
             .try_extract_tensor::<f32>()
             .map_err(|_| VoiceActivityError)?;
-        self.state = Array3::from_shape_vec((2, 1, 128), state_data.to_vec())
-            .map_err(|_| VoiceActivityError)?;
-        self.context.clear();
+        let state_slice = self.state.as_slice_mut().ok_or(VoiceActivityError)?;
+        if state_data.len() != state_slice.len() {
+            return Err(VoiceActivityError);
+        }
+        state_slice.copy_from_slice(state_data);
+
         self.context
-            .extend_from_slice(&chunk[chunk.len() - SILERO_CONTEXT_SAMPLES..]);
+            .copy_from_slice(&chunk[chunk.len() - SILERO_CONTEXT_SAMPLES..]);
 
         Ok(probability)
     }
@@ -172,22 +178,20 @@ mod tests {
     }
 
     #[test]
-    fn model_loads_and_returns_probability_in_range() {
+    fn silence_produces_low_probability() {
         let mut detector = SileroVadDetector::new().expect("model should load");
-
         let silence_frame = vec![0_i16; 320];
-        let prob = detector
-            .speech_probability(&silence_frame)
-            .expect("inference should succeed");
-        assert!((0.0..=1.0).contains(&prob));
 
-        let prob2 = detector
-            .speech_probability(&silence_frame)
-            .expect("inference should succeed");
-        assert!((0.0..=1.0).contains(&prob2));
+        let mut probability = 0.0;
+        for _ in 0..6 {
+            probability = detector
+                .speech_probability(&silence_frame)
+                .expect("inference should succeed");
+        }
+
         assert!(
-            prob2 < 0.5,
-            "silence should have low probability, got {prob2}"
+            probability < 0.2,
+            "silence must score well below the speech threshold, got {probability}"
         );
     }
 
@@ -235,8 +239,10 @@ mod tests {
                 .expect("inference should succeed");
         }
 
-        assert!((0.0..=1.0).contains(&first_run_probability));
-        assert!((0.0..=1.0).contains(&second_run_probability));
+        assert!(
+            (0.0..=1.0).contains(&first_run_probability),
+            "probability should be in [0, 1], got {first_run_probability}"
+        );
         assert!(
             (first_run_probability - second_run_probability).abs() < f32::EPSILON,
             "reset should restore deterministic state ({first_run_probability} vs {second_run_probability})"

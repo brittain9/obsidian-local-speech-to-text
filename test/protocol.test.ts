@@ -40,6 +40,7 @@ describe('sidecar protocol', () => {
       modelSelection: { kind: 'external_file', engineId: 'whisper_cpp', filePath: '/tmp/m.bin' },
       pauseWhileProcessing: true,
       sessionId: 'session-gpu',
+      speakingStyle: 'balanced',
     });
     const frame = encodeJsonFrame(command);
     const payload = readPayload(frame) as Record<string, unknown>;

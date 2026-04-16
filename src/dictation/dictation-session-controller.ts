@@ -111,7 +111,7 @@ export class DictationSessionController {
           modelSelection: selectedModel,
           pauseWhileProcessing: settings.pauseWhileProcessing,
           sessionId,
-          speechThreshold: settings.speechThreshold,
+          speakingStyle: settings.speakingStyle,
           ...(settings.modelStorePathOverride.length > 0
             ? { modelStorePathOverride: settings.modelStorePathOverride }
             : {}),

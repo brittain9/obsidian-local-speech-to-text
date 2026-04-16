@@ -342,7 +342,7 @@ impl AppState {
                 model_store_path_override,
                 pause_while_processing,
                 session_id,
-                speech_threshold,
+                speaking_style,
             } => {
                 if let Some(replaced_events) =
                     self.finish_active_session(SessionStopReason::SessionReplaced)
@@ -364,7 +364,7 @@ impl AppState {
                         let config = SessionConfig {
                             mode,
                             session_id: session_id.clone(),
-                            speech_threshold,
+                            style: speaking_style,
                         };
                         let session = match (self.session_factory)(config) {
                             Ok(session) => session,
@@ -1033,6 +1033,7 @@ mod tests {
         ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
     };
     use crate::session::SessionInitError;
+    use crate::session::SpeakingStyle;
     use crate::transcription::TranscriptionError;
 
     #[test]
@@ -1233,7 +1234,7 @@ mod tests {
             model_store_path_override: None,
             pause_while_processing: true,
             session_id: session_id.to_string(),
-            speech_threshold: 0.5,
+            speaking_style: SpeakingStyle::Balanced,
         }
     }
 
