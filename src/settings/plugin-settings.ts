@@ -80,7 +80,9 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.sidecarStartupTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
-    speakingStyle: readSpeakingStyle(raw.speakingStyle, raw.speechThreshold),
+    speakingStyle: isSpeakingStyle(raw.speakingStyle)
+      ? raw.speakingStyle
+      : DEFAULT_PLUGIN_SETTINGS.speakingStyle,
   };
 }
 
@@ -106,20 +108,6 @@ function readPositiveInteger(value: unknown, fallback: number): number {
 
 function readInsertionMode(value: unknown): InsertionMode {
   return isInsertionMode(value) ? value : DEFAULT_PLUGIN_SETTINGS.insertionMode;
-}
-
-function readSpeakingStyle(value: unknown, legacyThreshold: unknown): SpeakingStyle {
-  if (isSpeakingStyle(value)) {
-    return value;
-  }
-
-  if (typeof legacyThreshold === 'number' && Number.isFinite(legacyThreshold)) {
-    if (legacyThreshold < 0.45) return 'responsive';
-    if (legacyThreshold < 0.55) return 'balanced';
-    return 'patient';
-  }
-
-  return DEFAULT_PLUGIN_SETTINGS.speakingStyle;
 }
 
 export function isSpeakingStyle(value: unknown): value is SpeakingStyle {

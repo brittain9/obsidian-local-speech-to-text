@@ -14,6 +14,15 @@ const NEGATIVE_THRESHOLD_DELTA: f32 = 0.15;
 const NEGATIVE_THRESHOLD_FLOOR: f32 = 0.05;
 const ONE_SENTENCE_TIMEOUT_FRAMES: usize = 500;
 
+const fn derive_negative_threshold(speech_threshold: f32) -> f32 {
+    let candidate = speech_threshold - NEGATIVE_THRESHOLD_DELTA;
+    if candidate > NEGATIVE_THRESHOLD_FLOOR {
+        candidate
+    } else {
+        NEGATIVE_THRESHOLD_FLOOR
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeakingStyle {
@@ -26,6 +35,7 @@ pub enum SpeakingStyle {
 #[derive(Debug, Clone, Copy)]
 struct VadTuning {
     speech_threshold: f32,
+    negative_threshold: f32,
     silence_end_frames: usize,
     min_speech_frames: usize,
     pre_speech_pad_frames: usize,
@@ -33,33 +43,33 @@ struct VadTuning {
     silence_gap_min_frames: usize,
 }
 
+impl VadTuning {
+    const fn new(
+        speech_threshold: f32,
+        silence_end_frames: usize,
+        min_speech_frames: usize,
+        pre_speech_pad_frames: usize,
+        post_speech_pad_frames: usize,
+        silence_gap_min_frames: usize,
+    ) -> Self {
+        Self {
+            speech_threshold,
+            negative_threshold: derive_negative_threshold(speech_threshold),
+            silence_end_frames,
+            min_speech_frames,
+            pre_speech_pad_frames,
+            post_speech_pad_frames,
+            silence_gap_min_frames,
+        }
+    }
+}
+
 impl SpeakingStyle {
     fn tuning(self) -> VadTuning {
         match self {
-            Self::Responsive => VadTuning {
-                speech_threshold: 0.40,
-                silence_end_frames: 20,
-                min_speech_frames: 3,
-                pre_speech_pad_frames: 2,
-                post_speech_pad_frames: 2,
-                silence_gap_min_frames: 6,
-            },
-            Self::Balanced => VadTuning {
-                speech_threshold: 0.50,
-                silence_end_frames: 50,
-                min_speech_frames: 5,
-                pre_speech_pad_frames: 2,
-                post_speech_pad_frames: 2,
-                silence_gap_min_frames: 16,
-            },
-            Self::Patient => VadTuning {
-                speech_threshold: 0.55,
-                silence_end_frames: 100,
-                min_speech_frames: 6,
-                pre_speech_pad_frames: 2,
-                post_speech_pad_frames: 2,
-                silence_gap_min_frames: 33,
-            },
+            Self::Responsive => VadTuning::new(0.40, 20, 3, 2, 2, 6),
+            Self::Balanced => VadTuning::new(0.50, 50, 5, 2, 2, 16),
+            Self::Patient => VadTuning::new(0.55, 100, 6, 2, 2, 33),
         }
     }
 }
@@ -235,7 +245,8 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             } else {
                 self.frames_since_confident_speech += 1;
 
-                if probability < self.negative_threshold() && self.pending_end_start.is_none() {
+                if probability < self.tuning.negative_threshold && self.pending_end_start.is_none()
+                {
                     self.pending_end_start = Some(self.utterance_frames.len() - 1);
                 }
             }
@@ -263,10 +274,6 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         }
 
         Ok(Vec::new())
-    }
-
-    fn negative_threshold(&self) -> f32 {
-        (self.tuning.speech_threshold - NEGATIVE_THRESHOLD_DELTA).max(NEGATIVE_THRESHOLD_FLOOR)
     }
 
     fn split_at_boundary(&mut self) -> Vec<SessionAction> {

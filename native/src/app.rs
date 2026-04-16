@@ -61,30 +61,16 @@ struct ResolvedModelSelection {
 
 impl AppState {
     pub fn new(sidecar_version: impl Into<String>, catalog: ModelCatalog) -> Self {
-        Self::with_model_path_probe_and_runtime_capabilities(
+        Self::with_test_hooks(
             sidecar_version,
             catalog,
             probe_model_for_engine,
             probe_runtime_capabilities(),
-        )
-    }
-
-    fn with_model_path_probe_and_runtime_capabilities(
-        sidecar_version: impl Into<String>,
-        catalog: ModelCatalog,
-        model_path_probe: ModelPathProbe,
-        runtime_capabilities: Vec<RuntimeCapability>,
-    ) -> Self {
-        Self::with_model_path_probe_runtime_capabilities_and_session_factory(
-            sidecar_version,
-            catalog,
-            model_path_probe,
-            runtime_capabilities,
             ListeningSession::new,
         )
     }
 
-    fn with_model_path_probe_runtime_capabilities_and_session_factory(
+    fn with_test_hooks(
         sidecar_version: impl Into<String>,
         catalog: ModelCatalog,
         model_path_probe: ModelPathProbe,
@@ -1032,8 +1018,7 @@ mod tests {
         AccelerationPreference, Command, EngineId, Event, HealthStatus, ListeningMode,
         ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
     };
-    use crate::session::SessionInitError;
-    use crate::session::SpeakingStyle;
+    use crate::session::{ListeningSession, SessionInitError, SpeakingStyle};
     use crate::transcription::TranscriptionError;
 
     #[test]
@@ -1197,7 +1182,7 @@ mod tests {
     #[test]
     fn start_session_surfaces_vad_initialization_failure() {
         let model_file_path = create_model_file();
-        let mut app = AppState::with_model_path_probe_runtime_capabilities_and_session_factory(
+        let mut app = AppState::with_test_hooks(
             "0.1.0",
             sample_catalog(),
             probe_test_model_path,
@@ -1251,11 +1236,12 @@ mod tests {
     }
 
     fn test_app() -> AppState {
-        AppState::with_model_path_probe_and_runtime_capabilities(
+        AppState::with_test_hooks(
             "0.1.0",
             sample_catalog(),
             probe_test_model_path,
             sample_runtime_capabilities(),
+            ListeningSession::new,
         )
     }
 

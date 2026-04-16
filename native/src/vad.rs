@@ -1,8 +1,8 @@
 use std::fmt;
 
-use ndarray::Array3;
+use ndarray::{Array0, Array3};
 use ort::session::Session;
-use ort::value::Value;
+use ort::value::TensorRef;
 
 use crate::session::{VoiceActivityDetector, VoiceActivityError};
 
@@ -27,6 +27,7 @@ pub struct SileroVadDetector {
     last_probability: f32,
     sample_buffer: Vec<f32>,
     session: Session,
+    sr: Array0<i64>,
     state: Array3<f32>,
 }
 
@@ -39,34 +40,37 @@ impl SileroVadDetector {
 
         Ok(Self {
             context: vec![0.0; SILERO_CONTEXT_SAMPLES],
-            input_scratch: Vec::with_capacity(SILERO_INPUT_SAMPLES),
+            input_scratch: vec![0.0; SILERO_INPUT_SAMPLES],
             last_probability: 0.0,
-            sample_buffer: Vec::with_capacity(SILERO_WINDOW_SAMPLES),
+            sample_buffer: Vec::with_capacity(SILERO_WINDOW_SAMPLES * 2),
             session,
+            sr: Array0::from_elem((), SILERO_SAMPLE_RATE),
             state: Array3::<f32>::zeros((2, 1, 128)),
         })
     }
 
-    fn run_inference(&mut self, chunk: &[f32]) -> Result<f32, VoiceActivityError> {
-        self.input_scratch.clear();
-        self.input_scratch.extend_from_slice(&self.context);
-        self.input_scratch.extend_from_slice(chunk);
+    fn run_inference(&mut self) -> Result<f32, VoiceActivityError> {
+        let window = &self.sample_buffer[..SILERO_WINDOW_SAMPLES];
+        self.input_scratch[..SILERO_CONTEXT_SAMPLES].copy_from_slice(&self.context);
+        self.input_scratch[SILERO_CONTEXT_SAMPLES..].copy_from_slice(window);
+        self.context
+            .copy_from_slice(&window[SILERO_WINDOW_SAMPLES - SILERO_CONTEXT_SAMPLES..]);
 
-        let input =
-            ndarray::Array2::from_shape_vec((1, SILERO_INPUT_SAMPLES), self.input_scratch.clone())
-                .map_err(|_| VoiceActivityError)?;
-        let sr = ndarray::Array0::from_elem((), SILERO_SAMPLE_RATE);
-
-        let input_value = Value::from_array(input).map_err(|_| VoiceActivityError)?;
-        let sr_value = Value::from_array(sr).map_err(|_| VoiceActivityError)?;
-        let state_value = Value::from_array(self.state.clone()).map_err(|_| VoiceActivityError)?;
+        let input = TensorRef::from_array_view((
+            [1_i64, SILERO_INPUT_SAMPLES as i64],
+            &self.input_scratch[..],
+        ))
+        .map_err(|_| VoiceActivityError)?;
+        let state =
+            TensorRef::from_array_view(self.state.view()).map_err(|_| VoiceActivityError)?;
+        let sr = TensorRef::from_array_view(self.sr.view()).map_err(|_| VoiceActivityError)?;
 
         let outputs = self
             .session
             .run(ort::inputs![
-                "input" => input_value,
-                "state" => state_value,
-                "sr" => sr_value
+                "input" => input,
+                "state" => state,
+                "sr" => sr
             ])
             .map_err(|_| VoiceActivityError)?;
 
@@ -83,9 +87,9 @@ impl SileroVadDetector {
             return Err(VoiceActivityError);
         }
         state_slice.copy_from_slice(state_data);
+        drop(outputs);
 
-        self.context
-            .copy_from_slice(&chunk[chunk.len() - SILERO_CONTEXT_SAMPLES..]);
+        self.sample_buffer.drain(..SILERO_WINDOW_SAMPLES);
 
         Ok(probability)
     }
@@ -97,17 +101,14 @@ impl VoiceActivityDetector for SileroVadDetector {
             .extend(frame.iter().map(|&sample| sample as f32 / 32768.0));
 
         while self.sample_buffer.len() >= SILERO_WINDOW_SAMPLES {
-            let remaining = self.sample_buffer.split_off(SILERO_WINDOW_SAMPLES);
-            let chunk = std::mem::replace(&mut self.sample_buffer, remaining);
-            self.last_probability = self.run_inference(&chunk)?;
+            self.last_probability = self.run_inference()?;
         }
 
         Ok(self.last_probability)
     }
 
     fn reset(&mut self) {
-        self.context.clear();
-        self.context.resize(SILERO_CONTEXT_SAMPLES, 0.0);
+        self.context.fill(0.0);
         self.last_probability = 0.0;
         self.sample_buffer.clear();
         self.state.fill(0.0);

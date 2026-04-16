@@ -83,20 +83,14 @@ describe('resolvePluginSettings', () => {
   });
 
   it.each([
-    [0.3, 'responsive'],
-    [0.5, 'balanced'],
-    [0.9, 'patient'],
-  ] as const)('maps legacy speechThreshold %f to %s', (speechThreshold, expectedStyle) => {
-    expect(resolvePluginSettings({ speechThreshold }).speakingStyle).toBe(expectedStyle);
+    'responsive',
+    'balanced',
+    'patient',
+  ] as const)('accepts the supported speaking style %s', (speakingStyle) => {
+    expect(resolvePluginSettings({ speakingStyle }).speakingStyle).toBe(speakingStyle);
   });
 
-  it('prefers explicit speakingStyle over legacy speechThreshold', () => {
-    expect(
-      resolvePluginSettings({ speakingStyle: 'patient', speechThreshold: 0.3 }).speakingStyle,
-    ).toBe('patient');
-  });
-
-  it('discards invalid legacy speechThreshold', () => {
-    expect(resolvePluginSettings({ speechThreshold: 'loud' }).speakingStyle).toBe('balanced');
+  it('falls back speakingStyle to balanced when persisted value is invalid', () => {
+    expect(resolvePluginSettings({ speakingStyle: 'loud' }).speakingStyle).toBe('balanced');
   });
 });
