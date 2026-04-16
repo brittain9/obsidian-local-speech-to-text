@@ -1,0 +1,16 @@
+{
+  "verified_at": "2026-04-16",
+  "source": {
+    "package_registry_url": "https://pypi.org/project/silero-vad/6.2.1/",
+    "package_version": "6.2.1",
+    "package_filename": "silero_vad-6.2.1-py3-none-any.whl",
+    "package_sha256": "09de93c4d874bb19c53e62a47dd38be5f163cedad2b5599583231f2a84ef79cb"
+  },
+  "artifact": {
+    "artifact_path_in_package": "silero_vad/data/silero_vad.onnx",
+    "filename": "silero_vad.onnx",
+    "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+    "size_bytes": 2327524
+  },
+  "notes": "native/models/silero_vad.onnx matches the official silero-vad 6.2.1 wheel artifact."
+}

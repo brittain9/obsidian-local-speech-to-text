@@ -16,6 +16,9 @@ import {
   type InsertionMode,
   isInsertionMode,
   type PluginSettings,
+  SPEECH_THRESHOLD_MAX,
+  SPEECH_THRESHOLD_MIN,
+  SPEECH_THRESHOLD_STEP,
 } from './plugin-settings';
 
 interface SettingsTabDependencies {
@@ -233,6 +236,23 @@ export class LocalSttSettingTab extends PluginSettingTab {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
             pauseWhileProcessing: value,
+          });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Speech detection threshold')
+      .setDesc(
+        'Higher values require more confident speech detection (fewer false triggers), lower values are more sensitive.',
+      )
+      .addSlider((slider) => {
+        slider.setLimits(SPEECH_THRESHOLD_MIN, SPEECH_THRESHOLD_MAX, SPEECH_THRESHOLD_STEP);
+        slider.setValue(settings.speechThreshold);
+        slider.setDynamicTooltip();
+        slider.onChange(async (value) => {
+          await this.persistSettings({
+            ...this.dependencies.getSettings(),
+            speechThreshold: value,
           });
         });
       });

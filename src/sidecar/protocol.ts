@@ -60,6 +60,7 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   modelStorePathOverride?: string;
   pauseWhileProcessing: boolean;
   sessionId: string;
+  speechThreshold?: number;
 }
 
 export interface RuntimeCapability {

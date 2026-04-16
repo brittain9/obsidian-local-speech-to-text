@@ -132,13 +132,17 @@ pub struct RuntimeCapability {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct CommandEnvelope {
     #[serde(flatten)]
     pub command: Command,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+fn default_speech_threshold() -> f32 {
+    0.5
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     Health,
@@ -155,6 +159,8 @@ pub enum Command {
         pause_while_processing: bool,
         #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(rename = "speechThreshold", default = "default_speech_threshold")]
+        speech_threshold: f32,
     },
     GetSystemInfo,
     /// Internal-only. Not exposed to the plugin protocol.
@@ -328,7 +334,7 @@ pub enum Event {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IncomingFrame {
     Audio(Vec<u8>),
     Command(Command),
@@ -504,6 +510,7 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
+                speech_threshold: 0.5,
             })
         );
     }
@@ -544,6 +551,7 @@ mod tests {
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-3".to_string(),
+                speech_threshold: 0.5,
             })
         );
     }

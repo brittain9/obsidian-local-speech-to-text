@@ -41,6 +41,7 @@ describe('resolvePluginSettings', () => {
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
+      speechThreshold: 0.5,
     });
   });
 

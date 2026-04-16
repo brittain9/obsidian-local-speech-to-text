@@ -10,4 +10,5 @@ pub mod model_store;
 pub mod protocol;
 pub mod session;
 pub mod transcription;
+pub mod vad;
 pub mod worker;

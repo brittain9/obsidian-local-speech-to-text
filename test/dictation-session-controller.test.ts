@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { DictationSessionController } from '../src/dictation/dictation-session-controller';
-import type { InsertionMode, PluginSettings } from '../src/settings/plugin-settings';
+import {
+  DEFAULT_PLUGIN_SETTINGS,
+  type InsertionMode,
+  type PluginSettings,
+} from '../src/settings/plugin-settings';
 import type { SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
 
 class FakeEditorService {
@@ -172,6 +176,36 @@ describe('DictationSessionController', () => {
     expect(captureStream.stop).toHaveBeenCalledTimes(1);
     expect(controller.getState()).toBe('error');
     expect(controller.isBusy()).toBe(false);
+  });
+
+  it('handles startup error events through the rejected startSession call only once', async () => {
+    const captureStream = new FakeCaptureStream();
+    const notice = vi.fn();
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.startSession.mockImplementationOnce(async (payload) => {
+      sidecarConnection.emit({
+        code: 'vad_init_failed',
+        details: 'Failed to initialize the bundled Silero VAD.',
+        message: 'Failed to initialize the bundled Silero VAD.',
+        type: 'error',
+      });
+      throw new Error(`Failed to initialize start session ${payload.sessionId}.`);
+    });
+    const controller = createController({
+      captureStream,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      notice,
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(sidecarConnection.cancelSession).not.toHaveBeenCalled();
+    expect(captureStream.stop).toHaveBeenCalledTimes(1);
+    expect(controller.getState()).toBe('error');
+    expect(controller.isBusy()).toBe(false);
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice.mock.calls[0]?.[0]).toContain('Failed to start the dictation session');
   });
 
   it('inserts transcript text from async sidecar events using the current placement mode', async () => {
@@ -360,17 +394,7 @@ function createController(overrides: {
 
 function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
   return {
-    accelerationPreference: 'auto',
-    cudaLibraryPath: '',
-    developerMode: false,
-    insertionMode: 'insert_at_cursor',
-    listeningMode: 'one_sentence',
-    modelStorePathOverride: '',
-    pauseWhileProcessing: true,
-    selectedModel: null,
-    sidecarPathOverride: '',
-    sidecarRequestTimeoutMs: 300_000,
-    sidecarStartupTimeoutMs: 4_000,
+    ...DEFAULT_PLUGIN_SETTINGS,
     ...overrides,
   };
 }

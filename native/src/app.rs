@@ -14,12 +14,14 @@ use crate::protocol::{
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
+    SessionInitError,
 };
 use crate::transcription::{GpuConfig, TranscriptionError, probe_model_for_engine};
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
 type ModelPathProbe = fn(EngineId, &Path) -> Result<(), TranscriptionError>;
+type SessionFactory = fn(SessionConfig) -> Result<ListeningSession, SessionInitError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlow {
@@ -33,6 +35,7 @@ pub struct AppState {
     install_manager: ModelInstallManager,
     model_path_probe: ModelPathProbe,
     runtime_capabilities: Vec<RuntimeCapability>,
+    session_factory: SessionFactory,
     sidecar_version: String,
     transcription_worker: TranscriptionWorker,
 }
@@ -40,6 +43,7 @@ pub struct AppState {
 struct ActiveSession {
     draining: bool,
     last_reported_state: Option<SessionState>,
+    pause_while_processing: bool,
     queued_utterances: usize,
     session: ListeningSession,
     transcription_active: bool,
@@ -71,12 +75,29 @@ impl AppState {
         model_path_probe: ModelPathProbe,
         runtime_capabilities: Vec<RuntimeCapability>,
     ) -> Self {
+        Self::with_model_path_probe_runtime_capabilities_and_session_factory(
+            sidecar_version,
+            catalog,
+            model_path_probe,
+            runtime_capabilities,
+            ListeningSession::new,
+        )
+    }
+
+    fn with_model_path_probe_runtime_capabilities_and_session_factory(
+        sidecar_version: impl Into<String>,
+        catalog: ModelCatalog,
+        model_path_probe: ModelPathProbe,
+        runtime_capabilities: Vec<RuntimeCapability>,
+        session_factory: SessionFactory,
+    ) -> Self {
         Self {
             active_session: None,
             catalog,
             install_manager: ModelInstallManager::new(),
             model_path_probe,
             runtime_capabilities,
+            session_factory,
             sidecar_version: sidecar_version.into(),
             transcription_worker: TranscriptionWorker::spawn(),
         }
@@ -116,8 +137,7 @@ impl AppState {
             .active_session
             .as_ref()
             .map(|active_session| {
-                active_session.session.config().pause_while_processing
-                    && active_session.transcription_active
+                active_session.pause_while_processing && active_session.transcription_active
             })
             .unwrap_or(false);
 
@@ -322,6 +342,7 @@ impl AppState {
                 model_store_path_override,
                 pause_while_processing,
                 session_id,
+                speech_threshold,
             } => {
                 if let Some(replaced_events) =
                     self.finish_active_session(SessionStopReason::SessionReplaced)
@@ -341,11 +362,23 @@ impl AppState {
                             &self.runtime_capabilities,
                         );
                         let config = SessionConfig {
-                            language: language.clone(),
                             mode,
-                            model_file_path: resolved_model.resolved_path.clone(),
-                            pause_while_processing,
                             session_id: session_id.clone(),
+                            speech_threshold,
+                        };
+                        let session = match (self.session_factory)(config) {
+                            Ok(session) => session,
+                            Err(SessionInitError::VadLoad(details)) => {
+                                events.push(Event::Error {
+                                    code: "vad_init_failed".to_string(),
+                                    details: Some(details),
+                                    message: "Failed to initialize the bundled Silero VAD."
+                                        .to_string(),
+                                    session_id: None,
+                                });
+
+                                return (ControlFlow::Continue, events);
+                            }
                         };
 
                         if self
@@ -368,11 +401,10 @@ impl AppState {
                             return (ControlFlow::Continue, events);
                         }
 
-                        let session = ListeningSession::new(config);
-
                         self.active_session = Some(ActiveSession {
                             draining: false,
                             last_reported_state: None,
+                            pause_while_processing,
                             queued_utterances: 0,
                             session,
                             transcription_active: false,
@@ -465,6 +497,7 @@ impl AppState {
         let next_state = derive_session_state(
             active_session.transcription_active,
             active_session.queued_utterances,
+            active_session.pause_while_processing,
             &active_session.session,
         );
 
@@ -495,7 +528,6 @@ impl AppState {
         let active_session = self.active_session.as_mut()?;
         let mut events = Vec::new();
 
-        // Flush the VAD buffer — finalize any accumulated audio as a last utterance.
         let final_utterance = active_session.session.maybe_finalize_utterance();
         active_session.session.clear_activity();
 
@@ -503,7 +535,6 @@ impl AppState {
             self.enqueue_utterance(utterance, &mut events);
         }
 
-        // If no transcription work is pending, stop immediately.
         let active_session = self.active_session.as_mut()?;
         if !active_session.transcription_active {
             let session_id = active_session.session.config().session_id.clone();
@@ -518,8 +549,8 @@ impl AppState {
             return Some(events);
         }
 
-        // Transcription is in flight — mark as draining. SessionStopped will be
-        // emitted when the last TranscriptReady comes back from the worker.
+        // Transcription is still in flight; defer SessionStopped until the last
+        // TranscriptReady drains through the worker.
         active_session.draining = true;
         self.emit_state_if_changed(&mut events);
         Some(events)
@@ -918,6 +949,7 @@ fn advance_transcription_queue(active_session: &mut ActiveSession) {
 fn derive_session_state(
     transcription_active: bool,
     queued_utterances: usize,
+    pause_while_processing: bool,
     session: &ListeningSession,
 ) -> SessionState {
     let base_state = session.base_state();
@@ -931,7 +963,7 @@ fn derive_session_state(
     }
 
     if transcription_active {
-        if session.config().pause_while_processing {
+        if pause_while_processing {
             return SessionState::Paused;
         }
 
@@ -1000,6 +1032,7 @@ mod tests {
         AccelerationPreference, Command, EngineId, Event, HealthStatus, ListeningMode,
         ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
     };
+    use crate::session::SessionInitError;
     use crate::transcription::TranscriptionError;
 
     #[test]
@@ -1160,6 +1193,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn start_session_surfaces_vad_initialization_failure() {
+        let model_file_path = create_model_file();
+        let mut app = AppState::with_model_path_probe_runtime_capabilities_and_session_factory(
+            "0.1.0",
+            sample_catalog(),
+            probe_test_model_path,
+            sample_runtime_capabilities(),
+            |_| {
+                Err(SessionInitError::VadLoad(
+                    "model bootstrap failed".to_string(),
+                ))
+            },
+        );
+
+        let (_, events) = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        assert_eq!(
+            events,
+            vec![Event::Error {
+                code: "vad_init_failed".to_string(),
+                details: Some("model bootstrap failed".to_string()),
+                message: "Failed to initialize the bundled Silero VAD.".to_string(),
+                session_id: None,
+            }]
+        );
+    }
+
     fn start_session_command(session_id: &str, model_file_path: &Path) -> Command {
         Command::StartSession {
             acceleration_preference: AccelerationPreference::Auto,
@@ -1172,6 +1233,7 @@ mod tests {
             model_store_path_override: None,
             pause_while_processing: true,
             session_id: session_id.to_string(),
+            speech_threshold: 0.5,
         }
     }
 

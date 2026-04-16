@@ -189,24 +189,25 @@ stateDiagram-v2
 **What it does:** Receives 20 ms PCM frames, runs voice activity detection on each frame, maintains a state machine to detect speech boundaries, and packages completed utterances for transcription.
 
 **Key technology:**
-- **WebRTC VAD** (`webrtc-vad` crate, Aggressive mode) -- classifies each 20 ms frame as voiced or unvoiced. This is the only speech detection mechanism; there is no energy/amplitude thresholding
-- **Boundary state machine** in `session.rs` -- counts consecutive voiced/silent frames against fixed thresholds
+- **Silero VAD** (ONNX model via `ort` crate) -- returns a speech probability (0.0--1.0) for each 512-sample (32 ms) window. The detector buffers 320-sample (20 ms) pipeline frames internally and runs inference when enough samples accumulate
+- **Probability-based boundary state machine** in `session.rs` -- uses a rolling average of recent probabilities with hysteresis (asymmetric start/end thresholds) to detect speech boundaries
 
 **VAD thresholds and timing constants:**
 
 | Constant | Value | Duration | Purpose |
 |----------|-------|----------|---------|
 | `PRE_ROLL_FRAMES` | 10 | 200 ms | Audio prepended before detected speech start |
-| `SPEECH_START_THRESHOLD` | 10 | 200 ms | Consecutive voiced frames to confirm speech |
-| `SPEECH_END_THRESHOLD` | 30 | 600 ms | Consecutive silent frames to end utterance |
-| `ONE_SENTENCE_TIMEOUT` | 500 | 10 s | No-speech timeout in one_sentence mode |
-| `MAX_UTTERANCE_FRAMES` | 1000 | 20 s | Hard cap on utterance length |
+| `SPEECH_START_THRESHOLD_FRAMES` | 10 | 200 ms | Rolling window size; speech starts when avg probability ≥ threshold |
+| `SPEECH_END_THRESHOLD_FRAMES` | 75 | 1500 ms | Consecutive low-probability frames to end utterance |
+| `SPEECH_PAUSE_THRESHOLD_FRAMES` | 25 | 500 ms | Silence frames before marking a pause (boundary candidate) |
+| `ONE_SENTENCE_TIMEOUT_FRAMES` | 500 | 10 s | No-speech timeout in one_sentence mode |
+| `MAX_UTTERANCE_FRAMES` | 1500 | 30 s | Hard cap on utterance length |
 
 **Utterance finalization:** When the boundary condition is met (silence threshold or max length), trailing silence frames are trimmed, the i16 PCM samples are packaged as a `TranscribeUtterance` command, and sent to the worker thread.
 
 **Code weight:** ~465 LOC (`session.rs`) + session management in `app.rs` (~400 LOC of the 1,319 total).
 
-**Time cost:** WebRTC VAD per frame: < 0.1 ms. The state machine is pure counter logic. This stage adds no meaningful latency. The 600 ms silence threshold is the primary source of perceived delay between speech ending and transcription starting.
+**Time cost:** Silero VAD inference: < 1 ms per 512-sample window (amortised across buffered 20 ms frames). The rolling-average state machine adds negligible overhead. The 1500 ms silence threshold is the primary source of perceived delay between speech ending and transcription starting.
 
 ---
 
@@ -353,7 +354,7 @@ flowchart LR
 | **whisper.cpp** | C++ implementation of OpenAI's Whisper model | Underlying inference runtime; supports CPU, Metal, CUDA |
 | **GGML** | Tensor library for quantized model inference on consumer hardware | Model format for Whisper; enables Q5/Q8 quantization for smaller files and faster inference |
 | **ort (ONNX Runtime)** | Cross-platform ML inference runtime | Alternative engine for Cohere Transcribe models |
-| **WebRTC VAD** | Voice Activity Detection algorithm from the WebRTC project | Classifies each 20 ms frame as speech/silence; drives boundary detection |
+| **Silero VAD** | ONNX-based voice activity detection model | Returns speech probability (0.0–1.0) per 512-sample window; drives boundary detection with hysteresis |
 | **Node.js child_process** | Process spawning in Node.js/Electron | Launches and manages the Rust sidecar as a subprocess |
 | **reqwest** | Async HTTP client for Rust | Downloads model files from HuggingFace |
 | **sha2** | SHA-256 implementation in Rust | Verifies downloaded model file integrity |
@@ -396,8 +397,8 @@ gantt
 |-------|----------------|------------|-------|
 | Audio capture + framing | ~20 ms latency | < 1% | Real-time, pipelined with speech |
 | Protocol transport | < 1 ms per frame | < 1% | Trivial encoding/decoding |
-| VAD + boundary detection | < 0.1 ms per frame | < 1% | Pure arithmetic |
-| **Silence detection wait** | **600 ms fixed** | **~10%** | User-perceptible; this is the gap between speech ending and transcription starting |
+| VAD + boundary detection | < 1 ms per inference | < 1% | Silero ONNX inference on buffered frames |
+| **Silence detection wait** | **1500 ms fixed** | **~20%** | User-perceptible; this is the gap between speech ending and transcription starting |
 | **Model inference** | **200 ms - 5 s** | **~85-90%** | The dominant cost; scales with model size and hardware |
 | Text insertion | < 1 ms | < 1% | DOM operation |
 

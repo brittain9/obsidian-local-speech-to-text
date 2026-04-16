@@ -14,6 +14,10 @@ export const INSERTION_MODES = [
 
 export type InsertionMode = (typeof INSERTION_MODES)[number];
 
+export const SPEECH_THRESHOLD_MIN = 0.1;
+export const SPEECH_THRESHOLD_MAX = 0.95;
+export const SPEECH_THRESHOLD_STEP = 0.05;
+
 export interface PluginSettings {
   accelerationPreference: AccelerationPreference;
   cudaLibraryPath: string;
@@ -26,6 +30,7 @@ export interface PluginSettings {
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
+  speechThreshold: number;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -40,6 +45,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
+  speechThreshold: 0.5,
 };
 
 export function resolvePluginSettings(data: unknown): PluginSettings {
@@ -72,6 +78,12 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.sidecarStartupTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
+    speechThreshold: readFloat(
+      raw.speechThreshold,
+      SPEECH_THRESHOLD_MIN,
+      SPEECH_THRESHOLD_MAX,
+      DEFAULT_PLUGIN_SETTINGS.speechThreshold,
+    ),
   };
 }
 
@@ -93,6 +105,14 @@ function readString(value: unknown, fallback: string): string {
 
 function readPositiveInteger(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function readFloat(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(value, min), max);
 }
 
 function readInsertionMode(value: unknown): InsertionMode {
