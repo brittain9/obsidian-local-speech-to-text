@@ -1,7 +1,7 @@
 {
   "id": "local-transcript",
   "name": "Local Transcript",
-  "version": "2026.4.15",
+  "version": "2026.4.16",
   "minAppVersion": "1.8.7",
   "description": "Desktop-only local speech-to-text for Obsidian with a Rust sidecar.",
   "author": "Alexander Brittain",

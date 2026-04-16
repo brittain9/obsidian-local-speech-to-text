@@ -24,6 +24,7 @@ export const FRAME_HEADER_LENGTH = 5;
 
 export type AccelerationPreference = 'auto' | 'cpu_only';
 export type ListeningMode = 'always_on' | 'one_sentence';
+export type SpeakingStyle = 'responsive' | 'balanced' | 'patient';
 export type SessionState =
   | 'error'
   | 'idle'
@@ -60,6 +61,7 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   modelStorePathOverride?: string;
   pauseWhileProcessing: boolean;
   sessionId: string;
+  speakingStyle: SpeakingStyle;
 }
 
 export interface RuntimeCapability {

@@ -31,6 +31,7 @@ interface DictationSessionControllerDependencies {
 
 export class DictationSessionController {
   private abortingSessionId: string | null = null;
+  private pendingStartSessionId: string | null = null;
   private readonly releaseSidecarSubscription: () => void;
   private sessionId: string | null = null;
   private state: DictationControllerState = 'idle';
@@ -101,17 +102,25 @@ export class DictationSessionController {
           this.dependencies.logger?.warn('session', 'failed to forward an audio frame', error);
         }
       });
-      await this.dependencies.sidecarConnection.startSession({
-        accelerationPreference: settings.accelerationPreference,
-        language: 'en',
-        mode: settings.listeningMode,
-        modelSelection: selectedModel,
-        pauseWhileProcessing: settings.pauseWhileProcessing,
-        sessionId,
-        ...(settings.modelStorePathOverride.length > 0
-          ? { modelStorePathOverride: settings.modelStorePathOverride }
-          : {}),
-      });
+      this.pendingStartSessionId = sessionId;
+      try {
+        await this.dependencies.sidecarConnection.startSession({
+          accelerationPreference: settings.accelerationPreference,
+          language: 'en',
+          mode: settings.listeningMode,
+          modelSelection: selectedModel,
+          pauseWhileProcessing: settings.pauseWhileProcessing,
+          sessionId,
+          speakingStyle: settings.speakingStyle,
+          ...(settings.modelStorePathOverride.length > 0
+            ? { modelStorePathOverride: settings.modelStorePathOverride }
+            : {}),
+        });
+      } finally {
+        if (this.pendingStartSessionId === sessionId) {
+          this.pendingStartSessionId = null;
+        }
+      }
     } catch (error) {
       await this.cleanupLocalSession();
       this.handleError('Failed to start the dictation session', error);
@@ -159,6 +168,7 @@ export class DictationSessionController {
 
   private async cleanupLocalSession(): Promise<void> {
     this.abortingSessionId = null;
+    this.pendingStartSessionId = null;
     this.sessionId = null;
 
     if (this.dependencies.captureStream.isCapturing()) {
@@ -167,6 +177,13 @@ export class DictationSessionController {
   }
 
   private async handleErrorEvent(event: Extract<SidecarEvent, { type: 'error' }>): Promise<void> {
+    if (
+      this.pendingStartSessionId !== null &&
+      (event.sessionId === undefined || event.sessionId === this.pendingStartSessionId)
+    ) {
+      return;
+    }
+
     if (
       event.sessionId !== undefined &&
       event.sessionId !== this.sessionId &&

@@ -24,6 +24,7 @@ describe('resolvePluginSettings', () => {
         sidecarPathOverride: ' /tmp/sidecar ',
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
+        speakingStyle: 'patient',
       }),
     ).toEqual({
       accelerationPreference: 'cpu_only',
@@ -41,6 +42,7 @@ describe('resolvePluginSettings', () => {
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
+      speakingStyle: 'patient',
     });
   });
 
@@ -78,5 +80,17 @@ describe('resolvePluginSettings', () => {
     expect(resolvePluginSettings({ accelerationPreference: 'gpu' }).accelerationPreference).toBe(
       'auto',
     );
+  });
+
+  it.each([
+    'responsive',
+    'balanced',
+    'patient',
+  ] as const)('accepts the supported speaking style %s', (speakingStyle) => {
+    expect(resolvePluginSettings({ speakingStyle }).speakingStyle).toBe(speakingStyle);
+  });
+
+  it('falls back speakingStyle to balanced when persisted value is invalid', () => {
+    expect(resolvePluginSettings({ speakingStyle: 'loud' }).speakingStyle).toBe('balanced');
   });
 });

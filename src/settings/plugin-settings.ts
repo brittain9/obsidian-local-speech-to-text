@@ -4,7 +4,7 @@ import {
   type SelectedModel,
 } from '../models/model-management-types';
 import { isRecord } from '../shared/type-guards';
-import type { AccelerationPreference, ListeningMode } from '../sidecar/protocol';
+import type { AccelerationPreference, ListeningMode, SpeakingStyle } from '../sidecar/protocol';
 
 export const INSERTION_MODES = [
   'insert_at_cursor',
@@ -13,6 +13,12 @@ export const INSERTION_MODES = [
 ] as const;
 
 export type InsertionMode = (typeof INSERTION_MODES)[number];
+
+export const SPEAKING_STYLES = [
+  'responsive',
+  'balanced',
+  'patient',
+] as const satisfies readonly SpeakingStyle[];
 
 export interface PluginSettings {
   accelerationPreference: AccelerationPreference;
@@ -26,6 +32,7 @@ export interface PluginSettings {
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
+  speakingStyle: SpeakingStyle;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -40,6 +47,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
+  speakingStyle: 'balanced',
 };
 
 export function resolvePluginSettings(data: unknown): PluginSettings {
@@ -72,6 +80,9 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.sidecarStartupTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
+    speakingStyle: isSpeakingStyle(raw.speakingStyle)
+      ? raw.speakingStyle
+      : DEFAULT_PLUGIN_SETTINGS.speakingStyle,
   };
 }
 
@@ -97,6 +108,10 @@ function readPositiveInteger(value: unknown, fallback: number): number {
 
 function readInsertionMode(value: unknown): InsertionMode {
   return isInsertionMode(value) ? value : DEFAULT_PLUGIN_SETTINGS.insertionMode;
+}
+
+export function isSpeakingStyle(value: unknown): value is SpeakingStyle {
+  return typeof value === 'string' && (SPEAKING_STYLES as readonly string[]).includes(value);
 }
 
 function readSelectedModel(selectedModel: unknown): SelectedModel | null {

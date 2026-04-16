@@ -178,9 +178,11 @@ stateDiagram-v2
     direction LR
 
     [*] --> Listening : start
-    Listening --> SpeechDetected : speech start
-    SpeechDetected --> Listening : utterance end
-    SpeechDetected --> Listening : max length
+    Listening --> SpeechDetected : min_speech frames above threshold
+    SpeechDetected --> SpeechPaused : probability drops, silence accumulates
+    SpeechPaused --> SpeechDetected : probability recovers
+    SpeechPaused --> Listening : silence_end reached, utterance finalized
+    SpeechDetected --> Listening : max length (boundary-aware split)
     Listening --> [*] : stop
     SpeechDetected --> [*] : stop + flush
     Listening --> Timeout : one_sentence timeout
@@ -189,24 +191,37 @@ stateDiagram-v2
 **What it does:** Receives 20 ms PCM frames, runs voice activity detection on each frame, maintains a state machine to detect speech boundaries, and packages completed utterances for transcription.
 
 **Key technology:**
-- **WebRTC VAD** (`webrtc-vad` crate, Aggressive mode) -- classifies each 20 ms frame as voiced or unvoiced. This is the only speech detection mechanism; there is no energy/amplitude thresholding
-- **Boundary state machine** in `session.rs` -- counts consecutive voiced/silent frames against fixed thresholds
+- **Silero VAD** (ONNX model via `ort` crate) — returns a speech probability (0.0–1.0) for each 512-sample (32 ms) window. The detector buffers 320-sample (20 ms) pipeline frames internally, carries 64 samples of context forward, and threads a `[2, 1, 128]` RNN state across inferences
+- **Preset-driven boundary state machine** in `session.rs` — the user picks a named `SpeakingStyle`; Rust owns the tuning table. Hysteresis (the negative threshold is 0.15 below the start threshold, floored at 0.05) plus a min-speech gate reject transients; a separate pending-end timer fires finalization
 
-**VAD thresholds and timing constants:**
+**Speaking-style presets (Rust-authoritative `VadTuning`):**
+
+| Preset | `speech_threshold` | `min_speech_frames` | `silence_end_frames` | Pre-pad | Post-pad |
+|---|---|---|---|---|---|
+| Responsive | 0.40 | 3 (60 ms) | 20 (400 ms) | 2 (40 ms) | 2 (40 ms) |
+| Balanced (default) | 0.50 | 5 (100 ms) | 50 (1000 ms) | 2 (40 ms) | 2 (40 ms) |
+| Patient | 0.55 | 6 (120 ms) | 100 (2000 ms) | 2 (40 ms) | 2 (40 ms) |
+
+The silence-window values are calibrated against industry streaming-dictation norms: `Responsive` (400 ms) matches AssemblyAI Streaming v2's legacy end-of-turn default, `Balanced` (1000 ms) matches AssemblyAI Universal-Streaming's `max_turn_silence` default and Deepgram's end-of-speech recommendation, and `Patient` (2000 ms) is near Azure dictation territory for long-form thinking pauses.
+
+**Preset-independent constants:**
 
 | Constant | Value | Duration | Purpose |
-|----------|-------|----------|---------|
-| `PRE_ROLL_FRAMES` | 10 | 200 ms | Audio prepended before detected speech start |
-| `SPEECH_START_THRESHOLD` | 10 | 200 ms | Consecutive voiced frames to confirm speech |
-| `SPEECH_END_THRESHOLD` | 30 | 600 ms | Consecutive silent frames to end utterance |
-| `ONE_SENTENCE_TIMEOUT` | 500 | 10 s | No-speech timeout in one_sentence mode |
-| `MAX_UTTERANCE_FRAMES` | 1000 | 20 s | Hard cap on utterance length |
+|---|---|---|---|
+| `NEGATIVE_THRESHOLD_DELTA` | 0.15 | — | Gap between start and end probability thresholds (hysteresis) |
+| `NEGATIVE_THRESHOLD_FLOOR` | 0.05 | — | Lower bound on the end threshold (defensive, prevents `< 0` for low-threshold presets) |
+| `ONE_SENTENCE_TIMEOUT_FRAMES` | 500 | 10 s | No-speech timeout in one_sentence mode |
+| `MAX_UTTERANCE_FRAMES` | 1500 | 30 s | Hard cap on utterance length |
+| `BOUNDARY_STALENESS_CAP_FRAMES` | 250 | 5 s | A remembered silence boundary is discarded if this old when the cap fires |
 
-**Utterance finalization:** When the boundary condition is met (silence threshold or max length), trailing silence frames are trimmed, the i16 PCM samples are packaged as a `TranscribeUtterance` command, and sent to the worker thread.
+**Finalization paths:**
+1. **Natural end** — probability drops below the negative threshold, arming `pending_end_start`; when the gap reaches `silence_end_frames`, the utterance is trimmed to the pending-end frame plus `post_speech_pad_frames` and finalized.
+2. **Boundary-aware split at cap** — at `MAX_UTTERANCE_FRAMES` (30 s), the session cuts at the most recent silence boundary (if within `BOUNDARY_STALENESS_CAP_FRAMES`) and keeps the tail running. If no usable boundary exists, it falls back to a hard cut.
+3. **Graceful stop** — on user stop, any pending utterance is emitted before `SessionStopped`.
 
-**Code weight:** ~465 LOC (`session.rs`) + session management in `app.rs` (~400 LOC of the 1,319 total).
+**Code weight:** ~730 LOC (`session.rs`) + ~240 LOC (`vad.rs`) + session management in `app.rs`.
 
-**Time cost:** WebRTC VAD per frame: < 0.1 ms. The state machine is pure counter logic. This stage adds no meaningful latency. The 600 ms silence threshold is the primary source of perceived delay between speech ending and transcription starting.
+**Time cost:** Silero ONNX inference runs once per ~32 ms window (~1 ms per call amortised across 20 ms frames). The perceived end-of-speech delay is the preset's `silence_end_frames`: 400 ms on Responsive, 1000 ms on Balanced, 2000 ms on Patient.
 
 ---
 
@@ -277,7 +292,7 @@ flowchart LR
 | Whisper Small | ~200-500 ms | Metal/CUDA |
 | Whisper Large V3 Turbo | ~2-5 s | Metal/CUDA |
 
-During inference, the 600 ms silence detection delay is fully overlapped -- the user is typically still pausing when inference completes.
+During inference, the preset's silence window (400–2000 ms) is fully overlapped with model compute — on smaller models the user is typically still pausing when inference completes.
 
 ---
 
@@ -321,9 +336,12 @@ flowchart LR
 | `starting` | loader | Starting... |
 | `listening` | audio-lines | Listening |
 | `speech_detected` | audio-lines | Hearing speech |
+| `speech_paused` | audio-lines | Hearing speech (paused) |
 | `transcribing` | loader | Transcribing... |
 | `paused` | loader | Processing... |
 | `error` | mic-off | Error |
+
+`speech_paused` fires when `frames_since_confident_speech >= silence_end_frames` *before* finalization runs on the same frame, so in today's flow it is only externally observable when the probability sits in the intermediate range (between the end and start thresholds) rather than true silence. See architectural seams below.
 
 ### Settings
 
@@ -331,6 +349,7 @@ flowchart LR
 |---------|---------|---------|
 | `listeningMode` | `one_sentence` | Dictation trigger behavior |
 | `insertionMode` | `insert_at_cursor` | Where transcript text lands |
+| `speakingStyle` | `balanced` | UX preset driving the VAD tuning table (Responsive / Balanced / Patient) |
 | `pauseWhileProcessing` | `true` | Discard audio during inference |
 | `accelerationPreference` | `auto` | GPU vs CPU-only |
 | `selectedModel` | `null` | Active model selection |
@@ -353,7 +372,7 @@ flowchart LR
 | **whisper.cpp** | C++ implementation of OpenAI's Whisper model | Underlying inference runtime; supports CPU, Metal, CUDA |
 | **GGML** | Tensor library for quantized model inference on consumer hardware | Model format for Whisper; enables Q5/Q8 quantization for smaller files and faster inference |
 | **ort (ONNX Runtime)** | Cross-platform ML inference runtime | Alternative engine for Cohere Transcribe models |
-| **WebRTC VAD** | Voice Activity Detection algorithm from the WebRTC project | Classifies each 20 ms frame as speech/silence; drives boundary detection |
+| **Silero VAD** | ONNX-based voice activity detection model | Returns speech probability (0.0–1.0) per 512-sample window; drives boundary detection with hysteresis |
 | **Node.js child_process** | Process spawning in Node.js/Electron | Launches and manages the Rust sidecar as a subprocess |
 | **reqwest** | Async HTTP client for Rust | Downloads model files from HuggingFace |
 | **sha2** | SHA-256 implementation in Rust | Verifies downloaded model file integrity |
@@ -381,10 +400,10 @@ gantt
     Per-frame VAD         :a4, 20, 3000
 
     section Silence Wait
-    600 ms silence detect :a5, 3000, 600
+    1000 ms silence detect (Balanced) :a5, 3000, 1000
 
     section Inference
-    Whisper Small CPU     :crit, a6, 3600, 2000
+    Whisper Small CPU     :crit, a6, 4000, 2000
 
     section Insert
     Text insertion        :a7, after a6, 10
@@ -396,8 +415,8 @@ gantt
 |-------|----------------|------------|-------|
 | Audio capture + framing | ~20 ms latency | < 1% | Real-time, pipelined with speech |
 | Protocol transport | < 1 ms per frame | < 1% | Trivial encoding/decoding |
-| VAD + boundary detection | < 0.1 ms per frame | < 1% | Pure arithmetic |
-| **Silence detection wait** | **600 ms fixed** | **~10%** | User-perceptible; this is the gap between speech ending and transcription starting |
+| VAD + boundary detection | < 1 ms per inference | < 1% | Silero ONNX inference on buffered frames |
+| **Silence detection wait** | **400–2000 ms (preset-dependent)** | **~15–40%** | User-perceptible; gap between speech ending and transcription starting. Balanced is 1000 ms, Responsive 400 ms, Patient 2000 ms |
 | **Model inference** | **200 ms - 5 s** | **~85-90%** | The dominant cost; scales with model size and hardware |
 | Text insertion | < 1 ms | < 1% | DOM operation |
 
