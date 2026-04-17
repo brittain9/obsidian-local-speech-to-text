@@ -18,7 +18,8 @@
       "WebSearch",
       "Bash(cargo --version)",
       "Bash(npm run *)",
-      "Bash(grep -E \"\\\\.\\(json|ts\\)$\")"
+      "Bash(grep -E \"\\\\.\\(json|ts\\)$\")",
+      "Bash(gh api *)"
     ]
   }
 }
