@@ -340,6 +340,7 @@ impl HttpDownloadSource {
     fn new() -> Result<Self, String> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60))
             .build()
             .map_err(|error| format!("Failed to create HTTP client: {error}"))?;
 
@@ -502,10 +503,17 @@ async fn install_model_with_downloader(
             )
             .map_err(|error| fail_install(downloaded_total, error.to_string()))?;
 
-        let mut stream = downloader.open(artifact).await.map_err(|error| {
-            cleanup_stage_dir(&stage_dir);
-            fail_install(downloaded_total, format!("{error:#}"))
-        })?;
+        let mut stream = tokio::select! {
+            _ = cancel_handle.cancelled() => {
+                return Err(cancel_install(reporter, &stage_dir, downloaded_total));
+            }
+            result = downloader.open(artifact) => {
+                result.map_err(|error| {
+                    cleanup_stage_dir(&stage_dir);
+                    fail_install(downloaded_total, format!("{error:#}"))
+                })?
+            }
+        };
         let mut output = File::create(&temp_path).map_err(|error| {
             cleanup_stage_dir(&stage_dir);
             fail_install(
@@ -1105,6 +1113,57 @@ mod tests {
     }
 
     #[test]
+    fn cancel_during_download_open_exits_promptly() {
+        let request = sample_request();
+        let cancel_handle = Arc::new(InstallCancellation::new());
+        let cancel_trigger = Arc::clone(&cancel_handle);
+        let (tx, rx) = mpsc::channel();
+        let reporter = sample_reporter(&request, tx);
+        let downloader = OpenNeverResolvesDownloadSource;
+
+        let cancellation_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            cancel_trigger.cancel();
+        });
+
+        let started_at = Instant::now();
+        let error = run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
+            .expect_err("install should cancel while open() is pending");
+        cancellation_thread
+            .join()
+            .expect("cancellation helper thread should join");
+
+        assert!(
+            matches!(error, InstallError::Cancelled),
+            "expected Cancelled, got: {error:?}"
+        );
+        assert!(
+            started_at.elapsed() < Duration::from_secs(1),
+            "cancel should unblock a stalled HTTP request promptly"
+        );
+        assert!(
+            !request
+                .store_root
+                .join("whisper_cpp")
+                .join("whisper")
+                .join(".staging-small-install-1")
+                .exists()
+        );
+
+        let events = collect_install_events(rx);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::ModelInstallUpdate {
+                    state: ModelInstallState::Cancelled,
+                    ..
+                }
+            )),
+            "cancelled event should be emitted even when the HTTP request has not returned"
+        );
+    }
+
+    #[test]
     fn cancel_after_final_download_but_before_promotion_cancels_cleanly() {
         let request = sample_request();
         let cancel_handle = Arc::new(InstallCancellation::new());
@@ -1274,6 +1333,14 @@ mod tests {
                     chunks: Box::pin(stream::pending()),
                 })
             })
+        }
+    }
+
+    struct OpenNeverResolvesDownloadSource;
+
+    impl DownloadSource for OpenNeverResolvesDownloadSource {
+        fn open<'a>(&'a self, _artifact: &'a ModelArtifact) -> DownloadFuture<'a> {
+            Box::pin(std::future::pending())
         }
     }
 
