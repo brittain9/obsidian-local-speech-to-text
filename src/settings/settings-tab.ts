@@ -3,6 +3,7 @@ import { Platform, PluginSettingTab, Setting } from 'obsidian';
 import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
+import { matchesModelTriple } from '../models/model-management-types';
 import type { SpeakingStyle, SystemInfoEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import { buildAccelerationSummary, buildEffectiveBackendLines } from './acceleration-info';
@@ -301,12 +302,12 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     return () => {
       const state = manager.getState();
-      const catalogModel = state.catalog.models.find(
-        (m) => m.runtimeId === runtimeId && m.familyId === familyId && m.modelId === modelId,
+      const catalogModel = state.catalog.models.find((m) =>
+        matchesModelTriple(m, runtimeId, familyId, modelId),
       );
       if (catalogModel === undefined) return;
-      const installedModel = state.installedModels.find(
-        (m) => m.runtimeId === runtimeId && m.familyId === familyId && m.modelId === modelId,
+      const installedModel = state.installedModels.find((m) =>
+        matchesModelTriple(m, runtimeId, familyId, modelId),
       );
       new ModelDetailsModal(this.app, catalogModel, installedModel?.installPath ?? null).open();
     };

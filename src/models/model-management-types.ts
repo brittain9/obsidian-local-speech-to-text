@@ -234,6 +234,17 @@ export function getTotalModelSize(model: CatalogModelRecord): number {
   return model.artifacts.reduce((sum, a) => sum + a.sizeBytes, 0);
 }
 
+export function matchesModelTriple(
+  record: { familyId: ModelFamilyId; modelId: string; runtimeId: RuntimeId },
+  runtimeId: RuntimeId,
+  familyId: ModelFamilyId,
+  modelId: string,
+): boolean {
+  return (
+    record.runtimeId === runtimeId && record.familyId === familyId && record.modelId === modelId
+  );
+}
+
 export function selectedModelEquals(left: SelectedModel, right: SelectedModel): boolean {
   if (
     left.kind !== right.kind ||

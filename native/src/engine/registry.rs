@@ -7,9 +7,9 @@ use crate::engine::capabilities::{
 use crate::engine::traits::{ModelFamilyAdapter, Runtime};
 use crate::transcription::TranscriptionRequest;
 
-/// Flat registry populated once at sidecar startup. Runtimes and adapters are
-/// registered under compile-time feature gates; missing entries simply do not
-/// appear.
+/// Registered runtimes and family adapters. Entries missing from this map are
+/// feature-gated off at compile time; callers surface "unsupported_engine" so
+/// UIs can distinguish that from "model file broken".
 #[derive(Default)]
 pub struct EngineRegistry {
     runtimes: HashMap<RuntimeId, Box<dyn Runtime>>,
@@ -71,10 +71,11 @@ impl EngineRegistry {
             .map(|a| a.as_ref())
     }
 
-    /// Merge runtime + family capabilities for a (runtime, family) pair. Used
-    /// both for installed-catalog-model reporting and for external-file
-    /// selections (the family adapter supplies its static caps). Returns
-    /// `None` only when the runtime itself is not registered.
+    /// Merge runtime + family capabilities into an over-the-wire struct.
+    /// Falls back to `ModelFamilyCapabilities::unknown()` when the family
+    /// adapter is not registered (external-file selections fitting a compiled
+    /// runtime whose family we can't verify). Returns `None` only when the
+    /// runtime itself is not registered.
     pub fn merged_capabilities(
         &self,
         runtime_id: RuntimeId,
@@ -94,27 +95,6 @@ impl EngineRegistry {
         })
     }
 
-    /// Merge runtime capabilities with `ModelFamilyCapabilities::unknown()` for
-    /// external-file selections whose family cannot be verified. Returns
-    /// `None` only when the runtime itself is not registered.
-    pub fn merged_capabilities_with_unknown_family(
-        &self,
-        runtime_id: RuntimeId,
-        family_id: ModelFamilyId,
-    ) -> Option<EngineCapabilities> {
-        let runtime = self.runtime(runtime_id)?;
-
-        Some(EngineCapabilities {
-            runtime_id,
-            family_id,
-            runtime: runtime.capabilities().clone(),
-            family: ModelFamilyCapabilities::unknown(),
-        })
-    }
-
-    /// Probe a model artifact through the adapter registered at (runtime_id,
-    /// family_id). Returns a structured error when the pair is not registered
-    /// so the caller can surface "engine not available in this build".
     pub fn probe_model(
         &self,
         runtime_id: RuntimeId,
@@ -139,9 +119,9 @@ pub fn missing_adapter_error(
     ))
 }
 
-/// Apply capability gates to an outgoing request. For each field the adapter
-/// cannot honor, emit a `RequestWarning` and zero the field in place so the
-/// adapter never sees it.
+/// Strip request fields the adapter can't honor and return one warning per
+/// dropped field. Zeroing in place keeps the adapter contract simple: adapters
+/// assume any field still set is one they declared support for.
 pub fn apply_capability_gates(
     adapter_capabilities: &ModelFamilyCapabilities,
     request: &mut TranscriptionRequest,
@@ -324,17 +304,6 @@ mod tests {
         let merged = registry
             .merged_capabilities(RuntimeId::WhisperCpp, ModelFamilyId::Whisper)
             .expect("runtime registered so merge succeeds");
-        assert_eq!(merged.family, ModelFamilyCapabilities::unknown());
-    }
-
-    #[test]
-    fn merged_capabilities_with_unknown_family_reports_unknown_for_external_files() {
-        let registry = build_registry_with_whisper();
-
-        let merged = registry
-            .merged_capabilities_with_unknown_family(RuntimeId::WhisperCpp, ModelFamilyId::Whisper)
-            .expect("runtime registered");
-        assert_eq!(merged.runtime, runtime_caps());
         assert_eq!(merged.family, ModelFamilyCapabilities::unknown());
     }
 

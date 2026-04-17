@@ -20,41 +20,23 @@ impl OnnxRuntime {
         let mut accelerator_details: HashMap<AcceleratorId, AcceleratorAvailability> =
             HashMap::new();
 
+        accelerator_details.insert(AcceleratorId::Cpu, AcceleratorAvailability::available());
+
+        #[cfg(feature = "gpu-ort-cuda")]
         accelerator_details.insert(
-            AcceleratorId::Cpu,
-            AcceleratorAvailability {
-                available: true,
-                unavailable_reason: None,
+            AcceleratorId::Cuda,
+            match probe_cuda_execution_provider() {
+                Ok(()) => AcceleratorAvailability::available(),
+                Err(reason) => AcceleratorAvailability::unavailable(reason),
             },
         );
 
-        #[cfg(feature = "gpu-ort-cuda")]
-        {
-            let (available, reason) = match probe_cuda_execution_provider() {
-                Ok(()) => (true, None),
-                Err(message) => (false, Some(message)),
-            };
-            accelerator_details.insert(
-                AcceleratorId::Cuda,
-                AcceleratorAvailability {
-                    available,
-                    unavailable_reason: reason,
-                },
-            );
+        Self {
+            capabilities: RuntimeCapabilities::from_details(
+                accelerator_details,
+                vec![ModelFormat::Onnx],
+            ),
         }
-
-        let available_accelerators: Vec<AcceleratorId> = accelerator_details
-            .iter()
-            .filter_map(|(id, details)| details.available.then_some(*id))
-            .collect();
-
-        let capabilities = RuntimeCapabilities {
-            available_accelerators,
-            accelerator_details,
-            supported_model_formats: vec![ModelFormat::Onnx],
-        };
-
-        Self { capabilities }
     }
 }
 

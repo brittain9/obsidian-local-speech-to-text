@@ -13,6 +13,7 @@ import {
   type CatalogModelRecord,
   getTotalModelSize,
   type ModelFamilyId,
+  matchesModelTriple,
   type RuntimeId,
 } from './model-management-types';
 import { deriveModelRowStates, type ModelRowState } from './model-row-state';
@@ -323,11 +324,8 @@ export class ManageModelsModal extends Modal {
               .setTooltip('Details')
               .onClick(() => {
                 const state = this.deps.manager.getState();
-                const installedModel = state.installedModels.find(
-                  (m) =>
-                    m.runtimeId === row.model.runtimeId &&
-                    m.familyId === row.model.familyId &&
-                    m.modelId === row.model.modelId,
+                const installedModel = state.installedModels.find((m) =>
+                  matchesModelTriple(m, row.model.runtimeId, row.model.familyId, row.model.modelId),
                 );
                 new ModelDetailsModal(
                   this.app,

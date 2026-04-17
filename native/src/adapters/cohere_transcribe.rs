@@ -115,6 +115,9 @@ struct LoadedCohereModel {
     encoder: Session,
     mel_extractor: crate::mel::MelFeatureExtractor,
     vocab: HashMap<u32, String>,
+    cache_names: Vec<String>,
+    decoder_uses_fp16: bool,
+    prompt_tokens: Vec<i64>,
 }
 
 impl LoadedModel for LoadedCohereModel {
@@ -126,12 +129,10 @@ impl LoadedModel for LoadedCohereModel {
         validate_audio_samples(&request.audio_samples)?;
         validate_audio_duration(&request.audio_samples)?;
 
-        // --- Feature extraction: raw audio → mel spectrogram [1, T, 128] ---
         let mel = self.mel_extractor.extract(&request.audio_samples);
         let features_value = Value::from_array(mel.features)
             .map_err(|e| TranscriptionError::transcription_failure("encoder features", &e))?;
 
-        // --- Encoder: mel features → hidden states ---
         let encoder_outputs = self
             .encoder
             .run(ort::inputs!["input_features" => features_value])
@@ -141,8 +142,14 @@ impl LoadedModel for LoadedCohereModel {
             TranscriptionError::transcription_failure("encoder", "produced no output")
         })?;
 
-        // --- Decoder: autoregressive token generation ---
-        let text = autoregressive_decode(&mut self.decoder, &encoder_hidden, &self.vocab)?;
+        let text = autoregressive_decode(
+            &mut self.decoder,
+            &encoder_hidden,
+            &self.vocab,
+            &self.cache_names,
+            self.decoder_uses_fp16,
+            &self.prompt_tokens,
+        )?;
 
         Ok(Transcript {
             segments: Vec::new(),
@@ -163,6 +170,7 @@ fn load_cohere_model(
     // Decoder must run on CPU: ORT's CUDA GroupQueryAttention kernel does not
     // support attention_bias, which the Cohere decoder graph requires.
     let decoder = build_session(&decoder_path, GpuConfig { use_gpu: false })?;
+    let decoder_uses_fp16 = decoder_past_kv_is_fp16(&decoder);
     let vocab = load_vocab(&tokens_path)?;
     let mel_extractor = crate::mel::MelFeatureExtractor::new();
 
@@ -171,41 +179,85 @@ fn load_cohere_model(
         encoder,
         mel_extractor,
         vocab,
+        cache_names: build_cache_names(),
+        decoder_uses_fp16,
+        prompt_tokens: build_prompt_tokens(),
     })
 }
 
+fn build_cache_names() -> Vec<String> {
+    (0..NUM_DECODER_LAYERS)
+        .flat_map(|layer| {
+            ["decoder", "encoder"]
+                .into_iter()
+                .flat_map(move |attn_type| {
+                    ["key", "value"]
+                        .into_iter()
+                        .map(move |kv| format!("past_key_values.{layer}.{attn_type}.{kv}"))
+                })
+        })
+        .collect()
+}
+
+fn empty_kv_cache_value(use_fp16: bool) -> Result<DynValue, TranscriptionError> {
+    let result = if use_fp16 {
+        Value::from_array(ndarray::Array4::<half::f16>::zeros((
+            1, NUM_HEADS, 0, HEAD_DIM,
+        )))
+        .map(DynValue::from)
+    } else {
+        Value::from_array(ndarray::Array4::<f32>::zeros((1, NUM_HEADS, 0, HEAD_DIM)))
+            .map(DynValue::from)
+    };
+    result.map_err(|e| TranscriptionError::transcription_failure("initial KV cache", &e))
+}
+
+fn decoder_past_kv_is_fp16(decoder: &Session) -> bool {
+    decoder
+        .inputs()
+        .iter()
+        .find(|o| o.name().starts_with("past_key_values."))
+        .is_some_and(|o| {
+            matches!(
+                o.dtype(),
+                ValueType::Tensor {
+                    ty: TensorElementType::Float16,
+                    ..
+                }
+            )
+        })
+}
+
+const ENCODER_CANDIDATES: &[&str] = &[
+    "encoder_model_fp16.onnx",
+    "encoder_model.onnx",
+    "encoder_model_int8.onnx",
+    "encoder_model_q4.onnx",
+    "encoder_model_quantized.onnx",
+];
+
+const DECODER_CANDIDATES: &[&str] = &[
+    "decoder_model_merged_fp16.onnx",
+    "decoder_model_merged.onnx",
+    "decoder_model_merged_int8.onnx",
+    "decoder_model_merged_q4.onnx",
+    "decoder_model_merged_quantized.onnx",
+];
+
 fn find_encoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
-    let candidates = [
-        "encoder_model_fp16.onnx",
-        "encoder_model.onnx",
-        "encoder_model_int8.onnx",
-        "encoder_model_q4.onnx",
-        "encoder_model_quantized.onnx",
-    ];
-
-    for name in &candidates {
-        let path = model_dir.join(name);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-
-    Err(TranscriptionError::invalid_model_with_details(format!(
-        "no encoder ONNX file found in {}",
-        model_dir.display()
-    )))
+    find_first_existing(model_dir, ENCODER_CANDIDATES, "encoder")
 }
 
 fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
-    let candidates = [
-        "decoder_model_merged_fp16.onnx",
-        "decoder_model_merged.onnx",
-        "decoder_model_merged_int8.onnx",
-        "decoder_model_merged_q4.onnx",
-        "decoder_model_merged_quantized.onnx",
-    ];
+    find_first_existing(model_dir, DECODER_CANDIDATES, "decoder")
+}
 
-    for name in &candidates {
+fn find_first_existing(
+    model_dir: &Path,
+    candidates: &[&str],
+    kind: &str,
+) -> Result<PathBuf, TranscriptionError> {
+    for name in candidates {
         let path = model_dir.join(name);
         if path.is_file() {
             return Ok(path);
@@ -213,7 +265,7 @@ fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
     }
 
     Err(TranscriptionError::invalid_model_with_details(format!(
-        "decoder model missing: no decoder ONNX file found in {}",
+        "{kind} model missing: no {kind} ONNX file found in {}",
         model_dir.display()
     )))
 }
@@ -376,27 +428,17 @@ fn autoregressive_decode(
     decoder: &mut Session,
     encoder_hidden: &DynValue,
     vocab: &HashMap<u32, String>,
+    cache_names: &[String],
+    use_fp16: bool,
+    prompt: &[i64],
 ) -> Result<String, TranscriptionError> {
-    let prompt = build_prompt_tokens();
     let mut generated_ids: Vec<i64> = Vec::new();
     let mut kv_cache: Option<Vec<DynValue>> = None;
     let mut past_seq_len: i64 = 0;
 
-    let cache_names: Vec<String> = (0..NUM_DECODER_LAYERS)
-        .flat_map(|layer| {
-            ["decoder", "encoder"]
-                .into_iter()
-                .flat_map(move |attn_type| {
-                    ["key", "value"]
-                        .into_iter()
-                        .map(move |kv| format!("past_key_values.{layer}.{attn_type}.{kv}"))
-                })
-        })
-        .collect();
-
     for step in 0..MAX_SEQ_LEN {
         let input_ids: Vec<i64> = if step == 0 {
-            prompt.clone()
+            prompt.to_vec()
         } else {
             vec![*generated_ids.last().unwrap()]
         };
@@ -443,34 +485,9 @@ fn autoregressive_decode(
                 ));
             }
         } else {
-            let use_fp16 = decoder
-                .inputs()
-                .iter()
-                .find(|o| o.name().starts_with("past_key_values."))
-                .is_some_and(|o| {
-                    matches!(
-                        o.dtype(),
-                        ValueType::Tensor {
-                            ty: TensorElementType::Float16,
-                            ..
-                        }
-                    )
-                });
-
-            for name in &cache_names {
-                if use_fp16 {
-                    let cache = ndarray::Array4::<half::f16>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
-                    let cache_value = Value::from_array(cache).map_err(|e| {
-                        TranscriptionError::transcription_failure("initial KV cache", &e)
-                    })?;
-                    inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
-                } else {
-                    let cache = ndarray::Array4::<f32>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
-                    let cache_value = Value::from_array(cache).map_err(|e| {
-                        TranscriptionError::transcription_failure("initial KV cache", &e)
-                    })?;
-                    inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
-                }
+            for name in cache_names {
+                let cache_value = empty_kv_cache_value(use_fp16)?;
+                inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
             }
         }
 

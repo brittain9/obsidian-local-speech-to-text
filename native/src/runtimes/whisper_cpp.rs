@@ -14,44 +14,20 @@ impl WhisperCppRuntime {
         let mut accelerator_details: HashMap<AcceleratorId, AcceleratorAvailability> =
             HashMap::new();
 
-        accelerator_details.insert(
-            AcceleratorId::Cpu,
-            AcceleratorAvailability {
-                available: true,
-                unavailable_reason: None,
-            },
-        );
+        accelerator_details.insert(AcceleratorId::Cpu, AcceleratorAvailability::available());
 
         #[cfg(feature = "gpu-metal")]
-        accelerator_details.insert(
-            AcceleratorId::Metal,
-            AcceleratorAvailability {
-                available: true,
-                unavailable_reason: None,
-            },
-        );
+        accelerator_details.insert(AcceleratorId::Metal, AcceleratorAvailability::available());
 
         #[cfg(feature = "gpu-cuda")]
-        accelerator_details.insert(
-            AcceleratorId::Cuda,
-            AcceleratorAvailability {
-                available: true,
-                unavailable_reason: None,
-            },
-        );
+        accelerator_details.insert(AcceleratorId::Cuda, AcceleratorAvailability::available());
 
-        let available_accelerators: Vec<AcceleratorId> = accelerator_details
-            .iter()
-            .filter_map(|(id, details)| details.available.then_some(*id))
-            .collect();
-
-        let capabilities = RuntimeCapabilities {
-            available_accelerators,
-            accelerator_details,
-            supported_model_formats: vec![ModelFormat::Ggml, ModelFormat::Gguf],
-        };
-
-        Self { capabilities }
+        Self {
+            capabilities: RuntimeCapabilities::from_details(
+                accelerator_details,
+                vec![ModelFormat::Ggml, ModelFormat::Gguf],
+            ),
+        }
     }
 }
 

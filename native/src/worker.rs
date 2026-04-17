@@ -101,7 +101,6 @@ fn load_model_for_session(
     let adapter = registry
         .adapter(metadata.runtime_id, metadata.family_id)
         .ok_or_else(|| missing_adapter_error(metadata.runtime_id, metadata.family_id))?;
-    adapter.probe_model(&metadata.model_file_path)?;
     adapter.load(&metadata.model_file_path, metadata.gpu_config)
 }
 
@@ -184,14 +183,10 @@ fn worker_main(
                     initial_prompt: session.metadata.initial_prompt.clone(),
                 };
 
-                let adapter_capabilities = registry
+                let warnings = registry
                     .adapter(session.metadata.runtime_id, session.metadata.family_id)
-                    .map(|adapter| adapter.capabilities().clone());
-
-                let warnings = match adapter_capabilities.as_ref() {
-                    Some(capabilities) => apply_capability_gates(capabilities, &mut request),
-                    None => Vec::new(),
-                };
+                    .map(|adapter| apply_capability_gates(adapter.capabilities(), &mut request))
+                    .unwrap_or_default();
 
                 let started_at = Instant::now();
                 let result = panic::catch_unwind(AssertUnwindSafe(|| {

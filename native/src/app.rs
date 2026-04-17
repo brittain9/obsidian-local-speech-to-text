@@ -2,9 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::catalog::ModelCatalog;
-use crate::engine::capabilities::{
-    AcceleratorId, EngineCapabilities, ModelFamilyId, RequestWarning, RuntimeId,
-};
+use crate::engine::capabilities::{AcceleratorId, ModelFamilyId, RuntimeId};
 use crate::engine::registry::EngineRegistry;
 use crate::installer::{InstallRequest, ModelInstallManager, ModelProbe};
 use crate::model_store::{
@@ -60,6 +58,15 @@ struct ResolvedModelSelection {
     resolved_path: PathBuf,
     selection: SelectedModel,
     size_bytes: u64,
+}
+
+#[derive(Default)]
+struct ProbeErrorFields {
+    details: Option<String>,
+    display_name: Option<String>,
+    installed: bool,
+    model_id: Option<String>,
+    resolved_path: Option<String>,
 }
 
 impl AppState {
@@ -835,6 +842,22 @@ impl AppState {
     ) -> Result<ResolvedModelSelection, Box<Event>> {
         let runtime_id = selection.runtime_id();
         let family_id = selection.family_id();
+        let probe_error = |status, message: &str, fields: ProbeErrorFields| {
+            Box::new(Event::ModelProbeResult {
+                available: false,
+                size_bytes: None,
+                runtime_id,
+                family_id,
+                selection: selection.clone(),
+                status,
+                message: message.to_string(),
+                details: fields.details,
+                display_name: fields.display_name,
+                installed: fields.installed,
+                model_id: fields.model_id,
+                resolved_path: fields.resolved_path,
+            })
+        };
 
         match selection {
             SelectedModel::CatalogModel { model_id, .. } => {
@@ -843,39 +866,27 @@ impl AppState {
                     .find_model(runtime_id, family_id, model_id)
                     .cloned()
                     .ok_or_else(|| {
-                        Box::new(Event::ModelProbeResult {
-                            available: false,
-                            details: None,
-                            display_name: None,
-                            runtime_id,
-                            family_id,
-                            installed: false,
-                            message:
-                                "The selected managed model does not exist in the bundled catalog."
-                                    .to_string(),
-                            model_id: Some(model_id.clone()),
-                            resolved_path: None,
-                            selection: selection.clone(),
-                            size_bytes: None,
-                            status: ModelProbeStatus::Invalid,
-                        })
+                        probe_error(
+                            ModelProbeStatus::Invalid,
+                            "The selected managed model does not exist in the bundled catalog.",
+                            ProbeErrorFields {
+                                model_id: Some(model_id.clone()),
+                                ..Default::default()
+                            },
+                        )
                     })?;
                 let store_info =
                     resolve_model_store_info(model_store_path_override).map_err(|error| {
-                        Box::new(Event::ModelProbeResult {
-                            available: false,
-                            details: Some(format!("{error:#}")),
-                            display_name: Some(model.display_name.clone()),
-                            runtime_id,
-                            family_id,
-                            installed: false,
-                            message: "The model store path is invalid.".to_string(),
-                            model_id: Some(model_id.clone()),
-                            resolved_path: None,
-                            selection: selection.clone(),
-                            size_bytes: None,
-                            status: ModelProbeStatus::Invalid,
-                        })
+                        probe_error(
+                            ModelProbeStatus::Invalid,
+                            "The model store path is invalid.",
+                            ProbeErrorFields {
+                                details: Some(format!("{error:#}")),
+                                display_name: Some(model.display_name.clone()),
+                                model_id: Some(model_id.clone()),
+                                ..Default::default()
+                            },
+                        )
                     })?;
                 let resolved_path = resolve_catalog_model_runtime_path(
                     &self.catalog,
@@ -885,38 +896,30 @@ impl AppState {
                     model_id,
                 )
                 .map_err(|error| {
-                    Box::new(Event::ModelProbeResult {
-                        available: false,
-                        details: Some(format!("{error:#}")),
-                        display_name: Some(model.display_name.clone()),
-                        runtime_id,
-                        family_id,
-                        installed: false,
-                        message: "The selected managed model is not installed or is incomplete."
-                            .to_string(),
-                        model_id: Some(model_id.clone()),
-                        resolved_path: None,
-                        selection: selection.clone(),
-                        size_bytes: None,
-                        status: ModelProbeStatus::Missing,
-                    })
+                    probe_error(
+                        ModelProbeStatus::Missing,
+                        "The selected managed model is not installed or is incomplete.",
+                        ProbeErrorFields {
+                            details: Some(format!("{error:#}")),
+                            display_name: Some(model.display_name.clone()),
+                            model_id: Some(model_id.clone()),
+                            ..Default::default()
+                        },
+                    )
                 })?;
                 self.probe_model_path(runtime_id, family_id, &resolved_path)
                     .map_err(|error| {
-                        Box::new(Event::ModelProbeResult {
-                            available: false,
-                            details: error.details,
-                            display_name: Some(model.display_name.clone()),
-                            runtime_id,
-                            family_id,
-                            installed: true,
-                            message: error.message.to_string(),
-                            model_id: Some(model_id.clone()),
-                            resolved_path: Some(resolved_path.display().to_string()),
-                            selection: selection.clone(),
-                            size_bytes: None,
-                            status: ModelProbeStatus::Invalid,
-                        })
+                        probe_error(
+                            ModelProbeStatus::Invalid,
+                            error.message,
+                            ProbeErrorFields {
+                                details: error.details,
+                                display_name: Some(model.display_name.clone()),
+                                installed: true,
+                                model_id: Some(model_id.clone()),
+                                resolved_path: Some(resolved_path.display().to_string()),
+                            },
+                        )
                     })?;
                 let size_bytes = file_size(&resolved_path);
 
@@ -935,61 +938,44 @@ impl AppState {
                 let trimmed_path = file_path.trim();
 
                 if trimmed_path.is_empty() {
-                    return Err(Box::new(Event::ModelProbeResult {
-                        available: false,
-                        details: None,
-                        display_name: None,
-                        runtime_id,
-                        family_id,
-                        installed: false,
-                        message: "External model file path is not configured.".to_string(),
-                        model_id: None,
-                        resolved_path: None,
-                        selection: selection.clone(),
-                        size_bytes: None,
-                        status: ModelProbeStatus::Invalid,
-                    }));
+                    return Err(probe_error(
+                        ModelProbeStatus::Invalid,
+                        "External model file path is not configured.",
+                        ProbeErrorFields::default(),
+                    ));
                 }
 
                 let model_path = Path::new(trimmed_path);
 
                 if !model_path.is_absolute() {
-                    return Err(Box::new(Event::ModelProbeResult {
-                        available: false,
-                        details: Some(trimmed_path.to_string()),
-                        display_name: Some(file_name_or_path(model_path)),
-                        runtime_id,
-                        family_id,
-                        installed: false,
-                        message: "External model file path must be absolute.".to_string(),
-                        model_id: None,
-                        resolved_path: None,
-                        selection: selection.clone(),
-                        size_bytes: None,
-                        status: ModelProbeStatus::Invalid,
-                    }));
+                    return Err(probe_error(
+                        ModelProbeStatus::Invalid,
+                        "External model file path must be absolute.",
+                        ProbeErrorFields {
+                            details: Some(trimmed_path.to_string()),
+                            display_name: Some(file_name_or_path(model_path)),
+                            ..Default::default()
+                        },
+                    ));
                 }
 
                 self.probe_model_path(runtime_id, family_id, model_path)
                     .map_err(|error| {
-                        Box::new(Event::ModelProbeResult {
-                            available: false,
-                            details: error.details,
-                            display_name: Some(file_name_or_path(model_path)),
-                            runtime_id,
-                            family_id,
-                            installed: false,
-                            message: error.message.to_string(),
-                            model_id: None,
-                            resolved_path: Some(model_path.display().to_string()),
-                            selection: selection.clone(),
-                            size_bytes: None,
-                            status: if error.code == "missing_model_file" {
-                                ModelProbeStatus::Missing
-                            } else {
-                                ModelProbeStatus::Invalid
+                        let status = if error.code == "missing_model_file" {
+                            ModelProbeStatus::Missing
+                        } else {
+                            ModelProbeStatus::Invalid
+                        };
+                        probe_error(
+                            status,
+                            error.message,
+                            ProbeErrorFields {
+                                details: error.details,
+                                display_name: Some(file_name_or_path(model_path)),
+                                resolved_path: Some(model_path.display().to_string()),
+                                ..Default::default()
                             },
-                        })
+                        )
                     })?;
                 let size_bytes = file_size(model_path);
 
@@ -1090,11 +1076,6 @@ fn resolve_use_gpu(
         },
     }
 }
-
-// Silence unused-import warnings when building feature combinations that
-// happen not to use these re-exports; they are documented in the public API.
-#[allow(dead_code)]
-fn _type_exports(_: EngineCapabilities, _: RequestWarning) {}
 
 #[cfg(test)]
 mod tests {

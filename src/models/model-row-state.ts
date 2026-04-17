@@ -7,6 +7,7 @@ import {
   type InstalledModelRecord,
   type ModelCatalogRecord,
   type ModelFamilyId,
+  matchesModelTriple,
   type RuntimeId,
   type SelectedModel,
 } from './model-management-types';
@@ -57,16 +58,16 @@ function deriveRowState(
 ): ModelRowState {
   const installed =
     installedModels.find((m) =>
-      matchesTriple(m, model.runtimeId, model.familyId, model.modelId),
+      matchesModelTriple(m, model.runtimeId, model.familyId, model.modelId),
     ) !== undefined;
 
   const isSelected =
     selectedModel?.kind === 'catalog_model' &&
-    matchesTriple(selectedModel, model.runtimeId, model.familyId, model.modelId);
+    matchesModelTriple(selectedModel, model.runtimeId, model.familyId, model.modelId);
 
   const thisInstall =
     activeInstall !== null &&
-    matchesTriple(activeInstall.installUpdate, model.runtimeId, model.familyId, model.modelId)
+    matchesModelTriple(activeInstall.installUpdate, model.runtimeId, model.familyId, model.modelId)
       ? activeInstall
       : null;
 
@@ -174,12 +175,12 @@ export function deriveCurrentModelDisplay(state: ModelManagerState): CurrentMode
   // catalog_model
   const catalogEntry =
     catalog.models.find((m) =>
-      matchesTriple(m, selectedModel.runtimeId, selectedModel.familyId, selectedModel.modelId),
+      matchesModelTriple(m, selectedModel.runtimeId, selectedModel.familyId, selectedModel.modelId),
     ) ?? null;
 
   const installedModel =
     installedModels.find((m) =>
-      matchesTriple(m, selectedModel.runtimeId, selectedModel.familyId, selectedModel.modelId),
+      matchesModelTriple(m, selectedModel.runtimeId, selectedModel.familyId, selectedModel.modelId),
     ) ?? null;
 
   const displayName = catalogEntry?.displayName ?? selectedModel.modelId;
@@ -211,17 +212,6 @@ export function deriveCurrentModelDisplay(state: ModelManagerState): CurrentMode
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-function matchesTriple(
-  record: { familyId: ModelFamilyId; modelId: string; runtimeId: RuntimeId },
-  runtimeId: RuntimeId,
-  familyId: ModelFamilyId,
-  modelId: string,
-): boolean {
-  return (
-    record.runtimeId === runtimeId && record.familyId === familyId && record.modelId === modelId
-  );
-}
 
 function resolveFamilyDisplayName(
   catalog: ModelCatalogRecord,

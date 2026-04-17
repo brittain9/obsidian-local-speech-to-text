@@ -103,18 +103,25 @@ fn unregistered_pair_surfaces_missing_adapter_error_with_triple_in_details() {
 }
 
 #[test]
-fn merged_capabilities_with_unknown_family_matches_unknown_fallback() {
+fn merged_capabilities_falls_back_to_unknown_when_family_adapter_missing() {
     let registry = EngineRegistry::build();
 
     let Some(runtime_id) = registry.runtimes().next().map(|runtime| runtime.id()) else {
-        // No compiled runtimes — nothing to exercise.
         return;
     };
 
-    // Use a family id that may or may not be registered for this runtime; the
-    // "with unknown family" path must always zero out family capabilities.
+    // Pair the runtime with a family the registry won't have for it (the sole
+    // registered pair per runtime pins to a single family id), which forces the
+    // unknown-family fallback path. When no mismatch is available we skip.
+    let family_id = [ModelFamilyId::Whisper, ModelFamilyId::CohereTranscribe]
+        .into_iter()
+        .find(|family| registry.adapter(runtime_id, *family).is_none());
+    let Some(family_id) = family_id else {
+        return;
+    };
+
     let merged = registry
-        .merged_capabilities_with_unknown_family(runtime_id, ModelFamilyId::Whisper)
+        .merged_capabilities(runtime_id, family_id)
         .expect("runtime is registered so merge succeeds");
     assert!(!merged.family.supports_timed_segments);
     assert!(!merged.family.supports_initial_prompt);

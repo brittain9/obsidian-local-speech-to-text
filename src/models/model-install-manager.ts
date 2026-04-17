@@ -16,6 +16,7 @@ import {
   type ModelFamilyId,
   type ModelInstallUpdateRecord,
   type ModelStoreRecord,
+  matchesModelTriple,
   type RuntimeId,
   type SelectedModel,
 } from './model-management-types';
@@ -141,11 +142,7 @@ function installMatchesCatalogModel(
   familyId: ModelFamilyId,
   modelId: string,
 ): boolean {
-  return (
-    install.installUpdate.runtimeId === runtimeId &&
-    install.installUpdate.familyId === familyId &&
-    install.installUpdate.modelId === modelId
-  );
+  return matchesModelTriple(install.installUpdate, runtimeId, familyId, modelId);
 }
 
 // ---------------------------------------------------------------------------

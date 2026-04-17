@@ -95,6 +95,22 @@ pub struct AcceleratorAvailability {
     pub unavailable_reason: Option<String>,
 }
 
+impl AcceleratorAvailability {
+    pub const fn available() -> Self {
+        Self {
+            available: true,
+            unavailable_reason: None,
+        }
+    }
+
+    pub const fn unavailable(reason: String) -> Self {
+        Self {
+            available: false,
+            unavailable_reason: Some(reason),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCapabilities {
     #[serde(rename = "availableAccelerators")]
@@ -103,6 +119,26 @@ pub struct RuntimeCapabilities {
     pub accelerator_details: HashMap<AcceleratorId, AcceleratorAvailability>,
     #[serde(rename = "supportedModelFormats")]
     pub supported_model_formats: Vec<ModelFormat>,
+}
+
+impl RuntimeCapabilities {
+    /// Build a capabilities struct from detail entries, deriving
+    /// `available_accelerators` as the subset flagged `available`.
+    pub fn from_details(
+        accelerator_details: HashMap<AcceleratorId, AcceleratorAvailability>,
+        supported_model_formats: Vec<ModelFormat>,
+    ) -> Self {
+        let available_accelerators = accelerator_details
+            .iter()
+            .filter_map(|(id, details)| details.available.then_some(*id))
+            .collect();
+
+        Self {
+            available_accelerators,
+            accelerator_details,
+            supported_model_formats,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
