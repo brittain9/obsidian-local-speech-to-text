@@ -3,14 +3,9 @@ import { Platform, PluginSettingTab, Setting } from 'obsidian';
 import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
-import { getEngineDisplayName, isEngineId } from '../models/model-management-types';
-import type {
-  AccelerationPreference,
-  RuntimeCapability,
-  SpeakingStyle,
-  SystemInfoEvent,
-} from '../sidecar/protocol';
+import type { SpeakingStyle, SystemInfoEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
+import { buildAccelerationSummary, buildEffectiveBackendLines } from './acceleration-info';
 import { renderModelSection } from './model-settings-section';
 import {
   INSERTION_MODES,
@@ -38,124 +33,6 @@ const SPEAKING_STYLE_OPTIONS: Array<{ label: string; value: SpeakingStyle }> = [
   { label: 'Balanced — standard detection (default)', value: 'balanced' },
   { label: 'Patient — waits longer through pauses', value: 'patient' },
 ];
-
-function formatBackendLabel(backend: string): string {
-  if (backend === 'cpu') {
-    return 'CPU';
-  }
-
-  if (backend === 'cuda') {
-    return 'CUDA';
-  }
-
-  if (backend === 'metal') {
-    return 'Metal';
-  }
-
-  if (backend === 'ort-cuda') {
-    return 'ORT CUDA';
-  }
-
-  return backend.charAt(0).toUpperCase() + backend.slice(1);
-}
-
-function buildAccelerationSummary(systemInfo: SystemInfoEvent | null): string {
-  if (systemInfo === null) {
-    return 'Sidecar capability data is unavailable until the sidecar starts successfully.';
-  }
-
-  const gpuBackends = systemInfo.compiledBackends.filter((backend) => backend !== 'cpu');
-
-  if (gpuBackends.length === 0) {
-    return 'This sidecar build is CPU-only.';
-  }
-
-  return `Compiled GPU backends: ${gpuBackends.map(formatBackendLabel).join(', ')}.`;
-}
-
-function formatCapabilityReason(reason: string | null): string {
-  if (reason === null) {
-    return 'unknown reason';
-  }
-
-  const trimmed = reason.trim();
-  return trimmed.length > 0 ? trimmed : 'unknown reason';
-}
-
-function formatEngineName(engineId: string): string {
-  return isEngineId(engineId) ? getEngineDisplayName(engineId) : engineId;
-}
-
-function getBackendPriority(engineId: string, backend: string): number {
-  const preferredBackends =
-    engineId === 'whisper_cpp' ? ['metal', 'cuda'] : engineId === 'cohere_onnx' ? ['cuda'] : [];
-  const index = preferredBackends.indexOf(backend);
-
-  return index === -1 ? preferredBackends.length : index;
-}
-
-function getSortedGpuCapabilities(
-  capabilities: RuntimeCapability[],
-  engineId: string,
-): RuntimeCapability[] {
-  return capabilities
-    .filter((capability) => capability.engine === engineId && capability.backend !== 'cpu')
-    .sort((left, right) => {
-      const priorityDelta =
-        getBackendPriority(engineId, left.backend) - getBackendPriority(engineId, right.backend);
-
-      if (priorityDelta !== 0) {
-        return priorityDelta;
-      }
-
-      return left.backend.localeCompare(right.backend);
-    });
-}
-
-function buildEffectiveBackendLines(
-  systemInfo: SystemInfoEvent | null,
-  accelerationPreference: AccelerationPreference,
-): string[] {
-  if (systemInfo === null) {
-    return [];
-  }
-
-  const engineIds = systemInfo.compiledEngines;
-
-  if (engineIds.length === 0) {
-    return [];
-  }
-
-  if (accelerationPreference === 'cpu_only') {
-    return engineIds.map((engineId) => `${formatEngineName(engineId)}: CPU (GPU disabled)`);
-  }
-
-  if (
-    systemInfo.runtimeCapabilities.length === 0 &&
-    systemInfo.compiledBackends.some((backend) => backend !== 'cpu')
-  ) {
-    return engineIds.map(
-      (engineId) => `${formatEngineName(engineId)}: CPU (runtime capability data unavailable)`,
-    );
-  }
-
-  return engineIds.map((engineId) => {
-    const gpuCapabilities = getSortedGpuCapabilities(systemInfo.runtimeCapabilities, engineId);
-    const availableGpu = gpuCapabilities.find((capability) => capability.available);
-
-    if (availableGpu !== undefined) {
-      return `${formatEngineName(engineId)}: ${formatBackendLabel(availableGpu.backend)}`;
-    }
-
-    const unavailableGpu = gpuCapabilities[0];
-
-    if (unavailableGpu !== undefined) {
-      return `${formatEngineName(engineId)}: CPU (${formatBackendLabel(unavailableGpu.backend)} unavailable: ${formatCapabilityReason(unavailableGpu.reason)})`;
-    }
-
-    return `${formatEngineName(engineId)}: CPU`;
-  });
-}
 
 export class LocalSttSettingTab extends PluginSettingTab {
   private disposeModelSection: (() => void) | null = null;
@@ -420,16 +297,16 @@ export class LocalSttSettingTab extends PluginSettingTab {
       return null;
     }
 
-    const { engineId, modelId } = sel;
+    const { runtimeId, familyId, modelId } = sel;
 
     return () => {
       const state = manager.getState();
       const catalogModel = state.catalog.models.find(
-        (m) => m.engineId === engineId && m.modelId === modelId,
+        (m) => m.runtimeId === runtimeId && m.familyId === familyId && m.modelId === modelId,
       );
       if (catalogModel === undefined) return;
       const installedModel = state.installedModels.find(
-        (m) => m.engineId === engineId && m.modelId === modelId,
+        (m) => m.runtimeId === runtimeId && m.familyId === familyId && m.modelId === modelId,
       );
       new ModelDetailsModal(this.app, catalogModel, installedModel?.installPath ?? null).open();
     };
@@ -450,7 +327,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('GPU acceleration')
       .setDesc(
-        'Use GPU backends when available for the selected engine. Disabled forces every engine onto CPU.',
+        'Use GPU backends when available for compiled runtimes. Disabled forces every runtime onto CPU.',
       )
       .addDropdown((dropdown) => {
         dropdown.addOption('auto', 'Use when available');

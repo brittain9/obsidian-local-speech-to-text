@@ -30,11 +30,11 @@ Durable workflow, product, and architecture decisions. Update in the same change
   | Linux native | CUDA | CUDA | Host env inherited, RPATH resolves |
   | Linux Flatpak | CUDA | CUDA | Requires advanced setup (see `docs/guides/linux-flatpak-gpu-setup.md`) |
 
-### D-004: Ships Both Whisper And Cohere Transcribe
+### D-004: Ships Both Whisper And Cohere Transcribe Families
 
 - Status: active
-- Decision: V1 includes Whisper (via whisper-rs) and Cohere Transcribe (via ONNX Runtime / `ort` crate). Both run in the same Rust sidecar binary — no Python, no subprocesses. Three Cohere tiers: fp16 (~4.1 GB), int8 (~3.1 GB), q4 (~2.1 GB).
-- Why: Cohere leads the HuggingFace Open ASR Leaderboard. Rust-native ONNX avoids fragile Python dependencies. ONNX Runtime provides GPU on CUDA and DirectML from one runtime.
+- Decision: V1 registers two model families: Whisper (`whisper_cpp` runtime via whisper-rs) and Cohere Transcribe (`onnx_runtime` runtime via the `ort` crate). Both run in the same Rust sidecar binary — no Python, no subprocesses. Three Cohere tiers: fp16 (~4.1 GB), int8 (~3.1 GB), q4 (~2.1 GB).
+- Why: Cohere leads the HuggingFace Open ASR Leaderboard. Rust-native ONNX avoids fragile Python dependencies. ONNX Runtime provides GPU on CUDA and DirectML from one runtime. Family/runtime terminology matches D-008's three-layer abstraction.
 
 ### D-005: UI Must Be Obsidian-Native
 
@@ -53,3 +53,10 @@ Durable workflow, product, and architecture decisions. Update in the same change
 - Status: active
 - Decision: Insert a TranscriptFormatter and TextProcessor pipeline between engine output and editor insertion. Formatter selects output format (plain text, inline timestamps). Processor applies composable text transforms (filtering, user rules). Each layer ships in its own PR.
 - Why: The current pipeline goes directly from engine output to insertion with no formatting or processing step. See `docs/architecture/pipeline-architecture.md`.
+
+### D-008: Engine Abstraction Is A Three-Layer Registry
+
+- Status: active
+- Decision: Inference dispatch is layered as **runtime / model family / model**. A `Runtime` owns execution-framework concerns (accelerator registration, probe, supported formats). A `ModelFamilyAdapter` owns model-shape semantics (graph I/O, tokenizer, prompt tokens, audio limits, per-model probe rules). A `LoadedModel` owns per-session inference state. `EngineRegistry::build()` is the single registration site; worker dispatch is `registry.lookup((runtimeId, familyId)) → adapter.load → loaded.transcribe`. Capabilities are declared statically per runtime and per adapter, merged into an `EngineCapabilities` struct at lookup time, and reported over the wire on `system_info`. The plugin renders UI directly from those structs — there is no TypeScript mirror of which engine supports what.
+- Why: Removes scattered `match EngineId` dispatch, unblocks capability-gated features (initial-prompt conditioning, per-engine GPU UI, per-adapter post-processing), and gives future adapters an `OCP`-friendly registration path behind a single Cargo feature flag without touching dispatch sites. Selections use the triple `(runtimeId, familyId, modelId)` — so one runtime can host multiple families and one family can be delivered by multiple runtimes.
+- Implication: Settings carry `schemaVersion: 2`. Unsupported request fields are warn+dropped at the worker, surfaced as `RequestWarning[]` on `TranscriptReadyEvent` (dev console only). Cargo features renamed: `engine-cohere-transcribe`, `engine-whisper`, `gpu-ort-cuda`.

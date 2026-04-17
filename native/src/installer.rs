@@ -18,17 +18,20 @@ use tokio::runtime::Builder;
 use tokio::sync::Notify;
 
 use crate::catalog::{CatalogModel, ModelArtifact, ModelCatalog};
+use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
 use crate::model_store::{
     create_install_metadata, resolve_model_install_dir, write_install_metadata,
 };
-use crate::protocol::{EngineId, Event, ModelInstallState};
-use crate::transcription::{TranscriptionError, probe_model_for_engine};
+use crate::protocol::{Event, ModelInstallState};
+use crate::transcription::TranscriptionError;
 
-type ModelProbe = dyn Fn(EngineId, &Path) -> Result<(), TranscriptionError>;
+pub type ModelProbe =
+    dyn Fn(RuntimeId, ModelFamilyId, &Path) -> Result<(), TranscriptionError> + Send + Sync;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct InstallRequest {
-    pub engine_id: EngineId,
+    pub runtime_id: RuntimeId,
+    pub family_id: ModelFamilyId,
     pub install_id: String,
     pub model: CatalogModel,
     pub model_id: String,
@@ -36,10 +39,10 @@ pub struct InstallRequest {
     pub catalog: ModelCatalog,
 }
 
-#[derive(Debug)]
 struct ActiveInstall {
     cancel_handle: Arc<InstallCancellation>,
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
     install_id: String,
     join_handle: JoinHandle<()>,
     model_id: String,
@@ -49,16 +52,18 @@ pub struct ModelInstallManager {
     active_install: Option<ActiveInstall>,
     event_rx: Receiver<Event>,
     event_tx: Sender<Event>,
+    model_probe: Arc<ModelProbe>,
 }
 
 impl ModelInstallManager {
-    pub fn new() -> Self {
+    pub fn new(model_probe: Arc<ModelProbe>) -> Self {
         let (event_tx, event_rx) = mpsc::channel();
 
         Self {
             active_install: None,
             event_rx,
             event_tx,
+            model_probe,
         }
     }
 
@@ -75,7 +80,8 @@ impl ModelInstallManager {
         if active_install.install_id != install_id {
             return Some(failed_update(
                 install_id,
-                active_install.engine_id,
+                active_install.runtime_id,
+                active_install.family_id,
                 &active_install.model_id,
                 "The requested install is not active and cannot be cancelled.",
             ));
@@ -94,7 +100,8 @@ impl ModelInstallManager {
                 let _ = active_install.join_handle.join();
                 return Some(failed_update(
                     &active_install.install_id,
-                    active_install.engine_id,
+                    active_install.runtime_id,
+                    active_install.family_id,
                     &active_install.model_id,
                     "Install thread terminated unexpectedly.",
                 ));
@@ -127,7 +134,8 @@ impl ModelInstallManager {
         if let Some(active_install) = self.active_install.as_ref() {
             return failed_update(
                 &request.install_id,
-                request.engine_id,
+                request.runtime_id,
+                request.family_id,
                 &request.model_id,
                 &format!(
                     "Another install is already active ({}) and this build supports one install at a time.",
@@ -138,17 +146,24 @@ impl ModelInstallManager {
 
         let cancel_handle = Arc::new(InstallCancellation::new());
         let thread_cancel_handle = Arc::clone(&cancel_handle);
-        let engine_id = request.engine_id;
+        let runtime_id = request.runtime_id;
+        let family_id = request.family_id;
         let active_install_id = request.install_id.clone();
         let active_model_id = request.model_id.clone();
         let total_bytes = request.model.required_download_bytes();
         let thread_event_tx = self.event_tx.clone();
+        let thread_model_probe = Arc::clone(&self.model_probe);
         let join_handle = thread::spawn(move || {
             let panic_install_id = request.install_id.clone();
             let panic_model_id = request.model_id.clone();
             let panic_tx = thread_event_tx.clone();
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                run_install(request, thread_cancel_handle, thread_event_tx);
+                run_install(
+                    request,
+                    thread_cancel_handle,
+                    thread_event_tx,
+                    thread_model_probe,
+                );
             }));
 
             if let Err(panic_payload) = result {
@@ -161,7 +176,8 @@ impl ModelInstallManager {
                 };
                 let _ = panic_tx.send(failed_update(
                     &panic_install_id,
-                    engine_id,
+                    runtime_id,
+                    family_id,
                     &panic_model_id,
                     &message,
                 ));
@@ -170,7 +186,8 @@ impl ModelInstallManager {
 
         self.active_install = Some(ActiveInstall {
             cancel_handle,
-            engine_id,
+            runtime_id,
+            family_id,
             install_id: active_install_id.clone(),
             join_handle,
             model_id: active_model_id.clone(),
@@ -179,19 +196,14 @@ impl ModelInstallManager {
         Event::ModelInstallUpdate {
             details: None,
             downloaded_bytes: Some(0),
-            engine_id,
+            runtime_id,
+            family_id,
             install_id: active_install_id,
             message: Some("Model install queued.".to_string()),
             model_id: active_model_id,
             state: ModelInstallState::Queued,
             total_bytes: Some(total_bytes),
         }
-    }
-}
-
-impl Default for ModelInstallManager {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -242,9 +254,11 @@ fn run_install(
     request: InstallRequest,
     cancel_handle: Arc<InstallCancellation>,
     event_tx: Sender<Event>,
+    model_probe: Arc<ModelProbe>,
 ) {
     let reporter = InstallReporter {
-        engine_id: request.engine_id,
+        runtime_id: request.runtime_id,
+        family_id: request.family_id,
         install_id: request.install_id.clone(),
         model_id: request.model_id.clone(),
         total_bytes: request.model.required_download_bytes(),
@@ -279,12 +293,14 @@ fn run_install(
         }
     };
 
+    let probe_fn: &ModelProbe = model_probe.as_ref();
+
     if let Err(error) = runtime.block_on(install_model_with_downloader(
         &request,
         cancel_handle,
         &reporter,
         &downloader,
-        &probe_model_for_engine,
+        probe_fn,
     )) {
         match error {
             InstallError::Cancelled => {}
@@ -380,7 +396,8 @@ enum InstallError {
 }
 
 struct InstallReporter {
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
     install_id: String,
     model_id: String,
     total_bytes: u64,
@@ -404,7 +421,8 @@ impl InstallReporter {
             .send(Event::ModelInstallUpdate {
                 details,
                 downloaded_bytes: Some(downloaded_bytes),
-                engine_id: self.engine_id,
+                runtime_id: self.runtime_id,
+                family_id: self.family_id,
                 install_id: self.install_id.clone(),
                 message,
                 model_id: self.model_id.clone(),
@@ -422,10 +440,17 @@ async fn install_model_with_downloader(
     downloader: &dyn DownloadSource,
     model_probe: &ModelProbe,
 ) -> Result<(), InstallError> {
-    let engine_root = request.store_root.join(request.engine_id.as_str());
-    let target_dir =
-        resolve_model_install_dir(&request.store_root, request.engine_id, &request.model_id);
-    let stage_dir = engine_root.join(format!(
+    let family_root = request
+        .store_root
+        .join(request.runtime_id.as_str())
+        .join(request.family_id.as_str());
+    let target_dir = resolve_model_install_dir(
+        &request.store_root,
+        request.runtime_id,
+        request.family_id,
+        &request.model_id,
+    );
+    let stage_dir = family_root.join(format!(
         ".staging-{}-{}",
         request.model_id, request.install_id
     ));
@@ -605,7 +630,7 @@ async fn install_model_with_downloader(
         )
         .map_err(|error| fail_install(downloaded_total, error.to_string()))?;
 
-    model_probe(request.engine_id, &runtime_path).map_err(|error| {
+    model_probe(request.runtime_id, request.family_id, &runtime_path).map_err(|error| {
         cleanup_stage_dir(&stage_dir);
         fail_install(
             downloaded_total,
@@ -623,11 +648,16 @@ async fn install_model_with_downloader(
         downloaded_total,
     )?;
 
-    let metadata = create_install_metadata(&request.catalog, request.engine_id, &request.model_id)
-        .map_err(|error| {
-            cleanup_stage_dir(&stage_dir);
-            fail_install(downloaded_total, format!("{error:#}"))
-        })?;
+    let metadata = create_install_metadata(
+        &request.catalog,
+        request.runtime_id,
+        request.family_id,
+        &request.model_id,
+    )
+    .map_err(|error| {
+        cleanup_stage_dir(&stage_dir);
+        fail_install(downloaded_total, format!("{error:#}"))
+    })?;
     write_install_metadata(&stage_dir, &metadata).map_err(|error| {
         cleanup_stage_dir(&stage_dir);
         fail_install(downloaded_total, format!("{error:#}"))
@@ -653,13 +683,13 @@ async fn install_model_with_downloader(
         })?;
     }
 
-    fs::create_dir_all(&engine_root).map_err(|error| {
+    fs::create_dir_all(&family_root).map_err(|error| {
         cleanup_stage_dir(&stage_dir);
         fail_install(
             downloaded_total,
             format!(
-                "Failed to create engine directory {}: {error}",
-                engine_root.display()
+                "Failed to create family directory {}: {error}",
+                family_root.display()
             ),
         )
     })?;
@@ -736,11 +766,18 @@ fn cleanup_stage_dir(stage_dir: &Path) {
     }
 }
 
-fn failed_update(install_id: &str, engine_id: EngineId, model_id: &str, message: &str) -> Event {
+fn failed_update(
+    install_id: &str,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
+    model_id: &str,
+    message: &str,
+) -> Event {
     Event::ModelInstallUpdate {
         details: None,
         downloaded_bytes: None,
-        engine_id,
+        runtime_id,
+        family_id,
         install_id: install_id.to_string(),
         message: Some(message.to_string()),
         model_id: model_id.to_string(),
@@ -780,13 +817,19 @@ mod tests {
         install_model_with_downloader,
     };
     use crate::catalog::{
-        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
+        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection,
+        ModelFamilyDescriptor, ModelRuntimeDescriptor,
     };
-    use crate::protocol::{EngineId, Event, ModelInstallState};
+    use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
+    use crate::protocol::{Event, ModelInstallState};
     use crate::transcription::TranscriptionError;
     use sha2::{Digest, Sha256};
 
-    fn test_probe(_engine_id: EngineId, path: &Path) -> Result<(), TranscriptionError> {
+    fn test_probe(
+        _runtime_id: RuntimeId,
+        _family_id: ModelFamilyId,
+        path: &Path,
+    ) -> Result<(), TranscriptionError> {
         if !path.is_file() {
             return Err(TranscriptionError {
                 code: "missing_model_file",
@@ -795,6 +838,10 @@ mod tests {
             });
         }
         Ok(())
+    }
+
+    fn test_probe_arc() -> Arc<ModelProbe> {
+        Arc::new(test_probe)
     }
 
     #[test]
@@ -816,6 +863,7 @@ mod tests {
             !request
                 .store_root
                 .join("whisper_cpp")
+                .join("whisper")
                 .join(".staging-small-install-1")
                 .exists()
         );
@@ -841,6 +889,7 @@ mod tests {
             !request
                 .store_root
                 .join("whisper_cpp")
+                .join("whisper")
                 .join(".staging-small-install-1")
                 .exists()
         );
@@ -886,7 +935,11 @@ mod tests {
         run_install_test(&request, cancel_handle, &reporter, &downloader, &test_probe)
             .expect("install should succeed");
 
-        let target_dir = request.store_root.join("whisper_cpp").join("small");
+        let target_dir = request
+            .store_root
+            .join("whisper_cpp")
+            .join("whisper")
+            .join("small");
         assert!(target_dir.exists(), "target directory should exist");
         assert!(
             target_dir.join("model.bin").is_file(),
@@ -1031,6 +1084,7 @@ mod tests {
             !request
                 .store_root
                 .join("whisper_cpp")
+                .join("whisper")
                 .join(".staging-small-install-1")
                 .exists()
         );
@@ -1061,8 +1115,11 @@ mod tests {
             "https://example.com/model.bin".to_string(),
             b"test".to_vec(),
         )]);
-        let probe = move |engine_id: EngineId, path: &Path| -> Result<(), TranscriptionError> {
-            test_probe(engine_id, path)?;
+        let probe = move |runtime_id: RuntimeId,
+                          family_id: ModelFamilyId,
+                          path: &Path|
+              -> Result<(), TranscriptionError> {
+            test_probe(runtime_id, family_id, path)?;
             probe_cancel_handle.cancel();
             Ok(())
         };
@@ -1075,6 +1132,7 @@ mod tests {
             !request
                 .store_root
                 .join("whisper_cpp")
+                .join("whisper")
                 .join("small")
                 .exists(),
             "target directory should not become visible after cancellation"
@@ -1083,6 +1141,7 @@ mod tests {
             !request
                 .store_root
                 .join("whisper_cpp")
+                .join("whisper")
                 .join(".staging-small-install-1")
                 .exists(),
             "staging directory should be removed after cancellation"
@@ -1117,7 +1176,7 @@ mod tests {
 
     #[test]
     fn poll_event_returns_failed_on_channel_disconnect() {
-        let mut manager = ModelInstallManager::new();
+        let mut manager = ModelInstallManager::new(test_probe_arc());
         let request = sample_request();
 
         // Start an install, then immediately drop the receiver to simulate disconnect
@@ -1244,7 +1303,8 @@ mod tests {
 
     fn sample_reporter(request: &InstallRequest, tx: mpsc::Sender<Event>) -> InstallReporter {
         InstallReporter {
-            engine_id: request.engine_id,
+            runtime_id: request.runtime_id,
+            family_id: request.family_id,
             install_id: request.install_id.clone(),
             model_id: request.model_id.clone(),
             total_bytes: request.model.required_download_bytes(),
@@ -1279,10 +1339,10 @@ mod tests {
 
         let model = CatalogModel {
             artifacts,
-            capability_flags: vec![],
             collection_id: "english".to_string(),
             display_name: "Model".to_string(),
-            engine_id: EngineId::WhisperCpp,
+            runtime_id: RuntimeId::WhisperCpp,
+            family_id: ModelFamilyId::Whisper,
             language_tags: vec!["en".to_string()],
             license_label: "MIT".to_string(),
             license_url: "https://example.com/license".to_string(),
@@ -1294,15 +1354,21 @@ mod tests {
             ux_tags: vec![],
         };
         let catalog = ModelCatalog {
-            catalog_version: 1,
+            catalog_version: 2,
             collections: vec![ModelCollection {
                 collection_id: "english".to_string(),
                 display_name: "English".to_string(),
                 summary: "summary".to_string(),
             }],
-            engines: vec![ModelEngine {
-                display_name: "Whisper.cpp".to_string(),
-                engine_id: EngineId::WhisperCpp,
+            runtimes: vec![ModelRuntimeDescriptor {
+                runtime_id: RuntimeId::WhisperCpp,
+                display_name: "whisper.cpp".to_string(),
+                summary: "summary".to_string(),
+            }],
+            families: vec![ModelFamilyDescriptor {
+                family_id: ModelFamilyId::Whisper,
+                runtime_id: RuntimeId::WhisperCpp,
+                display_name: "Whisper".to_string(),
                 summary: "summary".to_string(),
             }],
             models: vec![model.clone()],
@@ -1310,7 +1376,8 @@ mod tests {
 
         InstallRequest {
             catalog,
-            engine_id: EngineId::WhisperCpp,
+            runtime_id: RuntimeId::WhisperCpp,
+            family_id: ModelFamilyId::Whisper,
             install_id: "install-1".to_string(),
             model,
             model_id: model_id.to_string(),

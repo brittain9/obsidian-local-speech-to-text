@@ -113,7 +113,8 @@ export function renderModelSection(
       const activeInstallDisplayName =
         state.catalog.models.find(
           (m) =>
-            m.engineId === activeInstall.installUpdate.engineId &&
+            m.runtimeId === activeInstall.installUpdate.runtimeId &&
+            m.familyId === activeInstall.installUpdate.familyId &&
             m.modelId === activeInstall.installUpdate.modelId,
         )?.displayName ?? activeInstall.installUpdate.modelId;
 

@@ -3,9 +3,11 @@ import { basename } from 'node:path';
 import type { ActiveInstallInfo, ModelManagerState } from './model-install-manager';
 import {
   type CatalogModelRecord,
-  getEngineDisplayName,
   getTotalModelSize,
   type InstalledModelRecord,
+  type ModelCatalogRecord,
+  type ModelFamilyId,
+  type RuntimeId,
   type SelectedModel,
 } from './model-management-types';
 
@@ -54,18 +56,17 @@ function deriveRowState(
   activeInstall: ActiveInstallInfo | null,
 ): ModelRowState {
   const installed =
-    installedModels.find((m) => m.engineId === model.engineId && m.modelId === model.modelId) !==
-    undefined;
+    installedModels.find((m) =>
+      matchesTriple(m, model.runtimeId, model.familyId, model.modelId),
+    ) !== undefined;
 
   const isSelected =
     selectedModel?.kind === 'catalog_model' &&
-    selectedModel.engineId === model.engineId &&
-    selectedModel.modelId === model.modelId;
+    matchesTriple(selectedModel, model.runtimeId, model.familyId, model.modelId);
 
   const thisInstall =
     activeInstall !== null &&
-    activeInstall.installUpdate.engineId === model.engineId &&
-    activeInstall.installUpdate.modelId === model.modelId
+    matchesTriple(activeInstall.installUpdate, model.runtimeId, model.familyId, model.modelId)
       ? activeInstall
       : null;
 
@@ -156,7 +157,11 @@ export function deriveCurrentModelDisplay(state: ModelManagerState): CurrentMode
   if (selectedModel.kind === 'external_file') {
     return {
       displayName: basename(selectedModel.filePath),
-      engineLabel: getEngineDisplayName(selectedModel.engineId),
+      engineLabel: resolveFamilyDisplayName(
+        catalog,
+        selectedModel.runtimeId,
+        selectedModel.familyId,
+      ),
       detail: 'The selected external file has not been validated yet.',
       installedLabel: 'External file',
       sourceLabel: 'External file',
@@ -168,17 +173,21 @@ export function deriveCurrentModelDisplay(state: ModelManagerState): CurrentMode
 
   // catalog_model
   const catalogEntry =
-    catalog.models.find(
-      (m) => m.engineId === selectedModel.engineId && m.modelId === selectedModel.modelId,
+    catalog.models.find((m) =>
+      matchesTriple(m, selectedModel.runtimeId, selectedModel.familyId, selectedModel.modelId),
     ) ?? null;
 
   const installedModel =
-    installedModels.find(
-      (m) => m.engineId === selectedModel.engineId && m.modelId === selectedModel.modelId,
+    installedModels.find((m) =>
+      matchesTriple(m, selectedModel.runtimeId, selectedModel.familyId, selectedModel.modelId),
     ) ?? null;
 
   const displayName = catalogEntry?.displayName ?? selectedModel.modelId;
-  const engineLabel = getEngineDisplayName(selectedModel.engineId);
+  const engineLabel = resolveFamilyDisplayName(
+    catalog,
+    selectedModel.runtimeId,
+    selectedModel.familyId,
+  );
 
   const sizeBytes =
     installedModel?.totalSizeBytes ??
@@ -202,6 +211,26 @@ export function deriveCurrentModelDisplay(state: ModelManagerState): CurrentMode
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+function matchesTriple(
+  record: { familyId: ModelFamilyId; modelId: string; runtimeId: RuntimeId },
+  runtimeId: RuntimeId,
+  familyId: ModelFamilyId,
+  modelId: string,
+): boolean {
+  return (
+    record.runtimeId === runtimeId && record.familyId === familyId && record.modelId === modelId
+  );
+}
+
+function resolveFamilyDisplayName(
+  catalog: ModelCatalogRecord,
+  runtimeId: RuntimeId,
+  familyId: ModelFamilyId,
+): string {
+  const record = catalog.families.find((f) => f.runtimeId === runtimeId && f.familyId === familyId);
+  return record?.displayName ?? familyId;
+}
 
 function compareCatalogModels(left: CatalogModelRecord, right: CatalogModelRecord): number {
   return getTotalModelSize(left) - getTotalModelSize(right);

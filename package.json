@@ -24,7 +24,7 @@
     "test": "vitest run",
     "verify:build-output": "node scripts/verify-build-output.mjs",
     "check:js": "npm run typecheck && npm run lint && npm run test && npm run build",
-    "check:rust": "npm run build:sidecar && cargo fmt --manifest-path native/Cargo.toml --check && DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1 cargo clippy --manifest-path native/Cargo.toml --all-targets --features engine-cohere -- -D warnings && cargo test --manifest-path native/Cargo.toml --features engine-cohere",
+    "check:rust": "npm run build:sidecar && cargo fmt --manifest-path native/Cargo.toml --check && DOCS_RS=1 WHISPER_DONT_GENERATE_BINDINGS=1 cargo clippy --manifest-path native/Cargo.toml --all-targets --features engine-cohere-transcribe,engine-whisper -- -D warnings && cargo test --manifest-path native/Cargo.toml --features engine-cohere-transcribe,engine-whisper",
     "check": "npm run check:js && npm run check:rust"
   },
   "devDependencies": {

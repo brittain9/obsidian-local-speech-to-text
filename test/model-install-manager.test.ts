@@ -75,9 +75,7 @@ function configureSidecarForInit(
     models: [sampleInstalledModel()],
   });
   sidecarConnection.getModelStore.mockResolvedValue(sampleModelStore());
-  sidecarConnection.getSystemInfo.mockResolvedValue({
-    compiledEngines: ['whisper_cpp'],
-  });
+  sidecarConnection.getSystemInfo.mockResolvedValue(sampleSystemInfo());
 }
 
 // ---------------------------------------------------------------------------
@@ -94,10 +92,11 @@ function sampleCatalog(): ModelCatalogRecord {
         summary: 'summary',
       },
     ],
-    engines: [
+    families: [
       {
         displayName: 'Whisper',
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
+        runtimeId: 'whisper_cpp',
         summary: 'summary',
       },
     ],
@@ -112,6 +111,13 @@ function sampleCatalog(): ModelCatalogRecord {
         modelId: 'whisper_small_en_q5_1',
         sizeBytes: 100,
       }),
+    ],
+    runtimes: [
+      {
+        displayName: 'Whisper.cpp',
+        runtimeId: 'whisper_cpp',
+        summary: 'Whisper runtime',
+      },
     ],
   };
 }
@@ -133,16 +139,16 @@ function sampleCatalogModel(input: {
         sizeBytes: input.sizeBytes,
       },
     ],
-    capabilityFlags: ['dictation'],
     collectionId: 'english_cpu_first',
     displayName: input.displayName,
-    engineId: 'whisper_cpp',
+    familyId: 'whisper',
     languageTags: ['en'],
     licenseLabel: 'MIT',
     licenseUrl: 'https://example.com/license',
     modelCardUrl: null,
     modelId: input.modelId,
     notes: [],
+    runtimeId: 'whisper_cpp',
     sourceUrl: 'https://example.com/source',
     summary: 'Test model',
     uxTags: [],
@@ -152,10 +158,11 @@ function sampleCatalogModel(input: {
 function sampleInstalledModel(): InstalledModelRecord {
   return {
     catalogVersion: 1,
-    engineId: 'whisper_cpp',
+    familyId: 'whisper',
     installPath: '/models/whisper_cpp/whisper_large_v3_turbo_q8_0',
     installedAtUnixMs: 1_700_000_000_000,
     modelId: 'whisper_large_v3_turbo_q8_0',
+    runtimeId: 'whisper_cpp',
     runtimePath: '/models/whisper_cpp/whisper_large_v3_turbo_q8_0/model.bin',
     totalSizeBytes: 900,
   };
@@ -169,16 +176,54 @@ function sampleModelStore(): ModelStoreRecord {
   };
 }
 
+function sampleSystemInfo() {
+  return {
+    compiledAdapters: [
+      {
+        displayName: 'Whisper',
+        familyCapabilities: {
+          maxAudioDurationSecs: null,
+          producesPunctuation: true,
+          supportedLanguages: { kind: 'all' as const },
+          supportsInitialPrompt: true,
+          supportsLanguageSelection: true,
+          supportsTimedSegments: true,
+        },
+        familyId: 'whisper' as const,
+        runtimeId: 'whisper_cpp' as const,
+      },
+    ],
+    compiledRuntimes: [
+      {
+        displayName: 'Whisper.cpp',
+        runtimeCapabilities: {
+          acceleratorDetails: {
+            cpu: { available: true, unavailableReason: null },
+          },
+          availableAccelerators: ['cpu' as const],
+          supportedModelFormats: ['ggml' as const, 'gguf' as const],
+        },
+        runtimeId: 'whisper_cpp' as const,
+      },
+    ],
+    installedModels: [],
+    sidecarVersion: '0.0.0-test',
+    systemInfo: 'stub',
+    type: 'system_info' as const,
+  };
+}
+
 function sampleInstallUpdate(
   overrides?: Partial<ModelInstallUpdateRecord>,
 ): ModelInstallUpdateRecord {
   return {
     details: null,
     downloadedBytes: 50,
-    engineId: 'whisper_cpp',
+    familyId: 'whisper',
     installId: 'install-1',
     message: 'Downloading',
     modelId: 'whisper_large_v3_turbo_q8_0',
+    runtimeId: 'whisper_cpp',
     state: 'downloading',
     totalBytes: 900,
     ...overrides,
@@ -187,9 +232,10 @@ function sampleInstallUpdate(
 
 function sampleSelection(modelId = 'whisper_large_v3_turbo_q8_0'): CatalogModelSelection {
   return {
-    engineId: 'whisper_cpp',
+    familyId: 'whisper',
     kind: 'catalog_model',
     modelId,
+    runtimeId: 'whisper_cpp',
   };
 }
 
@@ -280,7 +326,10 @@ describe('ModelInstallManager', () => {
       expect(state.catalog.models).toHaveLength(2);
       expect(state.installedModels).toHaveLength(1);
       expect(state.modelStore.path).toBe('/models');
-      expect(state.supportedEngineIds).toEqual(['whisper_cpp']);
+      expect(state.compiledRuntimes.map((r) => r.runtimeId)).toEqual(['whisper_cpp']);
+      expect(state.compiledAdapters.map((a) => `${a.runtimeId}:${a.familyId}`)).toEqual([
+        'whisper_cpp:whisper',
+      ]);
 
       harness.manager.dispose();
     });
@@ -363,8 +412,9 @@ describe('ModelInstallManager', () => {
       expect(harness.sidecarConnection.installModel).toHaveBeenCalledOnce();
       expect(harness.sidecarConnection.installModel).toHaveBeenCalledWith(
         expect.objectContaining({
-          engineId: 'whisper_cpp',
+          familyId: 'whisper',
           modelId: 'whisper_large_v3_turbo_q8_0',
+          runtimeId: 'whisper_cpp',
         }),
       );
 
@@ -785,11 +835,12 @@ describe('ModelInstallManager', () => {
         available: true,
         details: null,
         displayName: 'Whisper Large V3 Turbo Q8_0',
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         installed: true,
         message: 'Model selection is ready.',
         modelId: 'whisper_large_v3_turbo_q8_0',
         resolvedPath: '/models/whisper_cpp/whisper_large_v3_turbo_q8_0/model.bin',
+        runtimeId: 'whisper_cpp',
         selection: sampleSelection(),
         sizeBytes: 900,
         status: 'ready',
@@ -811,11 +862,12 @@ describe('ModelInstallManager', () => {
         available: false,
         details: 'missing install metadata',
         displayName: 'Whisper Large V3 Turbo Q8_0',
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         installed: false,
         message: 'Model is not installed.',
         modelId: 'whisper_large_v3_turbo_q8_0',
         resolvedPath: null,
+        runtimeId: 'whisper_cpp',
         selection: sampleSelection(),
         sizeBytes: null,
         status: 'missing',
@@ -865,11 +917,12 @@ describe('ModelInstallManager', () => {
         available: true,
         details: null,
         displayName: 'Whisper Large V3 Turbo Q8_0',
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         installed: true,
         message: 'Model selection is ready.',
         modelId: 'whisper_large_v3_turbo_q8_0',
         resolvedPath: '/models/whisper_cpp/whisper_large_v3_turbo_q8_0/model.bin',
+        runtimeId: 'whisper_cpp',
         selection: sampleSelection(),
         sizeBytes: 900,
         status: 'ready',
@@ -954,7 +1007,10 @@ describe('ModelInstallManager', () => {
       expect(state.installedModels).toHaveLength(1);
       expect(state.catalog.models).toHaveLength(2);
       expect(state.modelStore.path).toBe('/models');
-      expect(state.supportedEngineIds).toEqual(['whisper_cpp']);
+      expect(state.compiledRuntimes.map((r) => r.runtimeId)).toEqual(['whisper_cpp']);
+      expect(state.compiledAdapters.map((a) => `${a.runtimeId}:${a.familyId}`)).toEqual([
+        'whisper_cpp:whisper',
+      ]);
       expect(state.activeInstall).toBeNull();
     });
 

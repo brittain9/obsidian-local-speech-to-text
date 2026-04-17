@@ -29,8 +29,9 @@ tokio = { version = "1.52", features = ["macros", "rt", "sync"] }
 whisper-rs = "0.16.0"
 
 [features]
-default = []
-engine-cohere = ["half", "ort/half", "realfft"]
+default = ["engine-whisper"]
+engine-whisper = []
+engine-cohere-transcribe = ["half", "ort/half", "realfft"]
 gpu-metal = ["whisper-rs/metal"]
 gpu-cuda = ["whisper-rs/cuda"]
-gpu-ort-cuda = ["engine-cohere", "ort/cuda"]
+gpu-ort-cuda = ["engine-cohere-transcribe", "ort/cuda"]

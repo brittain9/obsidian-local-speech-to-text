@@ -1,10 +1,14 @@
 import {
   isSelectedModel,
+  type ModelFamilyId,
   normalizeSelectedModel,
+  type RuntimeId,
   type SelectedModel,
 } from '../models/model-management-types';
 import { isRecord } from '../shared/type-guards';
 import type { AccelerationPreference, ListeningMode, SpeakingStyle } from '../sidecar/protocol';
+
+export const SETTINGS_SCHEMA_VERSION = 2;
 
 export const INSERTION_MODES = [
   'insert_at_cursor',
@@ -28,6 +32,7 @@ export interface PluginSettings {
   listeningMode: ListeningMode;
   modelStorePathOverride: string;
   pauseWhileProcessing: boolean;
+  schemaVersion: number;
   selectedModel: SelectedModel | null;
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
@@ -43,6 +48,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   listeningMode: 'one_sentence',
   modelStorePathOverride: '',
   pauseWhileProcessing: true,
+  schemaVersion: SETTINGS_SCHEMA_VERSION,
   selectedModel: null,
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
@@ -67,6 +73,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.pauseWhileProcessing,
       DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing,
     ),
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
     selectedModel: readSelectedModel(raw.selectedModel),
     sidecarPathOverride: readString(
       raw.sidecarPathOverride,
@@ -115,11 +122,62 @@ export function isSpeakingStyle(value: unknown): value is SpeakingStyle {
 }
 
 function readSelectedModel(selectedModel: unknown): SelectedModel | null {
-  if (isSelectedModel(selectedModel)) {
-    return normalizeSelectedModel(selectedModel);
+  const migrated = migrateLegacySelection(selectedModel);
+
+  if (isSelectedModel(migrated)) {
+    return normalizeSelectedModel(migrated);
   }
 
   return DEFAULT_PLUGIN_SETTINGS.selectedModel;
+}
+
+/**
+ * One-shot migration: legacy `{engineId, kind, modelId|filePath}` → new
+ * `{runtimeId, familyId, kind, modelId|filePath}`. Unknown legacy engineIds
+ * or missing fields collapse to `null`, which the caller resets to the
+ * default (no selection). Once schemaVersion 2 becomes universal this can
+ * be deleted.
+ */
+function migrateLegacySelection(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  if (typeof value.runtimeId === 'string' && typeof value.familyId === 'string') {
+    return value;
+  }
+
+  if (typeof value.engineId !== 'string') {
+    return value;
+  }
+
+  const mapped = mapLegacyEngineId(value.engineId);
+
+  if (mapped === null) {
+    return null;
+  }
+
+  const { engineId: _legacyEngineId, ...rest } = value;
+
+  return {
+    ...rest,
+    familyId: mapped.familyId,
+    runtimeId: mapped.runtimeId,
+  };
+}
+
+function mapLegacyEngineId(
+  engineId: string,
+): { familyId: ModelFamilyId; runtimeId: RuntimeId } | null {
+  if (engineId === 'whisper_cpp') {
+    return { familyId: 'whisper', runtimeId: 'whisper_cpp' };
+  }
+
+  if (engineId === 'cohere_onnx') {
+    return { familyId: 'cohere_transcribe', runtimeId: 'onnx_runtime' };
+  }
+
+  return null;
 }
 
 export function isInsertionMode(value: unknown): value is InsertionMode {

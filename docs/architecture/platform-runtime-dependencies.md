@@ -6,11 +6,11 @@ This document describes the runtime dependency contract for each platform and si
 
 The sidecar ships as a single native binary per platform. Three build flavors exist, each enabling different Cargo feature sets:
 
-| Flavor | Command | Cargo features | Engines |
+| Flavor | Command | Cargo features | Model families |
 |---|---|---|---|
-| CPU | `npm run build:sidecar` (Linux) | `engine-cohere` | Whisper (CPU), Cohere (CPU) |
-| Metal | `npm run build:sidecar` (macOS) | `engine-cohere,gpu-metal` | Whisper (Metal GPU), Cohere (CPU) |
-| CUDA | `npm run build:sidecar:cuda` | `engine-cohere,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere (CUDA GPU) |
+| CPU | `npm run build:sidecar` (Linux) | `engine-whisper,engine-cohere-transcribe` | Whisper (CPU), Cohere Transcribe (CPU) |
+| Metal | `npm run build:sidecar` (macOS) | `engine-whisper,engine-cohere-transcribe,gpu-metal` | Whisper (Metal GPU), Cohere Transcribe (CPU) |
+| CUDA | `npm run build:sidecar:cuda` | `engine-whisper,engine-cohere-transcribe,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere Transcribe (CUDA GPU) |
 
 The CPU flavor is the default everywhere. GPU flavors are additive — they include all CPU capabilities plus GPU acceleration for the engines listed.
 

@@ -37,7 +37,12 @@ describe('sidecar protocol', () => {
       accelerationPreference: 'auto',
       language: 'en',
       mode: 'always_on',
-      modelSelection: { kind: 'external_file', engineId: 'whisper_cpp', filePath: '/tmp/m.bin' },
+      modelSelection: {
+        familyId: 'whisper',
+        filePath: '/tmp/m.bin',
+        kind: 'external_file',
+        runtimeId: 'whisper_cpp',
+      },
       pauseWhileProcessing: true,
       sessionId: 'session-gpu',
       speakingStyle: 'balanced',
@@ -60,47 +65,50 @@ describe('sidecar protocol', () => {
 
   it('parses system_info event', () => {
     const parser = new FramedMessageParser(parseEventFrame);
-    const frame = encodeJsonFrame({
-      compiledBackends: ['cpu', 'cuda'],
-      compiledEngines: ['whisper_cpp', 'cohere_onnx'],
-      runtimeCapabilities: [
-        {
-          available: true,
-          backend: 'cuda',
-          engine: 'whisper_cpp',
-          reason: null,
-        },
-      ],
-      systemInfo: 'AVX = 1 | CUDA = 1',
-      type: 'system_info',
-    });
-    const parsed = parser.pushChunk(frame);
-
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0]).toEqual({
-      envelope: {
-        compiledBackends: ['cpu', 'cuda'],
-        compiledEngines: ['whisper_cpp', 'cohere_onnx'],
-        runtimeCapabilities: [
-          {
-            available: true,
-            backend: 'cuda',
-            engine: 'whisper_cpp',
-            reason: null,
-          },
-        ],
-        systemInfo: 'AVX = 1 | CUDA = 1',
-        type: 'system_info',
+    const runtimeCapabilities = {
+      acceleratorDetails: {
+        cpu: { available: true, unavailableReason: null },
+        cuda: { available: true, unavailableReason: null },
       },
-      kind: JSON_FRAME_KIND,
-    });
-  });
-
-  it('defaults missing runtimeCapabilities to an empty list for backward compatibility', () => {
-    const parser = new FramedMessageParser(parseEventFrame);
-    const frame = encodeRawJsonFrame({
-      compiledBackends: ['cpu', 'cuda'],
-      compiledEngines: ['whisper_cpp'],
+      availableAccelerators: ['cpu' as const, 'cuda' as const],
+      supportedModelFormats: ['ggml' as const],
+    };
+    const familyCapabilities = {
+      maxAudioDurationSecs: null,
+      producesPunctuation: true,
+      supportedLanguages: { kind: 'all' as const },
+      supportsInitialPrompt: true,
+      supportsLanguageSelection: true,
+      supportsTimedSegments: true,
+    };
+    const compiledRuntime = {
+      displayName: 'whisper.cpp',
+      runtimeCapabilities,
+      runtimeId: 'whisper_cpp' as const,
+    };
+    const compiledAdapter = {
+      displayName: 'Whisper',
+      familyCapabilities,
+      familyId: 'whisper' as const,
+      runtimeId: 'whisper_cpp' as const,
+    };
+    const installedModel = {
+      familyId: 'whisper' as const,
+      filePath: '/tmp/ggml-small.en-q5_1.bin',
+      mergedCapabilities: {
+        family: familyCapabilities,
+        familyId: 'whisper' as const,
+        runtime: runtimeCapabilities,
+        runtimeId: 'whisper_cpp' as const,
+      },
+      modelId: 'whisper_small_en_q5_1',
+      runtimeId: 'whisper_cpp' as const,
+    };
+    const frame = encodeJsonFrame({
+      compiledAdapters: [compiledAdapter],
+      compiledRuntimes: [compiledRuntime],
+      installedModels: [installedModel],
+      sidecarVersion: '0.0.0-test',
       systemInfo: 'AVX = 1 | CUDA = 1',
       type: 'system_info',
     });
@@ -109,9 +117,10 @@ describe('sidecar protocol', () => {
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toEqual({
       envelope: {
-        compiledBackends: ['cpu', 'cuda'],
-        compiledEngines: ['whisper_cpp'],
-        runtimeCapabilities: [],
+        compiledAdapters: [compiledAdapter],
+        compiledRuntimes: [compiledRuntime],
+        installedModels: [installedModel],
+        sidecarVersion: '0.0.0-test',
         systemInfo: 'AVX = 1 | CUDA = 1',
         type: 'system_info',
       },
@@ -180,6 +189,7 @@ describe('sidecar protocol', () => {
       text: 'hello world',
       type: 'transcript_ready',
       utteranceDurationMs: 900,
+      warnings: [],
     });
     const audioFrame = encodeAudioFrame(new Uint8Array(PCM_BYTES_PER_FRAME).fill(3));
     const combined = new Uint8Array(transcriptFrame.byteLength + audioFrame.byteLength);
@@ -201,6 +211,7 @@ describe('sidecar protocol', () => {
         text: 'hello world',
         type: 'transcript_ready',
         utteranceDurationMs: 900,
+        warnings: [],
       },
       kind: JSON_FRAME_KIND,
     });
@@ -213,16 +224,4 @@ function readPayload(frame: Uint8Array): unknown {
   const payloadBytes = frame.slice(5, 5 + payloadLength);
 
   return JSON.parse(new TextDecoder().decode(payloadBytes));
-}
-
-function encodeRawJsonFrame(payload: unknown): Uint8Array {
-  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
-  const frame = new Uint8Array(5 + payloadBytes.byteLength);
-  const view = new DataView(frame.buffer);
-
-  frame[0] = JSON_FRAME_KIND;
-  view.setUint32(1, payloadBytes.byteLength, true);
-  frame.set(payloadBytes, 5);
-
-  return frame;
 }

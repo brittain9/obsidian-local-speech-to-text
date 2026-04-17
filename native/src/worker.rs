@@ -1,18 +1,21 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
-use crate::protocol::EngineId;
-use crate::transcription::{
-    GpuConfig, Transcript, TranscriptionBackend, TranscriptionRequest, WhisperBackend,
-};
+use crate::engine::capabilities::{ModelFamilyId, RequestWarning, RuntimeId};
+use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_adapter_error};
+use crate::engine::traits::LoadedModel;
+use crate::transcription::{GpuConfig, Transcript, TranscriptionError, TranscriptionRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMetadata {
-    pub engine_id: EngineId,
+    pub runtime_id: RuntimeId,
+    pub family_id: ModelFamilyId,
     pub gpu_config: GpuConfig,
+    pub initial_prompt: Option<String>,
     pub language: String,
     pub model_file_path: PathBuf,
     pub session_id: String,
@@ -45,6 +48,7 @@ pub enum WorkerEvent {
         session_id: String,
         transcript: Transcript,
         utterance_duration_ms: u64,
+        warnings: Vec<RequestWarning>,
     },
 }
 
@@ -54,11 +58,11 @@ pub struct TranscriptionWorker {
 }
 
 impl TranscriptionWorker {
-    pub fn spawn() -> Self {
+    pub fn spawn(registry: Arc<EngineRegistry>) -> Self {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
-        thread::spawn(move || worker_main(command_rx, event_tx));
+        thread::spawn(move || worker_main(command_rx, event_tx, registry));
 
         Self {
             command_tx,
@@ -75,25 +79,6 @@ impl TranscriptionWorker {
     }
 }
 
-fn create_backend(engine_id: EngineId) -> Box<dyn TranscriptionBackend> {
-    match engine_id {
-        EngineId::WhisperCpp => Box::new(WhisperBackend::default()),
-        EngineId::CohereOnnx => {
-            #[cfg(feature = "engine-cohere")]
-            {
-                Box::new(crate::cohere::CohereBackend::default())
-            }
-            #[cfg(not(feature = "engine-cohere"))]
-            {
-                panic!(
-                    "CohereOnnx engine requested but engine-cohere feature is not compiled in. \
-                     This is a bug — probe_model_for_engine should have rejected this upstream."
-                );
-            }
-        }
-    }
-}
-
 fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>, prefix: &str) -> String {
     match payload.downcast_ref::<&str>() {
         Some(s) => format!("{prefix}: {s}"),
@@ -104,49 +89,72 @@ fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>, prefix: &str) 
     }
 }
 
-fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent>) {
-    let mut engine: Box<dyn TranscriptionBackend> = Box::new(WhisperBackend::default());
-    let mut active_engine_id = EngineId::WhisperCpp;
-    let mut active_session: Option<SessionMetadata> = None;
+struct ActiveSession {
+    metadata: SessionMetadata,
+    loaded_model: Box<dyn LoadedModel>,
+}
+
+fn load_model_for_session(
+    registry: &EngineRegistry,
+    metadata: &SessionMetadata,
+) -> Result<Box<dyn LoadedModel>, TranscriptionError> {
+    let adapter = registry
+        .adapter(metadata.runtime_id, metadata.family_id)
+        .ok_or_else(|| missing_adapter_error(metadata.runtime_id, metadata.family_id))?;
+    adapter.probe_model(&metadata.model_file_path)?;
+    adapter.load(&metadata.model_file_path, metadata.gpu_config)
+}
+
+fn worker_main(
+    command_rx: Receiver<WorkerCommand>,
+    event_tx: Sender<WorkerEvent>,
+    registry: Arc<EngineRegistry>,
+) {
+    let mut active: Option<ActiveSession> = None;
 
     while let Ok(command) = command_rx.recv() {
         match command {
             WorkerCommand::BeginSession(metadata) => {
-                if metadata.engine_id != active_engine_id {
-                    let backend_result = panic::catch_unwind(AssertUnwindSafe(|| {
-                        create_backend(metadata.engine_id)
-                    }));
+                let load_result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    load_model_for_session(registry.as_ref(), &metadata)
+                }));
 
-                    match backend_result {
-                        Ok(backend) => {
-                            engine = backend;
-                            active_engine_id = metadata.engine_id;
-                            active_session = Some(metadata);
-                        }
-                        Err(payload) => {
-                            let message = extract_panic_message(
-                                &payload,
-                                "Worker thread panicked creating backend",
-                            );
-                            let _ = event_tx.send(WorkerEvent::SessionError {
-                                code: "worker_panic".to_string(),
-                                details: None,
-                                message,
-                                session_id: metadata.session_id,
-                            });
-                        }
+                match load_result {
+                    Ok(Ok(loaded_model)) => {
+                        active = Some(ActiveSession {
+                            metadata,
+                            loaded_model,
+                        });
                     }
-                } else {
-                    active_session = Some(metadata);
+                    Ok(Err(error)) => {
+                        let _ = event_tx.send(WorkerEvent::SessionError {
+                            code: error.code.to_string(),
+                            details: error.details,
+                            message: error.message.to_string(),
+                            session_id: metadata.session_id,
+                        });
+                        active = None;
+                    }
+                    Err(payload) => {
+                        let message =
+                            extract_panic_message(&payload, "Worker thread panicked loading model");
+                        let _ = event_tx.send(WorkerEvent::SessionError {
+                            code: "worker_panic".to_string(),
+                            details: None,
+                            message,
+                            session_id: metadata.session_id,
+                        });
+                        active = None;
+                    }
                 }
             }
             WorkerCommand::EndSession { session_id } => {
-                if active_session
+                if active
                     .as_ref()
-                    .map(|metadata| metadata.session_id == session_id)
+                    .map(|session| session.metadata.session_id == session_id)
                     .unwrap_or(false)
                 {
-                    active_session = None;
+                    active = None;
                 }
             }
             WorkerCommand::Shutdown => break,
@@ -155,11 +163,11 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
                 samples,
                 session_id,
             } => {
-                let Some(metadata) = active_session.as_ref() else {
+                let Some(session) = active.as_mut() else {
                     continue;
                 };
 
-                if metadata.session_id != session_id {
+                if session.metadata.session_id != session_id {
                     continue;
                 }
 
@@ -168,15 +176,27 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
                     .map(|&sample| sample as f32 / 32768.0)
                     .collect();
 
-                let request = TranscriptionRequest {
+                let mut request = TranscriptionRequest {
                     audio_samples,
-                    gpu_config: metadata.gpu_config,
-                    language: metadata.language.clone(),
-                    model_file_path: metadata.model_file_path.clone(),
+                    gpu_config: session.metadata.gpu_config,
+                    language: session.metadata.language.clone(),
+                    model_file_path: session.metadata.model_file_path.clone(),
+                    initial_prompt: session.metadata.initial_prompt.clone(),
+                };
+
+                let adapter_capabilities = registry
+                    .adapter(session.metadata.runtime_id, session.metadata.family_id)
+                    .map(|adapter| adapter.capabilities().clone());
+
+                let warnings = match adapter_capabilities.as_ref() {
+                    Some(capabilities) => apply_capability_gates(capabilities, &mut request),
+                    None => Vec::new(),
                 };
 
                 let started_at = Instant::now();
-                let result = panic::catch_unwind(AssertUnwindSafe(|| engine.transcribe(&request)));
+                let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    session.loaded_model.transcribe(&request)
+                }));
 
                 match result {
                     Ok(Ok(transcript)) => {
@@ -185,6 +205,7 @@ fn worker_main(command_rx: Receiver<WorkerCommand>, event_tx: Sender<WorkerEvent
                             session_id,
                             transcript,
                             utterance_duration_ms: duration_ms,
+                            warnings,
                         });
                     }
                     Ok(Err(error)) => {

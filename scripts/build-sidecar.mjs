@@ -3,7 +3,10 @@ import process from 'node:process';
 
 const args = new Set(process.argv.slice(2));
 
-const features = process.platform === 'darwin' ? 'engine-cohere,gpu-metal' : 'engine-cohere';
+const features =
+  process.platform === 'darwin'
+    ? 'engine-whisper,engine-cohere-transcribe,gpu-metal'
+    : 'engine-whisper,engine-cohere-transcribe';
 
 const cargoArgs = ['build', '--manifest-path', 'native/Cargo.toml', '--features', features];
 

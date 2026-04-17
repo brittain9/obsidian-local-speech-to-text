@@ -35,7 +35,6 @@ Low findings (cleanup, no correctness impact):
 - [ ] **L6** `native/src/session.rs:170` — `push_pre_roll_frame(frame.clone())` clones ~32 KB/s during active speech. Check `speech_started` before cloning, or restructure.
 - [ ] **L7** `native/src/session.rs:70` — `Vec<Vec<i16>>` utterance storage allocates one heap object per 20 ms frame. Flatten to `Vec<i16>`; `maybe_finalize_utterance` already flattens for output.
 - [ ] **L8** `settings-tab.ts:456–458` — bare `catch {}` swallows sidecar errors with no logging. Add a debug-level log.
-- [ ] **L9** `model-install-manager.ts:493–498` — `fetchSupportedEngineIds` silently falls back to `['whisper_cpp']` on error. Log a warning on the fallback path.
 - [ ] **L10** `native/src/app.rs:238` — `RemoveModel` error detail is discarded at the protocol boundary (`removed: false` with no message). Include the error string in the event or emit a warning event.
 - [ ] **L11** `native/src/protocol.rs:409` — every outbound event is cloned to wrap in `EventEnvelope`. Take `Event` by value to avoid the clone.
 - [ ] **L12** Structural: PCM constants (`PCM_SAMPLE_RATE_HZ`, `PCM_BYTES_PER_FRAME`, etc.) are independently defined in `src/shared/pcm-format.ts` and `native/src/protocol.rs`. A mismatch would produce silent audio corruption undetected by the version string. Options: add PCM parameters to the health handshake, generate one side from the other, or document as a protocol invariant.

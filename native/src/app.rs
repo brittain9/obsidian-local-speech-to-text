@@ -1,26 +1,29 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::capabilities::probe_runtime_capabilities;
 use crate::catalog::ModelCatalog;
-use crate::installer::{InstallRequest, ModelInstallManager};
+use crate::engine::capabilities::{
+    AcceleratorId, EngineCapabilities, ModelFamilyId, RequestWarning, RuntimeId,
+};
+use crate::engine::registry::EngineRegistry;
+use crate::installer::{InstallRequest, ModelInstallManager, ModelProbe};
 use crate::model_store::{
-    remove_installed_model, resolve_catalog_model_runtime_path, resolve_model_store_info,
-    scan_installed_models,
+    InstalledModelRecord, remove_installed_model, resolve_catalog_model_runtime_path,
+    resolve_model_store_info, scan_installed_models,
 };
 use crate::protocol::{
-    AccelerationPreference, Command, EngineId, Event, HealthStatus, ListeningMode,
-    ModelInstallState, ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState,
-    SessionStopReason, compiled_backends, compiled_engines, system_info_string,
+    AccelerationPreference, Command, CompiledAdapterInfo, CompiledRuntimeInfo, Event, HealthStatus,
+    InstalledModelCapabilities, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
+    SessionState, SessionStopReason, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
     SessionInitError,
 };
-use crate::transcription::{GpuConfig, TranscriptionError, probe_model_for_engine};
+use crate::transcription::{GpuConfig, TranscriptionError};
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
-type ModelPathProbe = fn(EngineId, &Path) -> Result<(), TranscriptionError>;
 type SessionFactory = fn(SessionConfig) -> Result<ListeningSession, SessionInitError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,8 +36,7 @@ pub struct AppState {
     active_session: Option<ActiveSession>,
     catalog: ModelCatalog,
     install_manager: ModelInstallManager,
-    model_path_probe: ModelPathProbe,
-    runtime_capabilities: Vec<RuntimeCapability>,
+    registry: Arc<EngineRegistry>,
     session_factory: SessionFactory,
     sidecar_version: String,
     transcription_worker: TranscriptionWorker,
@@ -51,7 +53,8 @@ struct ActiveSession {
 
 struct ResolvedModelSelection {
     display_name: String,
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
     installed: bool,
     model_id: Option<String>,
     resolved_path: PathBuf,
@@ -61,31 +64,31 @@ struct ResolvedModelSelection {
 
 impl AppState {
     pub fn new(sidecar_version: impl Into<String>, catalog: ModelCatalog) -> Self {
-        Self::with_test_hooks(
-            sidecar_version,
-            catalog,
-            probe_model_for_engine,
-            probe_runtime_capabilities(),
-            ListeningSession::new,
-        )
+        let registry = Arc::new(EngineRegistry::build());
+        Self::with_registry(sidecar_version, catalog, registry, ListeningSession::new)
     }
 
-    fn with_test_hooks(
+    fn with_registry(
         sidecar_version: impl Into<String>,
         catalog: ModelCatalog,
-        model_path_probe: ModelPathProbe,
-        runtime_capabilities: Vec<RuntimeCapability>,
+        registry: Arc<EngineRegistry>,
         session_factory: SessionFactory,
     ) -> Self {
+        let model_probe: Arc<ModelProbe> = {
+            let registry = Arc::clone(&registry);
+            Arc::new(move |runtime_id, family_id, path| {
+                registry.probe_model(runtime_id, family_id, path)
+            })
+        };
+
         Self {
             active_session: None,
             catalog,
-            install_manager: ModelInstallManager::new(),
-            model_path_probe,
-            runtime_capabilities,
+            install_manager: ModelInstallManager::new(model_probe),
+            registry: Arc::clone(&registry),
             session_factory,
             sidecar_version: sidecar_version.into(),
-            transcription_worker: TranscriptionWorker::spawn(),
+            transcription_worker: TranscriptionWorker::spawn(Arc::clone(&registry)),
         }
     }
 
@@ -201,7 +204,8 @@ impl AppState {
                 events.push(Event::ModelCatalog {
                     catalog_version: self.catalog.catalog_version,
                     collections: self.catalog.collections.clone(),
-                    engines: self.catalog.engines.clone(),
+                    runtimes: self.catalog.runtimes.clone(),
+                    families: self.catalog.families.clone(),
                     models: self.catalog.models.clone(),
                 });
 
@@ -233,20 +237,23 @@ impl AppState {
                 (ControlFlow::Continue, events)
             }
             Command::RemoveModel {
-                engine_id,
+                runtime_id,
+                family_id,
                 model_id,
                 model_store_path_override,
             } => {
-                match resolve_model_store_info(model_store_path_override.as_deref())
-                    .and_then(|info| remove_installed_model(&info.path, engine_id, &model_id))
-                {
+                match resolve_model_store_info(model_store_path_override.as_deref()).and_then(
+                    |info| remove_installed_model(&info.path, runtime_id, family_id, &model_id),
+                ) {
                     Ok(removed) => events.push(Event::ModelRemoved {
-                        engine_id,
+                        runtime_id,
+                        family_id,
                         model_id,
                         removed,
                     }),
                     Err(_error) => events.push(Event::ModelRemoved {
-                        engine_id,
+                        runtime_id,
+                        family_id,
                         model_id,
                         removed: false,
                     }),
@@ -255,16 +262,22 @@ impl AppState {
                 (ControlFlow::Continue, events)
             }
             Command::InstallModel {
-                engine_id,
+                runtime_id,
+                family_id,
                 install_id,
                 model_id,
                 model_store_path_override,
             } => {
-                match self.catalog.find_model(engine_id, &model_id).cloned() {
+                match self
+                    .catalog
+                    .find_model(runtime_id, family_id, &model_id)
+                    .cloned()
+                {
                     None => events.push(Event::ModelInstallUpdate {
                         details: None,
                         downloaded_bytes: None,
-                        engine_id,
+                        runtime_id,
+                        family_id,
                         install_id,
                         message: Some(
                             "The requested model does not exist in the bundled catalog."
@@ -279,7 +292,8 @@ impl AppState {
                             Ok(info) => {
                                 events.push(self.install_manager.start_install(InstallRequest {
                                     catalog: self.catalog.clone(),
-                                    engine_id,
+                                    runtime_id,
+                                    family_id,
                                     install_id,
                                     model,
                                     model_id,
@@ -289,7 +303,8 @@ impl AppState {
                             Err(error) => events.push(Event::ModelInstallUpdate {
                                 details: Some(format!("{error:#}")),
                                 downloaded_bytes: None,
-                                engine_id,
+                                runtime_id,
+                                family_id,
                                 install_id,
                                 message: Some("The model store path is invalid.".to_string()),
                                 model_id,
@@ -314,14 +329,9 @@ impl AppState {
 
                 (ControlFlow::Continue, events)
             }
-            Command::RefreshCapabilities => {
-                self.runtime_capabilities = probe_runtime_capabilities();
-                events.push(self.build_system_info_event());
-
-                (ControlFlow::Continue, events)
-            }
             Command::StartSession {
                 acceleration_preference,
+                initial_prompt,
                 language,
                 mode,
                 model_selection,
@@ -343,9 +353,9 @@ impl AppState {
                 ) {
                     Ok(resolved_model) => {
                         let use_gpu = resolve_use_gpu(
-                            resolved_model.engine_id,
+                            resolved_model.runtime_id,
                             acceleration_preference,
-                            &self.runtime_capabilities,
+                            self.registry.as_ref(),
                         );
                         let config = SessionConfig {
                             mode,
@@ -370,8 +380,10 @@ impl AppState {
                         if self
                             .transcription_worker
                             .send(WorkerCommand::BeginSession(SessionMetadata {
-                                engine_id: resolved_model.engine_id,
+                                runtime_id: resolved_model.runtime_id,
+                                family_id: resolved_model.family_id,
                                 gpu_config: GpuConfig { use_gpu },
+                                initial_prompt,
                                 language,
                                 model_file_path: resolved_model.resolved_path.clone(),
                                 session_id: session_id.clone(),
@@ -445,12 +457,64 @@ impl AppState {
     }
 
     fn build_system_info_event(&self) -> Event {
+        let compiled_runtimes: Vec<CompiledRuntimeInfo> = self
+            .registry
+            .runtimes()
+            .map(|runtime| CompiledRuntimeInfo {
+                runtime_id: runtime.id(),
+                display_name: runtime.id().display_name().to_string(),
+                runtime_capabilities: runtime.capabilities().clone(),
+            })
+            .collect();
+
+        let compiled_adapters: Vec<CompiledAdapterInfo> = self
+            .registry
+            .adapters()
+            .map(|adapter| CompiledAdapterInfo {
+                runtime_id: adapter.runtime_id(),
+                family_id: adapter.family_id(),
+                display_name: adapter.family_id().display_name().to_string(),
+                family_capabilities: adapter.capabilities().clone(),
+            })
+            .collect();
+
+        let installed_models = self.build_installed_model_capabilities();
+
         Event::SystemInfo {
-            compiled_backends: compiled_backends(),
-            compiled_engines: compiled_engines(),
-            runtime_capabilities: self.runtime_capabilities.clone(),
+            sidecar_version: self.sidecar_version.clone(),
+            compiled_runtimes,
+            compiled_adapters,
+            installed_models,
             system_info: system_info_string(),
         }
+    }
+
+    fn build_installed_model_capabilities(&self) -> Vec<InstalledModelCapabilities> {
+        let store_info = match resolve_model_store_info(None) {
+            Ok(info) => info,
+            Err(_) => return Vec::new(),
+        };
+        let records: Vec<InstalledModelRecord> =
+            match scan_installed_models(&self.catalog, &store_info.path) {
+                Ok(records) => records,
+                Err(_) => return Vec::new(),
+            };
+
+        records
+            .into_iter()
+            .filter_map(|record| {
+                let merged = self
+                    .registry
+                    .merged_capabilities(record.runtime_id, record.family_id)?;
+                Some(InstalledModelCapabilities {
+                    runtime_id: record.runtime_id,
+                    family_id: record.family_id,
+                    model_id: Some(record.model_id),
+                    file_path: record.runtime_path,
+                    merged_capabilities: merged,
+                })
+            })
+            .collect()
     }
 
     fn build_probe_event(
@@ -463,7 +527,8 @@ impl AppState {
                 available: true,
                 details: None,
                 display_name: Some(resolved_model.display_name),
-                engine_id: resolved_model.engine_id,
+                runtime_id: resolved_model.runtime_id,
+                family_id: resolved_model.family_id,
                 installed: resolved_model.installed,
                 message: "Model selection is ready.".to_string(),
                 model_id: resolved_model.model_id,
@@ -615,6 +680,7 @@ impl AppState {
                 session_id,
                 transcript,
                 utterance_duration_ms,
+                warnings,
             } => {
                 {
                     let Some(active_session) = self.active_session.as_mut() else {
@@ -634,6 +700,7 @@ impl AppState {
                     session_id: session_id.clone(),
                     text: transcript.text,
                     utterance_duration_ms,
+                    warnings,
                 });
 
                 if self.maybe_complete_drain(&session_id, events) {
@@ -752,26 +819,36 @@ impl AppState {
             })
     }
 
+    fn probe_model_path(
+        &self,
+        runtime_id: RuntimeId,
+        family_id: ModelFamilyId,
+        path: &Path,
+    ) -> Result<(), TranscriptionError> {
+        self.registry.probe_model(runtime_id, family_id, path)
+    }
+
     fn resolve_selected_model(
         &self,
         selection: &SelectedModel,
         model_store_path_override: Option<&str>,
     ) -> Result<ResolvedModelSelection, Box<Event>> {
+        let runtime_id = selection.runtime_id();
+        let family_id = selection.family_id();
+
         match selection {
-            SelectedModel::CatalogModel {
-                engine_id,
-                model_id,
-            } => {
+            SelectedModel::CatalogModel { model_id, .. } => {
                 let model = self
                     .catalog
-                    .find_model(*engine_id, model_id)
+                    .find_model(runtime_id, family_id, model_id)
                     .cloned()
                     .ok_or_else(|| {
                         Box::new(Event::ModelProbeResult {
                             available: false,
                             details: None,
                             display_name: None,
-                            engine_id: *engine_id,
+                            runtime_id,
+                            family_id,
                             installed: false,
                             message:
                                 "The selected managed model does not exist in the bundled catalog."
@@ -789,7 +866,8 @@ impl AppState {
                             available: false,
                             details: Some(format!("{error:#}")),
                             display_name: Some(model.display_name.clone()),
-                            engine_id: *engine_id,
+                            runtime_id,
+                            family_id,
                             installed: false,
                             message: "The model store path is invalid.".to_string(),
                             model_id: Some(model_id.clone()),
@@ -802,7 +880,8 @@ impl AppState {
                 let resolved_path = resolve_catalog_model_runtime_path(
                     &self.catalog,
                     &store_info.path,
-                    *engine_id,
+                    runtime_id,
+                    family_id,
                     model_id,
                 )
                 .map_err(|error| {
@@ -810,7 +889,8 @@ impl AppState {
                         available: false,
                         details: Some(format!("{error:#}")),
                         display_name: Some(model.display_name.clone()),
-                        engine_id: *engine_id,
+                        runtime_id,
+                        family_id,
                         installed: false,
                         message: "The selected managed model is not installed or is incomplete."
                             .to_string(),
@@ -821,26 +901,29 @@ impl AppState {
                         status: ModelProbeStatus::Missing,
                     })
                 })?;
-                (self.model_path_probe)(*engine_id, &resolved_path).map_err(|error| {
-                    Box::new(Event::ModelProbeResult {
-                        available: false,
-                        details: error.details,
-                        display_name: Some(model.display_name.clone()),
-                        engine_id: *engine_id,
-                        installed: true,
-                        message: error.message.to_string(),
-                        model_id: Some(model_id.clone()),
-                        resolved_path: Some(resolved_path.display().to_string()),
-                        selection: selection.clone(),
-                        size_bytes: None,
-                        status: ModelProbeStatus::Invalid,
-                    })
-                })?;
+                self.probe_model_path(runtime_id, family_id, &resolved_path)
+                    .map_err(|error| {
+                        Box::new(Event::ModelProbeResult {
+                            available: false,
+                            details: error.details,
+                            display_name: Some(model.display_name.clone()),
+                            runtime_id,
+                            family_id,
+                            installed: true,
+                            message: error.message.to_string(),
+                            model_id: Some(model_id.clone()),
+                            resolved_path: Some(resolved_path.display().to_string()),
+                            selection: selection.clone(),
+                            size_bytes: None,
+                            status: ModelProbeStatus::Invalid,
+                        })
+                    })?;
                 let size_bytes = file_size(&resolved_path);
 
                 Ok(ResolvedModelSelection {
                     display_name: model.display_name,
-                    engine_id: *engine_id,
+                    runtime_id,
+                    family_id,
                     installed: true,
                     model_id: Some(model_id.clone()),
                     resolved_path,
@@ -848,10 +931,7 @@ impl AppState {
                     size_bytes,
                 })
             }
-            SelectedModel::ExternalFile {
-                engine_id,
-                file_path,
-            } => {
+            SelectedModel::ExternalFile { file_path, .. } => {
                 let trimmed_path = file_path.trim();
 
                 if trimmed_path.is_empty() {
@@ -859,7 +939,8 @@ impl AppState {
                         available: false,
                         details: None,
                         display_name: None,
-                        engine_id: *engine_id,
+                        runtime_id,
+                        family_id,
                         installed: false,
                         message: "External model file path is not configured.".to_string(),
                         model_id: None,
@@ -877,7 +958,8 @@ impl AppState {
                         available: false,
                         details: Some(trimmed_path.to_string()),
                         display_name: Some(file_name_or_path(model_path)),
-                        engine_id: *engine_id,
+                        runtime_id,
+                        family_id,
                         installed: false,
                         message: "External model file path must be absolute.".to_string(),
                         model_id: None,
@@ -888,30 +970,33 @@ impl AppState {
                     }));
                 }
 
-                (self.model_path_probe)(*engine_id, model_path).map_err(|error| {
-                    Box::new(Event::ModelProbeResult {
-                        available: false,
-                        details: error.details,
-                        display_name: Some(file_name_or_path(model_path)),
-                        engine_id: *engine_id,
-                        installed: false,
-                        message: error.message.to_string(),
-                        model_id: None,
-                        resolved_path: Some(model_path.display().to_string()),
-                        selection: selection.clone(),
-                        size_bytes: None,
-                        status: if error.code == "missing_model_file" {
-                            ModelProbeStatus::Missing
-                        } else {
-                            ModelProbeStatus::Invalid
-                        },
-                    })
-                })?;
+                self.probe_model_path(runtime_id, family_id, model_path)
+                    .map_err(|error| {
+                        Box::new(Event::ModelProbeResult {
+                            available: false,
+                            details: error.details,
+                            display_name: Some(file_name_or_path(model_path)),
+                            runtime_id,
+                            family_id,
+                            installed: false,
+                            message: error.message.to_string(),
+                            model_id: None,
+                            resolved_path: Some(model_path.display().to_string()),
+                            selection: selection.clone(),
+                            size_bytes: None,
+                            status: if error.code == "missing_model_file" {
+                                ModelProbeStatus::Missing
+                            } else {
+                                ModelProbeStatus::Invalid
+                            },
+                        })
+                    })?;
                 let size_bytes = file_size(model_path);
 
                 Ok(ResolvedModelSelection {
                     display_name: file_name_or_path(model_path),
-                    engine_id: *engine_id,
+                    runtime_id,
+                    family_id,
                     installed: false,
                     model_id: None,
                     resolved_path: model_path.to_path_buf(),
@@ -989,37 +1074,196 @@ fn internal_error_event(code: &str, message: &str, details: Option<String>) -> E
 }
 
 fn resolve_use_gpu(
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
     acceleration_preference: AccelerationPreference,
-    runtime_capabilities: &[RuntimeCapability],
+    registry: &EngineRegistry,
 ) -> bool {
     match acceleration_preference {
         AccelerationPreference::CpuOnly => false,
-        AccelerationPreference::Auto => runtime_capabilities.iter().any(|capability| {
-            capability.engine == engine_id.as_str()
-                && capability.backend != "cpu"
-                && capability.available
-        }),
+        AccelerationPreference::Auto => match registry.runtime(runtime_id) {
+            Some(runtime) => runtime
+                .capabilities()
+                .available_accelerators
+                .iter()
+                .any(|accelerator| *accelerator != AcceleratorId::Cpu),
+            None => false,
+        },
     }
 }
+
+// Silence unused-import warnings when building feature combinations that
+// happen not to use these re-exports; they are documented in the public API.
+#[allow(dead_code)]
+fn _type_exports(_: EngineCapabilities, _: RequestWarning) {}
 
 #[cfg(test)]
 mod tests {
     use std::env::temp_dir;
     use std::fs::{create_dir_all, write};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{AppState, ControlFlow};
     use crate::catalog::{
-        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
+        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection,
+        ModelFamilyDescriptor, ModelRuntimeDescriptor,
     };
+    use crate::engine::capabilities::{
+        AcceleratorAvailability, AcceleratorId, LanguageSupport, ModelFamilyCapabilities,
+        ModelFamilyId, ModelFormat, RuntimeCapabilities, RuntimeId,
+    };
+    use crate::engine::registry::EngineRegistry;
+    use crate::engine::traits::{LoadedModel, ModelFamilyAdapter, Runtime};
     use crate::protocol::{
-        AccelerationPreference, Command, EngineId, Event, HealthStatus, ListeningMode,
-        ModelProbeStatus, RuntimeCapability, SelectedModel, SessionState, SessionStopReason,
+        AccelerationPreference, Command, Event, HealthStatus, ListeningMode, ModelProbeStatus,
+        SelectedModel, SessionState, SessionStopReason,
     };
     use crate::session::{ListeningSession, SessionInitError, SpeakingStyle};
-    use crate::transcription::TranscriptionError;
+    use crate::transcription::{
+        GpuConfig, Transcript, TranscriptionError, TranscriptionRequest, validate_model_path,
+    };
+
+    struct FakeRuntime {
+        capabilities: RuntimeCapabilities,
+    }
+
+    impl FakeRuntime {
+        fn cpu_only() -> Self {
+            let mut accelerator_details = std::collections::HashMap::new();
+            accelerator_details.insert(
+                AcceleratorId::Cpu,
+                AcceleratorAvailability {
+                    available: true,
+                    unavailable_reason: None,
+                },
+            );
+            Self {
+                capabilities: RuntimeCapabilities {
+                    available_accelerators: vec![AcceleratorId::Cpu],
+                    accelerator_details,
+                    supported_model_formats: vec![ModelFormat::Ggml, ModelFormat::Gguf],
+                },
+            }
+        }
+
+        fn with_cuda() -> Self {
+            let mut accelerator_details = std::collections::HashMap::new();
+            accelerator_details.insert(
+                AcceleratorId::Cpu,
+                AcceleratorAvailability {
+                    available: true,
+                    unavailable_reason: None,
+                },
+            );
+            accelerator_details.insert(
+                AcceleratorId::Cuda,
+                AcceleratorAvailability {
+                    available: true,
+                    unavailable_reason: None,
+                },
+            );
+            Self {
+                capabilities: RuntimeCapabilities {
+                    available_accelerators: vec![AcceleratorId::Cpu, AcceleratorId::Cuda],
+                    accelerator_details,
+                    supported_model_formats: vec![ModelFormat::Ggml, ModelFormat::Gguf],
+                },
+            }
+        }
+    }
+
+    impl Runtime for FakeRuntime {
+        fn id(&self) -> RuntimeId {
+            RuntimeId::WhisperCpp
+        }
+
+        fn capabilities(&self) -> &RuntimeCapabilities {
+            &self.capabilities
+        }
+    }
+
+    struct FakeAdapter {
+        capabilities: ModelFamilyCapabilities,
+    }
+
+    impl FakeAdapter {
+        fn new() -> Self {
+            Self {
+                capabilities: ModelFamilyCapabilities {
+                    supports_timed_segments: true,
+                    supports_initial_prompt: true,
+                    supports_language_selection: false,
+                    supported_languages: LanguageSupport::EnglishOnly,
+                    max_audio_duration_secs: None,
+                    produces_punctuation: true,
+                },
+            }
+        }
+    }
+
+    struct FakeLoadedModel;
+
+    impl LoadedModel for FakeLoadedModel {
+        fn transcribe(
+            &mut self,
+            _request: &TranscriptionRequest,
+        ) -> Result<Transcript, TranscriptionError> {
+            Ok(Transcript {
+                segments: Vec::new(),
+                text: String::new(),
+            })
+        }
+    }
+
+    impl ModelFamilyAdapter for FakeAdapter {
+        fn runtime_id(&self) -> RuntimeId {
+            RuntimeId::WhisperCpp
+        }
+
+        fn family_id(&self) -> ModelFamilyId {
+            ModelFamilyId::Whisper
+        }
+
+        fn capabilities(&self) -> &ModelFamilyCapabilities {
+            &self.capabilities
+        }
+
+        fn probe_model(&self, path: &std::path::Path) -> Result<(), TranscriptionError> {
+            validate_model_path(path)
+        }
+
+        fn load(
+            &self,
+            _path: &std::path::Path,
+            _gpu: GpuConfig,
+        ) -> Result<Box<dyn LoadedModel>, TranscriptionError> {
+            Ok(Box::new(FakeLoadedModel))
+        }
+    }
+
+    fn fake_registry() -> Arc<EngineRegistry> {
+        let mut registry = EngineRegistry::default();
+        registry.register_runtime(Box::new(FakeRuntime::cpu_only()));
+        registry.register_adapter(Box::new(FakeAdapter::new()));
+        Arc::new(registry)
+    }
+
+    fn fake_registry_with_cuda() -> Arc<EngineRegistry> {
+        let mut registry = EngineRegistry::default();
+        registry.register_runtime(Box::new(FakeRuntime::with_cuda()));
+        registry.register_adapter(Box::new(FakeAdapter::new()));
+        Arc::new(registry)
+    }
+
+    fn test_app() -> AppState {
+        AppState::with_registry(
+            "0.1.0",
+            sample_catalog(),
+            fake_registry(),
+            ListeningSession::new,
+        )
+    }
 
     #[test]
     fn health_returns_ready_event() {
@@ -1036,26 +1280,29 @@ mod tests {
     }
 
     #[test]
-    fn get_system_info_returns_compiled_backends() {
+    fn get_system_info_returns_compiled_runtimes_and_adapters() {
         let (control_flow, events) = test_app().handle_command(Command::GetSystemInfo);
 
         assert_eq!(control_flow, ControlFlow::Continue);
         assert_eq!(events.len(), 1);
         match &events[0] {
             Event::SystemInfo {
-                compiled_backends,
-                compiled_engines,
-                runtime_capabilities,
-                system_info,
+                sidecar_version,
+                compiled_runtimes,
+                compiled_adapters,
+                installed_models: _,
+                system_info: _,
             } => {
-                assert!(compiled_backends.contains(&"cpu".to_string()));
-                assert!(compiled_engines.contains(&"whisper_cpp".to_string()));
-                assert!(runtime_capabilities.iter().any(|capability| {
-                    capability.engine == "whisper_cpp"
-                        && capability.backend == "cpu"
-                        && capability.available
+                assert_eq!(sidecar_version, "0.1.0");
+                assert!(
+                    compiled_runtimes
+                        .iter()
+                        .any(|runtime| runtime.runtime_id == RuntimeId::WhisperCpp)
+                );
+                assert!(compiled_adapters.iter().any(|adapter| {
+                    adapter.runtime_id == RuntimeId::WhisperCpp
+                        && adapter.family_id == ModelFamilyId::Whisper
                 }));
-                assert!(!system_info.is_empty());
             }
             other => panic!("expected SystemInfo event, got {other:?}"),
         }
@@ -1086,7 +1333,7 @@ mod tests {
     fn start_session_rejects_missing_model() {
         let (_, events) = test_app().handle_command(start_session_command(
             "session-1",
-            Path::new("/tmp/definitely-missing-model.bin"),
+            std::path::Path::new("/tmp/definitely-missing-model.bin"),
         ));
 
         assert!(
@@ -1098,7 +1345,8 @@ mod tests {
     fn probe_model_selection_reports_missing_managed_model() {
         let (_, events) = test_app().handle_command(Command::ProbeModelSelection {
             model_selection: SelectedModel::CatalogModel {
-                engine_id: EngineId::WhisperCpp,
+                runtime_id: RuntimeId::WhisperCpp,
+                family_id: ModelFamilyId::Whisper,
                 model_id: "small".to_string(),
             },
             model_store_path_override: Some(
@@ -1113,38 +1361,29 @@ mod tests {
     }
 
     #[test]
-    fn auto_acceleration_uses_available_gpu_backend() {
+    fn auto_acceleration_uses_available_gpu_accelerator() {
         assert!(super::resolve_use_gpu(
-            EngineId::WhisperCpp,
+            RuntimeId::WhisperCpp,
             AccelerationPreference::Auto,
-            &[
-                RuntimeCapability {
-                    available: true,
-                    backend: "cpu".to_string(),
-                    engine: "whisper_cpp".to_string(),
-                    reason: None,
-                },
-                RuntimeCapability {
-                    available: true,
-                    backend: "cuda".to_string(),
-                    engine: "whisper_cpp".to_string(),
-                    reason: None,
-                },
-            ],
+            fake_registry_with_cuda().as_ref(),
+        ));
+    }
+
+    #[test]
+    fn auto_acceleration_skips_when_only_cpu_available() {
+        assert!(!super::resolve_use_gpu(
+            RuntimeId::WhisperCpp,
+            AccelerationPreference::Auto,
+            fake_registry().as_ref(),
         ));
     }
 
     #[test]
     fn cpu_only_acceleration_disables_gpu_even_when_available() {
         assert!(!super::resolve_use_gpu(
-            EngineId::WhisperCpp,
+            RuntimeId::WhisperCpp,
             AccelerationPreference::CpuOnly,
-            &[RuntimeCapability {
-                available: true,
-                backend: "cuda".to_string(),
-                engine: "whisper_cpp".to_string(),
-                reason: None,
-            }],
+            fake_registry_with_cuda().as_ref(),
         ));
     }
 
@@ -1182,17 +1421,11 @@ mod tests {
     #[test]
     fn start_session_surfaces_vad_initialization_failure() {
         let model_file_path = create_model_file();
-        let mut app = AppState::with_test_hooks(
-            "0.1.0",
-            sample_catalog(),
-            probe_test_model_path,
-            sample_runtime_capabilities(),
-            |_| {
-                Err(SessionInitError::VadLoad(
-                    "model bootstrap failed".to_string(),
-                ))
-            },
-        );
+        let mut app = AppState::with_registry("0.1.0", sample_catalog(), fake_registry(), |_| {
+            Err(SessionInitError::VadLoad(
+                "model bootstrap failed".to_string(),
+            ))
+        });
 
         let (_, events) = app.handle_command(start_session_command("session-1", &model_file_path));
 
@@ -1207,13 +1440,15 @@ mod tests {
         );
     }
 
-    fn start_session_command(session_id: &str, model_file_path: &Path) -> Command {
+    fn start_session_command(session_id: &str, model_file_path: &std::path::Path) -> Command {
         Command::StartSession {
             acceleration_preference: AccelerationPreference::Auto,
+            initial_prompt: None,
             language: "en".to_string(),
             mode: ListeningMode::AlwaysOn,
             model_selection: SelectedModel::ExternalFile {
-                engine_id: EngineId::WhisperCpp,
+                runtime_id: RuntimeId::WhisperCpp,
+                family_id: ModelFamilyId::Whisper,
                 file_path: model_file_path.display().to_string(),
             },
             model_store_path_override: None,
@@ -1235,59 +1470,23 @@ mod tests {
         path
     }
 
-    fn test_app() -> AppState {
-        AppState::with_test_hooks(
-            "0.1.0",
-            sample_catalog(),
-            probe_test_model_path,
-            sample_runtime_capabilities(),
-            ListeningSession::new,
-        )
-    }
-
-    fn sample_runtime_capabilities() -> Vec<RuntimeCapability> {
-        vec![
-            RuntimeCapability {
-                available: true,
-                backend: "cpu".to_string(),
-                engine: "whisper_cpp".to_string(),
-                reason: None,
-            },
-            RuntimeCapability {
-                available: true,
-                backend: "cpu".to_string(),
-                engine: "cohere_onnx".to_string(),
-                reason: None,
-            },
-        ]
-    }
-
-    fn probe_test_model_path(
-        _engine_id: EngineId,
-        model_file_path: &Path,
-    ) -> Result<(), TranscriptionError> {
-        if !model_file_path.is_file() {
-            return Err(TranscriptionError {
-                code: "missing_model_file",
-                message: "Model file does not exist or is not a regular file.",
-                details: Some(model_file_path.display().to_string()),
-            });
-        }
-
-        Ok(())
-    }
-
     fn sample_catalog() -> ModelCatalog {
         ModelCatalog {
-            catalog_version: 1,
+            catalog_version: 2,
             collections: vec![ModelCollection {
                 collection_id: "english".to_string(),
                 display_name: "English".to_string(),
                 summary: "summary".to_string(),
             }],
-            engines: vec![ModelEngine {
-                display_name: "Whisper.cpp".to_string(),
-                engine_id: EngineId::WhisperCpp,
+            runtimes: vec![ModelRuntimeDescriptor {
+                runtime_id: RuntimeId::WhisperCpp,
+                display_name: "whisper.cpp".to_string(),
+                summary: "summary".to_string(),
+            }],
+            families: vec![ModelFamilyDescriptor {
+                family_id: ModelFamilyId::Whisper,
+                runtime_id: RuntimeId::WhisperCpp,
+                display_name: "Whisper".to_string(),
                 summary: "summary".to_string(),
             }],
             models: vec![CatalogModel {
@@ -1301,10 +1500,10 @@ mod tests {
                         .to_string(),
                     size_bytes: 10,
                 }],
-                capability_flags: vec![],
                 collection_id: "english".to_string(),
                 display_name: "Model".to_string(),
-                engine_id: EngineId::WhisperCpp,
+                runtime_id: RuntimeId::WhisperCpp,
+                family_id: ModelFamilyId::Whisper,
                 language_tags: vec!["en".to_string()],
                 license_label: "MIT".to_string(),
                 license_url: "https://example.com/license".to_string(),

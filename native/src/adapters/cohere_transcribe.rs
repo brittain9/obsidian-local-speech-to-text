@@ -2,14 +2,17 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "gpu-ort-cuda")]
-use ort::ep::{CUDAExecutionProvider, ExecutionProvider};
 use ort::session::{Session, SessionInputValue};
 use ort::value::{DynValue, TensorElementType, Value, ValueType};
 
+use crate::engine::capabilities::{
+    LanguageSupport, ModelFamilyCapabilities, ModelFamilyId, RuntimeId,
+};
+use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
+use crate::runtimes::onnx::build_session;
 use crate::transcription::{
-    GpuConfig, Transcript, TranscriptionBackend, TranscriptionError, TranscriptionRequest,
-    validate_audio_samples, validate_language, validate_model_path,
+    GpuConfig, Transcript, TranscriptionError, TranscriptionRequest, validate_audio_samples,
+    validate_language, validate_model_path,
 };
 
 const NUM_DECODER_LAYERS: usize = 8;
@@ -35,66 +38,49 @@ const TOKEN_LANG_EN: i64 = 62; // <|en|>
 
 /// Sibling filenames derived from the primary artifact path.
 /// `tokens.txt` is retained as a candidate for backward compatibility with
-/// manually converted tokenizer files.  The HuggingFace-shipped format is
+/// manually converted tokenizer files. The HuggingFace-shipped format is
 /// `tokenizer.json`, which the loader now handles natively.
 const TOKENS_CANDIDATES: &[&str] = &["tokens.txt", "tokenizer.json"];
 
-// ---------------------------------------------------------------------------
-// Backend
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-pub struct CohereBackend {
-    loaded: Option<LoadedCohereModel>,
+pub struct CohereTranscribeAdapter {
+    capabilities: ModelFamilyCapabilities,
 }
 
-struct LoadedCohereModel {
-    decoder: Session,
-    encoder: Session,
-    gpu_config: GpuConfig,
-    mel_extractor: crate::mel::MelFeatureExtractor,
-    model_dir: PathBuf,
-    vocab: HashMap<u32, String>,
+impl CohereTranscribeAdapter {
+    pub fn new() -> Self {
+        Self {
+            capabilities: ModelFamilyCapabilities {
+                supports_timed_segments: false,
+                supports_initial_prompt: false,
+                supports_language_selection: false,
+                supported_languages: LanguageSupport::EnglishOnly,
+                max_audio_duration_secs: Some(MAX_AUDIO_DURATION_SECS),
+                produces_punctuation: true,
+            },
+        }
+    }
 }
 
-impl TranscriptionBackend for CohereBackend {
-    fn transcribe(
-        &mut self,
-        request: &TranscriptionRequest,
-    ) -> Result<Transcript, TranscriptionError> {
-        validate_language(&request.language)?;
-        validate_audio_samples(&request.audio_samples)?;
-        validate_audio_duration(&request.audio_samples)?;
+impl Default for CohereTranscribeAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-        self.ensure_loaded(&request.model_file_path, request.gpu_config)?;
-        let model = self.loaded.as_mut().unwrap();
-
-        // --- Feature extraction: raw audio → mel spectrogram [1, T, 128] ---
-        let mel = model.mel_extractor.extract(&request.audio_samples);
-        let features_value = Value::from_array(mel.features)
-            .map_err(|e| TranscriptionError::transcription_failure("encoder features", &e))?;
-
-        // --- Encoder: mel features → hidden states ---
-        // Encoder input: input_features f32 [batch, seq_len, 128]
-        let encoder_outputs = model
-            .encoder
-            .run(ort::inputs!["input_features" => features_value])
-            .map_err(|e| TranscriptionError::transcription_failure("encoder forward pass", &e))?;
-
-        let (_, encoder_hidden) = encoder_outputs.into_iter().next().ok_or_else(|| {
-            TranscriptionError::transcription_failure("encoder", "produced no output")
-        })?;
-
-        // --- Decoder: autoregressive token generation ---
-        let text = autoregressive_decode(&mut model.decoder, &encoder_hidden, &model.vocab)?;
-
-        Ok(Transcript {
-            segments: Vec::new(),
-            text: text.trim().to_string(),
-        })
+impl ModelFamilyAdapter for CohereTranscribeAdapter {
+    fn runtime_id(&self) -> RuntimeId {
+        RuntimeId::OnnxRuntime
     }
 
-    fn probe_model(path: &Path) -> Result<(), TranscriptionError> {
+    fn family_id(&self) -> ModelFamilyId {
+        ModelFamilyId::CohereTranscribe
+    }
+
+    fn capabilities(&self) -> &ModelFamilyCapabilities {
+        &self.capabilities
+    }
+
+    fn probe_model(&self, path: &Path) -> Result<(), TranscriptionError> {
         let model_dir = path.parent().ok_or_else(|| {
             TranscriptionError::invalid_model_with_details(
                 "cannot determine model directory from artifact path".to_string(),
@@ -107,78 +93,62 @@ impl TranscriptionBackend for CohereBackend {
 
         Ok(())
     }
-}
 
-// ---------------------------------------------------------------------------
-// Model loading
-// ---------------------------------------------------------------------------
-
-impl CohereBackend {
-    fn ensure_loaded(
-        &mut self,
-        primary_artifact: &Path,
-        gpu_config: GpuConfig,
-    ) -> Result<(), TranscriptionError> {
-        let model_dir = primary_artifact.parent().ok_or_else(|| {
+    fn load(
+        &self,
+        path: &Path,
+        gpu: GpuConfig,
+    ) -> Result<Box<dyn LoadedModel>, TranscriptionError> {
+        let model_dir = path.parent().ok_or_else(|| {
             TranscriptionError::invalid_model_with_details(
                 "cannot determine model directory".to_string(),
             )
         })?;
 
-        let should_reload = self
-            .loaded
-            .as_ref()
-            .map(|m| m.model_dir != model_dir || m.gpu_config != gpu_config)
-            .unwrap_or(true);
-
-        if should_reload {
-            drop(self.loaded.take());
-            self.loaded = Some(load_cohere_model(model_dir, gpu_config)?);
-        }
-
-        Ok(())
+        let loaded = load_cohere_model(model_dir, gpu)?;
+        Ok(Box::new(loaded))
     }
 }
 
-fn build_session(model_path: &Path, gpu_config: GpuConfig) -> Result<Session, TranscriptionError> {
-    let mut builder = Session::builder()
-        .map_err(|e| TranscriptionError::transcription_failure("session builder", &e))?;
-
-    #[cfg(feature = "gpu-ort-cuda")]
-    if gpu_config.use_gpu {
-        builder = builder
-            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
-            .map_err(|e| TranscriptionError::transcription_failure("CUDA EP registration", &e))?;
-    }
-
-    #[cfg(not(feature = "gpu-ort-cuda"))]
-    let _ = gpu_config;
-
-    builder
-        .commit_from_file(model_path)
-        .map_err(|e| TranscriptionError::transcription_failure("model loading", &e))
+struct LoadedCohereModel {
+    decoder: Session,
+    encoder: Session,
+    mel_extractor: crate::mel::MelFeatureExtractor,
+    vocab: HashMap<u32, String>,
 }
 
-#[cfg(feature = "gpu-ort-cuda")]
-pub fn probe_cuda_execution_provider() -> Result<(), String> {
-    let execution_provider = CUDAExecutionProvider::default();
-    match execution_provider.is_available() {
-        Ok(false) => {
-            return Err("ONNX Runtime CUDA execution provider is unavailable.".to_string());
-        }
-        Err(error) => {
-            return Err(format!(
-                "Failed to query ONNX Runtime CUDA execution provider: {error}"
-            ));
-        }
-        Ok(true) => {}
-    }
+impl LoadedModel for LoadedCohereModel {
+    fn transcribe(
+        &mut self,
+        request: &TranscriptionRequest,
+    ) -> Result<Transcript, TranscriptionError> {
+        validate_language(&request.language)?;
+        validate_audio_samples(&request.audio_samples)?;
+        validate_audio_duration(&request.audio_samples)?;
 
-    Session::builder()
-        .map_err(|error| format!("Failed to create an ONNX Runtime session builder: {error}"))?
-        .with_execution_providers([execution_provider.build().error_on_failure()])
-        .map(|_| ())
-        .map_err(|error| format!("CUDA execution provider registration failed: {error}"))
+        // --- Feature extraction: raw audio → mel spectrogram [1, T, 128] ---
+        let mel = self.mel_extractor.extract(&request.audio_samples);
+        let features_value = Value::from_array(mel.features)
+            .map_err(|e| TranscriptionError::transcription_failure("encoder features", &e))?;
+
+        // --- Encoder: mel features → hidden states ---
+        let encoder_outputs = self
+            .encoder
+            .run(ort::inputs!["input_features" => features_value])
+            .map_err(|e| TranscriptionError::transcription_failure("encoder forward pass", &e))?;
+
+        let (_, encoder_hidden) = encoder_outputs.into_iter().next().ok_or_else(|| {
+            TranscriptionError::transcription_failure("encoder", "produced no output")
+        })?;
+
+        // --- Decoder: autoregressive token generation ---
+        let text = autoregressive_decode(&mut self.decoder, &encoder_hidden, &self.vocab)?;
+
+        Ok(Transcript {
+            segments: Vec::new(),
+            text: text.trim().to_string(),
+        })
+    }
 }
 
 fn load_cohere_model(
@@ -199,9 +169,7 @@ fn load_cohere_model(
     Ok(LoadedCohereModel {
         decoder,
         encoder,
-        gpu_config,
         mel_extractor,
-        model_dir: model_dir.to_path_buf(),
         vocab,
     })
 }
@@ -257,7 +225,6 @@ fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
 /// files outside the model directory itself when the chosen model path lives in
 /// an arbitrary user directory.
 fn find_tokens_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
-    // Check model_dir itself first, then parent (for tokenizer.json at repo root).
     let search_dirs: Vec<&Path> = if let Some(parent) = model_dir.parent() {
         vec![model_dir, parent]
     } else {
@@ -279,10 +246,6 @@ fn find_tokens_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
     )))
 }
 
-// ---------------------------------------------------------------------------
-// Tokenizer
-// ---------------------------------------------------------------------------
-
 fn load_vocab(path: &Path) -> Result<HashMap<u32, String>, TranscriptionError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
         TranscriptionError::invalid_model_with_details(format!(
@@ -302,8 +265,6 @@ fn load_vocab(path: &Path) -> Result<HashMap<u32, String>, TranscriptionError> {
     }
 }
 
-/// Parse a HuggingFace `tokenizer.json` file.
-/// The vocab lives at `model.vocab` as `{ token_string: id, ... }`.
 fn load_vocab_from_json(content: &str) -> Result<HashMap<u32, String>, TranscriptionError> {
     let root: serde_json::Value = serde_json::from_str(content).map_err(|e| {
         TranscriptionError::invalid_model_with_details(format!(
@@ -331,7 +292,6 @@ fn load_vocab_from_json(content: &str) -> Result<HashMap<u32, String>, Transcrip
     Ok(vocab)
 }
 
-/// Parse a tab-separated `tokens.txt` file (id\ttoken per line).
 fn load_vocab_from_tsv(content: &str) -> Result<HashMap<u32, String>, TranscriptionError> {
     let mut vocab = HashMap::new();
 
@@ -368,7 +328,6 @@ fn detokenize(token_ids: &[i64], vocab: &HashMap<u32, String>) -> String {
     for &id in token_ids {
         let id = id as u32;
 
-        // Skip special/control tokens (IDs 0-254 are added_tokens).
         const SPECIAL_TOKEN_BOUNDARY: u32 = 255;
         if id < SPECIAL_TOKEN_BOUNDARY {
             continue;
@@ -384,15 +343,12 @@ fn detokenize(token_ids: &[i64], vocab: &HashMap<u32, String>) -> String {
 }
 
 fn decode_bpe_bytes(text: &str) -> String {
-    // Step 1: Replace ▁ (U+2581) with space (tokenizer decoder pipeline rule)
     let text = text.replace('\u{2581}', " ");
-    // Step 2: ByteFallback — decode <0xNN> byte tokens
     let mut result = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
 
     while i < bytes.len() {
-        // Check for <0xNN> byte token pattern.
         if bytes[i] == b'<'
             && i + 5 < bytes.len()
             && bytes[i + 1] == b'0'
@@ -414,10 +370,6 @@ fn decode_bpe_bytes(text: &str) -> String {
     String::from_utf8_lossy(&result).to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Autoregressive decode
-// ---------------------------------------------------------------------------
-
 type NamedInput<'v> = (Cow<'v, str>, SessionInputValue<'v>);
 
 fn autoregressive_decode(
@@ -430,8 +382,6 @@ fn autoregressive_decode(
     let mut kv_cache: Option<Vec<DynValue>> = None;
     let mut past_seq_len: i64 = 0;
 
-    // KV cache names: past_key_values.{layer}.{decoder,encoder}.{key,value}
-    // Must match the ONNX decoder model input names exactly.
     let cache_names: Vec<String> = (0..NUM_DECODER_LAYERS)
         .flat_map(|layer| {
             ["decoder", "encoder"]
@@ -453,20 +403,16 @@ fn autoregressive_decode(
 
         let seq_len = input_ids.len();
 
-        // input_ids: [1, seq_len]
         let input_ids_arr = ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
             .map_err(|e| TranscriptionError::transcription_failure("decoder input shape", &e))?;
 
-        // position_ids: [1, seq_len] — absolute positions starting at past_seq_len
         let positions: Vec<i64> = (past_seq_len..past_seq_len + seq_len as i64).collect();
         let position_ids_arr = ndarray::Array2::from_shape_vec((1, seq_len), positions)
             .map_err(|e| TranscriptionError::transcription_failure("decoder position_ids", &e))?;
 
-        // attention_mask: [1, total_seq_len] — all ones (no padding in single-utterance)
         let total_len = past_seq_len as usize + seq_len;
         let attn_mask_arr = ndarray::Array2::from_elem((1, total_len), 1_i64);
 
-        // num_logits_to_keep: scalar i64 — only produce logits for the last token
         let num_logits_arr = ndarray::Array0::from_elem((), 1_i64);
 
         let input_ids_value = Value::from_array(input_ids_arr)
@@ -489,7 +435,6 @@ fn autoregressive_decode(
             SessionInputValue::from(encoder_hidden),
         ));
 
-        // KV cache inputs.
         if let Some(ref cache_values) = kv_cache {
             for (idx, name) in cache_names.iter().enumerate() {
                 inputs.push((
@@ -533,8 +478,6 @@ fn autoregressive_decode(
             .run(inputs)
             .map_err(|e| TranscriptionError::transcription_failure("decoder forward pass", &e))?;
 
-        // Separate logits (first output) from KV cache (remaining outputs).
-        // Output order: logits, then present.{layer}.{decoder,encoder}.{key,value}
         let mut output_iter = decoder_outputs.into_iter();
 
         let (_, logits_value) = output_iter.next().ok_or_else(|| {
@@ -550,7 +493,6 @@ fn autoregressive_decode(
         generated_ids.push(best_id);
         past_seq_len += seq_len as i64;
 
-        // Collect updated KV cache tensors from remaining decoder outputs.
         let new_cache: Vec<DynValue> = output_iter.map(|(_, v)| v).collect();
         if new_cache.len() == cache_names.len() {
             kv_cache = Some(new_cache);
@@ -560,8 +502,6 @@ fn autoregressive_decode(
     Ok(detokenize(&generated_ids, vocab))
 }
 
-/// Extract the token ID with the highest logit at the last sequence position.
-/// Handles both f32 (int8/default) and f16 (fp16) model outputs.
 fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
     if let Ok((shape, data)) = logits_value.try_extract_tensor::<f32>() {
         return argmax_from_logits(shape, data);
@@ -608,22 +548,18 @@ fn argmax_from_logits(dims: &[i64], logits_data: &[f32]) -> Result<i64, Transcri
 
 fn build_prompt_tokens() -> Vec<i64> {
     vec![
-        TOKEN_DECODER_START,       // ▁
-        TOKEN_START_OF_CONTEXT,    // <|startofcontext|>
-        TOKEN_START_OF_TRANSCRIPT, // <|startoftranscript|>
-        TOKEN_EMO_UNDEFINED,       // <|emo:undefined|>
-        TOKEN_LANG_EN,             // <|en|> (first)
-        TOKEN_LANG_EN,             // <|en|> (second — official repeats this)
-        TOKEN_PNC_ON,              // <|pnc|>
-        TOKEN_NO_ITN,              // <|noitn|>
-        TOKEN_NO_TIMESTAMP,        // <|notimestamp|>
-        TOKEN_NO_DIARIZE,          // <|nodiarize|>
+        TOKEN_DECODER_START,
+        TOKEN_START_OF_CONTEXT,
+        TOKEN_START_OF_TRANSCRIPT,
+        TOKEN_EMO_UNDEFINED,
+        TOKEN_LANG_EN,
+        TOKEN_LANG_EN,
+        TOKEN_PNC_ON,
+        TOKEN_NO_ITN,
+        TOKEN_NO_TIMESTAMP,
+        TOKEN_NO_DIARIZE,
     ]
 }
-
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
 
 fn validate_audio_duration(audio_samples: &[f32]) -> Result<(), TranscriptionError> {
     let duration_secs = audio_samples.len() as f32 / SAMPLE_RATE as f32;
@@ -640,20 +576,17 @@ fn validate_audio_duration(audio_samples: &[f32]) -> Result<(), TranscriptionErr
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::transcription::TranscriptionBackend;
+    use crate::engine::traits::ModelFamilyAdapter;
 
     #[test]
     fn probe_rejects_missing_encoder() {
-        let result = CohereBackend::probe_model(Path::new("/tmp/nonexistent/encoder_model.onnx"));
+        let adapter = CohereTranscribeAdapter::new();
+        let result = adapter.probe_model(Path::new("/tmp/nonexistent/encoder_model.onnx"));
         let error = result.expect_err("should fail");
         assert_eq!(error.code, "missing_model_file");
     }
@@ -664,7 +597,10 @@ mod tests {
         let encoder = temp.join("encoder_model_fp16.onnx");
         std::fs::write(&encoder, b"fake").unwrap();
 
-        let error = CohereBackend::probe_model(&encoder).expect_err("should fail without decoder");
+        let adapter = CohereTranscribeAdapter::new();
+        let error = adapter
+            .probe_model(&encoder)
+            .expect_err("should fail without decoder");
         assert!(error.details.unwrap().contains("decoder"));
 
         let _ = std::fs::remove_dir_all(&temp);
@@ -676,7 +612,9 @@ mod tests {
         std::fs::write(temp.join("encoder_model_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
 
-        let error = CohereBackend::probe_model(&temp.join("encoder_model_fp16.onnx"))
+        let adapter = CohereTranscribeAdapter::new();
+        let error = adapter
+            .probe_model(&temp.join("encoder_model_fp16.onnx"))
             .expect_err("should fail without tokenizer");
         assert!(error.details.unwrap().contains("tokenizer"));
 
@@ -690,7 +628,12 @@ mod tests {
         std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
 
-        assert!(CohereBackend::probe_model(&temp.join("encoder_model_fp16.onnx")).is_ok());
+        let adapter = CohereTranscribeAdapter::new();
+        assert!(
+            adapter
+                .probe_model(&temp.join("encoder_model_fp16.onnx"))
+                .is_ok()
+        );
 
         let _ = std::fs::remove_dir_all(&temp);
     }
@@ -702,15 +645,18 @@ mod tests {
         std::fs::write(temp.join("decoder_model_merged_quantized.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
 
-        assert!(CohereBackend::probe_model(&temp.join("encoder_model_quantized.onnx")).is_ok());
+        let adapter = CohereTranscribeAdapter::new();
+        assert!(
+            adapter
+                .probe_model(&temp.join("encoder_model_quantized.onnx"))
+                .is_ok()
+        );
 
         let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
     fn probe_succeeds_with_tokenizer_json_in_parent() {
-        // Simulates the HuggingFace layout: onnx/ subdir with models,
-        // tokenizer.json at repo root (parent of onnx/).
         let temp = temp_dir("probe-ok-json");
         let onnx_dir = temp.join("onnx");
         std::fs::create_dir_all(&onnx_dir).unwrap();
@@ -718,7 +664,12 @@ mod tests {
         std::fs::write(onnx_dir.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokenizer.json"), b"{}").unwrap();
 
-        assert!(CohereBackend::probe_model(&onnx_dir.join("encoder_model_fp16.onnx")).is_ok());
+        let adapter = CohereTranscribeAdapter::new();
+        assert!(
+            adapter
+                .probe_model(&onnx_dir.join("encoder_model_fp16.onnx"))
+                .is_ok()
+        );
 
         let _ = std::fs::remove_dir_all(&temp);
     }
@@ -779,7 +730,6 @@ mod tests {
 
     #[test]
     fn decode_bpe_bytes_converts_word_separator() {
-        // U+2581 (▁) is the BPE word separator; should become ASCII space
         assert_eq!(
             decode_bpe_bytes("\u{2581}Hello\u{2581}world"),
             " Hello world"
@@ -818,16 +768,16 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                TOKEN_DECODER_START,       // ▁
-                TOKEN_START_OF_CONTEXT,    // <|startofcontext|>
-                TOKEN_START_OF_TRANSCRIPT, // <|startoftranscript|>
-                TOKEN_EMO_UNDEFINED,       // <|emo:undefined|>
-                TOKEN_LANG_EN,             // <|en|>
-                TOKEN_LANG_EN,             // <|en|> (repeated)
-                TOKEN_PNC_ON,              // <|pnc|>
-                TOKEN_NO_ITN,              // <|noitn|>
-                TOKEN_NO_TIMESTAMP,        // <|notimestamp|>
-                TOKEN_NO_DIARIZE,          // <|nodiarize|>
+                TOKEN_DECODER_START,
+                TOKEN_START_OF_CONTEXT,
+                TOKEN_START_OF_TRANSCRIPT,
+                TOKEN_EMO_UNDEFINED,
+                TOKEN_LANG_EN,
+                TOKEN_LANG_EN,
+                TOKEN_PNC_ON,
+                TOKEN_NO_ITN,
+                TOKEN_NO_TIMESTAMP,
+                TOKEN_NO_DIARIZE,
             ]
         );
     }

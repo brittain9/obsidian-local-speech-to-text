@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::EngineId;
+use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
 
 const BUNDLED_CATALOG_JSON: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/catalog.json"));
@@ -14,16 +14,28 @@ pub struct ModelCatalog {
     #[serde(rename = "catalogVersion")]
     pub catalog_version: u32,
     pub collections: Vec<ModelCollection>,
-    pub engines: Vec<ModelEngine>,
+    pub runtimes: Vec<ModelRuntimeDescriptor>,
+    pub families: Vec<ModelFamilyDescriptor>,
     pub models: Vec<CatalogModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelEngine {
+pub struct ModelRuntimeDescriptor {
+    #[serde(rename = "runtimeId")]
+    pub runtime_id: RuntimeId,
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(rename = "engineId")]
-    pub engine_id: EngineId,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelFamilyDescriptor {
+    #[serde(rename = "familyId")]
+    pub family_id: ModelFamilyId,
+    #[serde(rename = "runtimeId")]
+    pub runtime_id: RuntimeId,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
     pub summary: String,
 }
 
@@ -39,14 +51,14 @@ pub struct ModelCollection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogModel {
     pub artifacts: Vec<ModelArtifact>,
-    #[serde(rename = "capabilityFlags")]
-    pub capability_flags: Vec<String>,
     #[serde(rename = "collectionId")]
     pub collection_id: String,
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(rename = "engineId")]
-    pub engine_id: EngineId,
+    #[serde(rename = "runtimeId")]
+    pub runtime_id: RuntimeId,
+    #[serde(rename = "familyId")]
+    pub family_id: ModelFamilyId,
     #[serde(rename = "languageTags")]
     pub language_tags: Vec<String>,
     #[serde(rename = "licenseLabel")]
@@ -94,10 +106,17 @@ impl ModelCatalog {
         Ok(catalog)
     }
 
-    pub fn find_model(&self, engine_id: EngineId, model_id: &str) -> Option<&CatalogModel> {
-        self.models
-            .iter()
-            .find(|model| model.engine_id == engine_id && model.model_id == model_id)
+    pub fn find_model(
+        &self,
+        runtime_id: RuntimeId,
+        family_id: ModelFamilyId,
+        model_id: &str,
+    ) -> Option<&CatalogModel> {
+        self.models.iter().find(|model| {
+            model.runtime_id == runtime_id
+                && model.family_id == family_id
+                && model.model_id == model_id
+        })
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -106,17 +125,36 @@ impl ModelCatalog {
             "catalogVersion must be a positive integer"
         );
 
-        let mut engine_ids = HashSet::new();
-
-        for engine in &self.engines {
+        let mut runtime_ids = HashSet::new();
+        for runtime in &self.runtimes {
             ensure!(
-                engine_ids.insert(engine.engine_id),
-                "duplicate engineId {}",
-                engine.engine_id.as_str()
+                runtime_ids.insert(runtime.runtime_id),
+                "duplicate runtimeId {}",
+                runtime.runtime_id.as_str()
             );
             ensure!(
-                !engine.display_name.trim().is_empty(),
-                "engine displayName must not be empty"
+                !runtime.display_name.trim().is_empty(),
+                "runtime displayName must not be empty"
+            );
+        }
+
+        let mut family_pairs = HashSet::new();
+        for family in &self.families {
+            ensure!(
+                runtime_ids.contains(&family.runtime_id),
+                "family {} references unknown runtimeId {}",
+                family.family_id.as_str(),
+                family.runtime_id.as_str()
+            );
+            ensure!(
+                family_pairs.insert((family.runtime_id, family.family_id)),
+                "duplicate family pair ({}, {})",
+                family.runtime_id.as_str(),
+                family.family_id.as_str()
+            );
+            ensure!(
+                !family.display_name.trim().is_empty(),
+                "family displayName must not be empty"
             );
         }
 
@@ -138,10 +176,11 @@ impl ModelCatalog {
 
         for model in &self.models {
             ensure!(
-                engine_ids.contains(&model.engine_id),
-                "model {} references unknown engineId {}",
+                family_pairs.contains(&(model.runtime_id, model.family_id)),
+                "model {} references unknown (runtimeId, familyId) ({}, {})",
                 model.model_id,
-                model.engine_id.as_str()
+                model.runtime_id.as_str(),
+                model.family_id.as_str()
             );
             ensure!(
                 collection_ids.contains(&model.collection_id),
@@ -150,10 +189,11 @@ impl ModelCatalog {
                 model.collection_id
             );
             ensure!(
-                model_keys.insert((model.engine_id, model.model_id.clone())),
-                "duplicate modelId {} for engine {}",
+                model_keys.insert((model.runtime_id, model.family_id, model.model_id.clone())),
+                "duplicate modelId {} for ({}, {})",
                 model.model_id,
-                model.engine_id.as_str()
+                model.runtime_id.as_str(),
+                model.family_id.as_str()
             );
 
             let mut artifact_ids = HashSet::new();
@@ -250,9 +290,10 @@ fn is_valid_sha256(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
+        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection,
+        ModelFamilyDescriptor, ModelRuntimeDescriptor,
     };
-    use crate::protocol::EngineId;
+    use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
 
     #[test]
     fn bundled_catalog_is_valid() {
@@ -260,17 +301,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_duplicate_engine_ids() {
+    fn validate_rejects_duplicate_runtime_ids() {
         let error = ModelCatalog {
-            catalog_version: 1,
+            catalog_version: 2,
             collections: vec![sample_collection()],
-            engines: vec![sample_engine(), sample_engine()],
+            runtimes: vec![sample_runtime(), sample_runtime()],
+            families: vec![sample_family()],
             models: vec![sample_model()],
         }
         .validate()
         .expect_err("catalog should fail");
 
-        assert!(error.to_string().contains("duplicate engineId"));
+        assert!(error.to_string().contains("duplicate runtimeId"));
     }
 
     #[test]
@@ -279,9 +321,10 @@ mod tests {
         model.artifacts[0].filename = "../model.bin".to_string();
 
         let error = ModelCatalog {
-            catalog_version: 1,
+            catalog_version: 2,
             collections: vec![sample_collection()],
-            engines: vec![sample_engine()],
+            runtimes: vec![sample_runtime()],
+            families: vec![sample_family()],
             models: vec![model],
         }
         .validate()
@@ -294,10 +337,19 @@ mod tests {
         );
     }
 
-    fn sample_engine() -> ModelEngine {
-        ModelEngine {
-            display_name: "Whisper.cpp".to_string(),
-            engine_id: EngineId::WhisperCpp,
+    fn sample_runtime() -> ModelRuntimeDescriptor {
+        ModelRuntimeDescriptor {
+            runtime_id: RuntimeId::WhisperCpp,
+            display_name: "whisper.cpp".to_string(),
+            summary: "summary".to_string(),
+        }
+    }
+
+    fn sample_family() -> ModelFamilyDescriptor {
+        ModelFamilyDescriptor {
+            family_id: ModelFamilyId::Whisper,
+            runtime_id: RuntimeId::WhisperCpp,
+            display_name: "Whisper".to_string(),
             summary: "summary".to_string(),
         }
     }
@@ -322,10 +374,10 @@ mod tests {
                     .to_string(),
                 size_bytes: 10,
             }],
-            capability_flags: vec!["dictation".to_string()],
             collection_id: "english".to_string(),
             display_name: "Model".to_string(),
-            engine_id: EngineId::WhisperCpp,
+            runtime_id: RuntimeId::WhisperCpp,
+            family_id: ModelFamilyId::Whisper,
             language_tags: vec!["en".to_string()],
             license_label: "MIT".to_string(),
             license_url: "https://example.com/license".to_string(),
