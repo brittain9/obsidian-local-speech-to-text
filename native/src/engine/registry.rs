@@ -29,6 +29,10 @@ impl EngineRegistry {
             registry.register_adapter(Box::new(crate::adapters::whisper::WhisperAdapter::new()));
         }
 
+        // OnnxRuntime is registered inside the Cohere gate because Cohere is the
+        // only ONNX family today. When a second ONNX family lands, lift the
+        // runtime registration to `#[cfg(any(engine-cohere-transcribe, engine-<new>))]`
+        // so it registers once regardless of which ONNX families are enabled.
         #[cfg(feature = "engine-cohere-transcribe")]
         {
             registry.register_runtime(Box::new(crate::runtimes::onnx::OnnxRuntime::probe()));
