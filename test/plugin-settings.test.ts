@@ -169,7 +169,14 @@ describe('resolvePluginSettings', () => {
     expect(resolved.selectedModel).toBeNull();
   });
 
-  it('always stamps the current schema version on returned settings', () => {
+  it('migrates a legacy schemaVersion forward to the current schema', () => {
     expect(resolvePluginSettings({ schemaVersion: 1 }).schemaVersion).toBe(SETTINGS_SCHEMA_VERSION);
+  });
+
+  it('preserves a newer schemaVersion to avoid erasing a downgrade marker', () => {
+    const futureVersion = SETTINGS_SCHEMA_VERSION + 1;
+    expect(resolvePluginSettings({ schemaVersion: futureVersion }).schemaVersion).toBe(
+      futureVersion,
+    );
   });
 });

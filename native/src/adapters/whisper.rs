@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -12,30 +12,17 @@ use crate::transcription::{
     validate_language, validate_model_path,
 };
 
-pub struct WhisperAdapter {
-    capabilities: ModelFamilyCapabilities,
-}
+#[derive(Default)]
+pub struct WhisperAdapter;
 
-impl WhisperAdapter {
-    pub fn new() -> Self {
-        Self {
-            capabilities: ModelFamilyCapabilities {
-                supports_timed_segments: true,
-                supports_initial_prompt: true,
-                supports_language_selection: false,
-                supported_languages: LanguageSupport::EnglishOnly,
-                max_audio_duration_secs: None,
-                produces_punctuation: true,
-            },
-        }
-    }
-}
-
-impl Default for WhisperAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+const CAPABILITIES: ModelFamilyCapabilities = ModelFamilyCapabilities {
+    supports_timed_segments: true,
+    supports_initial_prompt: true,
+    supports_language_selection: false,
+    supported_languages: LanguageSupport::EnglishOnly,
+    max_audio_duration_secs: None,
+    produces_punctuation: true,
+};
 
 impl ModelFamilyAdapter for WhisperAdapter {
     fn runtime_id(&self) -> RuntimeId {
@@ -47,7 +34,7 @@ impl ModelFamilyAdapter for WhisperAdapter {
     }
 
     fn capabilities(&self) -> &ModelFamilyCapabilities {
-        &self.capabilities
+        &CAPABILITIES
     }
 
     fn probe_model(&self, path: &Path) -> Result<(), TranscriptionError> {
@@ -63,28 +50,12 @@ impl ModelFamilyAdapter for WhisperAdapter {
     ) -> Result<Box<dyn LoadedModel>, TranscriptionError> {
         validate_model_path(path)?;
         let context = load_whisper_context(path, &gpu)?;
-        Ok(Box::new(LoadedWhisperModel {
-            context,
-            gpu_config: gpu,
-            model_path: path.to_path_buf(),
-        }))
+        Ok(Box::new(LoadedWhisperModel { context }))
     }
 }
 
 pub struct LoadedWhisperModel {
     context: WhisperContext,
-    gpu_config: GpuConfig,
-    model_path: PathBuf,
-}
-
-impl LoadedWhisperModel {
-    pub fn gpu_config(&self) -> GpuConfig {
-        self.gpu_config
-    }
-
-    pub fn model_path(&self) -> &Path {
-        &self.model_path
-    }
 }
 
 impl LoadedModel for LoadedWhisperModel {

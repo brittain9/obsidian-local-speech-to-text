@@ -7,8 +7,7 @@ use crate::catalog::{
     CatalogModel, ModelCollection, ModelFamilyDescriptor, ModelRuntimeDescriptor,
 };
 use crate::engine::capabilities::{
-    EngineCapabilities, ModelFamilyCapabilities, ModelFamilyId, RequestWarning,
-    RuntimeCapabilities, RuntimeId,
+    ModelFamilyCapabilities, ModelFamilyId, RequestWarning, RuntimeCapabilities, RuntimeId,
 };
 use crate::model_store::InstalledModelRecord;
 use crate::session::SpeakingStyle;
@@ -156,20 +155,6 @@ pub struct CompiledAdapterInfo {
     pub display_name: String,
     #[serde(rename = "familyCapabilities")]
     pub family_capabilities: ModelFamilyCapabilities,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InstalledModelCapabilities {
-    #[serde(rename = "runtimeId")]
-    pub runtime_id: RuntimeId,
-    #[serde(rename = "familyId")]
-    pub family_id: ModelFamilyId,
-    #[serde(rename = "modelId", skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
-    #[serde(rename = "filePath", skip_serializing_if = "Option::is_none")]
-    pub file_path: Option<String>,
-    #[serde(rename = "mergedCapabilities")]
-    pub merged_capabilities: EngineCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -335,8 +320,6 @@ pub enum Event {
         compiled_runtimes: Vec<CompiledRuntimeInfo>,
         #[serde(rename = "compiledAdapters")]
         compiled_adapters: Vec<CompiledAdapterInfo>,
-        #[serde(rename = "installedModels")]
-        installed_models: Vec<InstalledModelCapabilities>,
         #[serde(rename = "systemInfo")]
         system_info: String,
     },

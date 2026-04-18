@@ -6,19 +6,19 @@ use crate::engine::capabilities::{AcceleratorId, ModelFamilyId, RuntimeId};
 use crate::engine::registry::EngineRegistry;
 use crate::installer::{InstallRequest, ModelInstallManager, ModelProbe};
 use crate::model_store::{
-    InstalledModelRecord, remove_installed_model, resolve_catalog_model_runtime_path,
-    resolve_model_store_info, scan_installed_models,
+    remove_installed_model, resolve_catalog_model_runtime_path, resolve_model_store_info,
+    scan_installed_models,
 };
 use crate::protocol::{
     AccelerationPreference, Command, CompiledAdapterInfo, CompiledRuntimeInfo, Event, HealthStatus,
-    InstalledModelCapabilities, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
-    SessionState, SessionStopReason, system_info_string,
+    ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel, SessionState,
+    SessionStopReason, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
     SessionInitError,
 };
-use crate::transcription::{GpuConfig, TranscriptionError};
+use crate::transcription::GpuConfig;
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
@@ -32,7 +32,7 @@ pub enum ControlFlow {
 
 pub struct AppState {
     active_session: Option<ActiveSession>,
-    catalog: ModelCatalog,
+    catalog: Arc<ModelCatalog>,
     install_manager: ModelInstallManager,
     registry: Arc<EngineRegistry>,
     session_factory: SessionFactory,
@@ -90,7 +90,7 @@ impl AppState {
 
         Self {
             active_session: None,
-            catalog,
+            catalog: Arc::new(catalog),
             install_manager: ModelInstallManager::new(model_probe),
             registry: Arc::clone(&registry),
             session_factory,
@@ -298,7 +298,7 @@ impl AppState {
                         match resolve_model_store_info(model_store_path_override.as_deref()) {
                             Ok(info) => {
                                 events.push(self.install_manager.start_install(InstallRequest {
-                                    catalog: self.catalog.clone(),
+                                    catalog: Arc::clone(&self.catalog),
                                     runtime_id,
                                     family_id,
                                     install_id,
@@ -485,43 +485,12 @@ impl AppState {
             })
             .collect();
 
-        let installed_models = self.build_installed_model_capabilities();
-
         Event::SystemInfo {
             sidecar_version: self.sidecar_version.clone(),
             compiled_runtimes,
             compiled_adapters,
-            installed_models,
             system_info: system_info_string(),
         }
-    }
-
-    fn build_installed_model_capabilities(&self) -> Vec<InstalledModelCapabilities> {
-        let store_info = match resolve_model_store_info(None) {
-            Ok(info) => info,
-            Err(_) => return Vec::new(),
-        };
-        let records: Vec<InstalledModelRecord> =
-            match scan_installed_models(&self.catalog, &store_info.path) {
-                Ok(records) => records,
-                Err(_) => return Vec::new(),
-            };
-
-        records
-            .into_iter()
-            .filter_map(|record| {
-                let merged = self
-                    .registry
-                    .merged_capabilities(record.runtime_id, record.family_id)?;
-                Some(InstalledModelCapabilities {
-                    runtime_id: record.runtime_id,
-                    family_id: record.family_id,
-                    model_id: Some(record.model_id),
-                    file_path: record.runtime_path,
-                    merged_capabilities: merged,
-                })
-            })
-            .collect()
     }
 
     fn build_probe_event(
@@ -809,10 +778,15 @@ impl AppState {
                     status,
                     ..
                 } => Box::new(Event::Error {
+                    // A successful probe never reaches this branch: the Err
+                    // path only carries Missing or Invalid statuses. Treating
+                    // Ready as Invalid keeps the dispatch exhaustive without
+                    // falsely signalling success.
                     code: match status {
                         ModelProbeStatus::Missing => "missing_model_file".to_string(),
-                        ModelProbeStatus::Invalid => "invalid_model_file".to_string(),
-                        ModelProbeStatus::Ready => "invalid_model_file".to_string(),
+                        ModelProbeStatus::Invalid | ModelProbeStatus::Ready => {
+                            "invalid_model_file".to_string()
+                        }
                     },
                     details,
                     message,
@@ -824,15 +798,6 @@ impl AppState {
                     None,
                 )),
             })
-    }
-
-    fn probe_model_path(
-        &self,
-        runtime_id: RuntimeId,
-        family_id: ModelFamilyId,
-        path: &Path,
-    ) -> Result<(), TranscriptionError> {
-        self.registry.probe_model(runtime_id, family_id, path)
     }
 
     fn resolve_selected_model(
@@ -907,7 +872,8 @@ impl AppState {
                         },
                     )
                 })?;
-                self.probe_model_path(runtime_id, family_id, &resolved_path)
+                self.registry
+                    .probe_model(runtime_id, family_id, &resolved_path)
                     .map_err(|error| {
                         probe_error(
                             ModelProbeStatus::Invalid,
@@ -959,7 +925,8 @@ impl AppState {
                     ));
                 }
 
-                self.probe_model_path(runtime_id, family_id, model_path)
+                self.registry
+                    .probe_model(runtime_id, family_id, model_path)
                     .map_err(|error| {
                         let status = if error.code == "missing_model_file" {
                             ModelProbeStatus::Missing
@@ -1072,7 +1039,18 @@ fn resolve_use_gpu(
                 .available_accelerators
                 .iter()
                 .any(|accelerator| *accelerator != AcceleratorId::Cpu),
-            None => false,
+            None => {
+                // Reaching here means dispatch picked a runtime the registry
+                // did not register — a registration bug, not a runtime state.
+                // Crash loudly in debug builds so regressions surface during
+                // development while release builds stay on CPU rather than
+                // panicking on a user's machine.
+                debug_assert!(
+                    false,
+                    "resolve_use_gpu called with unregistered runtime {runtime_id:?}"
+                );
+                false
+            }
         },
     }
 }
@@ -1271,7 +1249,6 @@ mod tests {
                 sidecar_version,
                 compiled_runtimes,
                 compiled_adapters,
-                installed_models: _,
                 system_info: _,
             } => {
                 assert_eq!(sidecar_version, "0.1.0");

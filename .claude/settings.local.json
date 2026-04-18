@@ -19,7 +19,9 @@
       "Bash(cargo --version)",
       "Bash(npm run *)",
       "Bash(grep -E \"\\\\.\\(json|ts\\)$\")",
-      "Bash(gh api *)"
+      "Bash(gh api *)",
+      "Bash(gh pr *)",
+      "Read(//tmp/**)"
     ]
   }
 }

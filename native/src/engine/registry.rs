@@ -26,7 +26,7 @@ impl EngineRegistry {
             registry.register_runtime(Box::new(
                 crate::runtimes::whisper_cpp::WhisperCppRuntime::probe(),
             ));
-            registry.register_adapter(Box::new(crate::adapters::whisper::WhisperAdapter::new()));
+            registry.register_adapter(Box::new(crate::adapters::whisper::WhisperAdapter));
         }
 
         // OnnxRuntime is registered inside the Cohere gate because Cohere is the
@@ -37,7 +37,7 @@ impl EngineRegistry {
         {
             registry.register_runtime(Box::new(crate::runtimes::onnx::OnnxRuntime::probe()));
             registry.register_adapter(Box::new(
-                crate::adapters::cohere_transcribe::CohereTranscribeAdapter::new(),
+                crate::adapters::cohere_transcribe::CohereTranscribeAdapter,
             ));
         }
 
@@ -123,9 +123,17 @@ pub fn missing_adapter_error(
     ))
 }
 
-/// Strip request fields the adapter can't honor and return one warning per
-/// dropped field. Zeroing in place keeps the adapter contract simple: adapters
-/// assume any field still set is one they declared support for.
+/// Strip *optional* request fields the adapter can't honor and return one
+/// warning per dropped field. Zeroing in place keeps the adapter contract
+/// simple: adapters assume any field still set is one they declared support
+/// for.
+///
+/// Scope: this function only handles *soft* capability mismatches — fields the
+/// caller may omit without changing the meaning of the request (e.g.
+/// `initial_prompt`). Hard mismatches (unsupported language, audio exceeding
+/// `max_audio_duration_secs`, unsupported model format) must reject the
+/// request with a structured error and are enforced inside the adapter's
+/// `transcribe` implementation rather than here.
 pub fn apply_capability_gates(
     adapter_capabilities: &ModelFamilyCapabilities,
     request: &mut TranscriptionRequest,

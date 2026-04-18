@@ -3,21 +3,19 @@ import type { PluginLogger } from '../shared/plugin-logger';
 import type {
   CompiledAdapterInfo,
   CompiledRuntimeInfo,
-  InstalledModelCapabilities,
   ModelInstallUpdateEvent,
   ModelProbeResultEvent,
   SidecarEvent,
+  SystemInfoEvent,
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import {
   type CatalogModelSelection,
   type InstalledModelRecord,
   type ModelCatalogRecord,
-  type ModelFamilyId,
   type ModelInstallUpdateRecord,
   type ModelStoreRecord,
   matchesModelTriple,
-  type RuntimeId,
   type SelectedModel,
 } from './model-management-types';
 
@@ -40,7 +38,6 @@ export interface ModelManagerState {
   catalog: ModelCatalogRecord;
   compiledAdapters: CompiledAdapterInfo[];
   compiledRuntimes: CompiledRuntimeInfo[];
-  installedModelCapabilities: InstalledModelCapabilities[];
   installedModels: InstalledModelRecord[];
   loadError: string | null;
   loadStatus: LoadStatus;
@@ -113,7 +110,6 @@ const EMPTY_CATALOG: ModelCatalogRecord = {
   collections: [],
   families: [],
   models: [],
-  runtimes: [],
 };
 
 const EMPTY_MODEL_STORE: ModelStoreRecord = {
@@ -136,15 +132,6 @@ function createProbeFailureMessage(probeResult: ModelProbeResultEvent): string {
     : probeResult.message;
 }
 
-function installMatchesCatalogModel(
-  install: ActiveInstallInfo,
-  runtimeId: RuntimeId,
-  familyId: ModelFamilyId,
-  modelId: string,
-): boolean {
-  return matchesModelTriple(install.installUpdate, runtimeId, familyId, modelId);
-}
-
 // ---------------------------------------------------------------------------
 // ModelInstallManager
 // ---------------------------------------------------------------------------
@@ -155,7 +142,6 @@ export class ModelInstallManager {
   private catalog: ModelCatalogRecord = EMPTY_CATALOG;
   private compiledAdapters: CompiledAdapterInfo[] = [];
   private compiledRuntimes: CompiledRuntimeInfo[] = [];
-  private installedModelCapabilities: InstalledModelCapabilities[] = [];
   private installedModels: InstalledModelRecord[] = [];
   private lastLoggedInstallStateKey: string | null = null;
   private readonly listeners = new Set<() => void>();
@@ -198,7 +184,6 @@ export class ModelInstallManager {
       this.modelStore = modelStoreEvent;
       this.compiledRuntimes = systemInfo?.compiledRuntimes ?? [];
       this.compiledAdapters = systemInfo?.compiledAdapters ?? [];
-      this.installedModelCapabilities = systemInfo?.installedModels ?? [];
       this.loadStatus = 'ready';
       this.loadError = null;
     } catch (error) {
@@ -244,7 +229,6 @@ export class ModelInstallManager {
       catalog: this.catalog,
       compiledAdapters: this.compiledAdapters,
       compiledRuntimes: this.compiledRuntimes,
-      installedModelCapabilities: this.installedModelCapabilities,
       installedModels: this.installedModels,
       loadError: this.loadError,
       loadStatus: this.loadStatus,
@@ -386,17 +370,20 @@ export class ModelInstallManager {
     if (
       currentSelection !== null &&
       currentSelection.kind === 'catalog_model' &&
-      currentSelection.runtimeId === selection.runtimeId &&
-      currentSelection.familyId === selection.familyId &&
-      currentSelection.modelId === selection.modelId
+      matchesModelTriple(
+        currentSelection,
+        selection.runtimeId,
+        selection.familyId,
+        selection.modelId,
+      )
     ) {
       throw new Error('Cannot remove the currently selected model. Clear the selection first.');
     }
 
     if (
       this.activeInstall !== null &&
-      installMatchesCatalogModel(
-        this.activeInstall,
+      matchesModelTriple(
+        this.activeInstall.installUpdate,
         selection.runtimeId,
         selection.familyId,
         selection.modelId,
@@ -418,12 +405,7 @@ export class ModelInstallManager {
 
     if (event.removed) {
       this.installedModels = this.installedModels.filter(
-        (m) =>
-          !(
-            m.runtimeId === selection.runtimeId &&
-            m.familyId === selection.familyId &&
-            m.modelId === selection.modelId
-          ),
+        (m) => !matchesModelTriple(m, selection.runtimeId, selection.familyId, selection.modelId),
       );
       this.notify();
     }
@@ -487,15 +469,10 @@ export class ModelInstallManager {
       const overridePayload = createModelStoreOverridePayload(
         this.deps.getSettings().modelStorePathOverride,
       );
-      const [installedEvent, systemInfo] = await Promise.all([
-        this.deps.sidecarConnection.listInstalledModels(overridePayload.modelStorePathOverride),
-        this.fetchSystemInfo(),
-      ]);
+      const installedEvent = await this.deps.sidecarConnection.listInstalledModels(
+        overridePayload.modelStorePathOverride,
+      );
       this.installedModels = installedEvent.models;
-
-      if (systemInfo !== null) {
-        this.installedModelCapabilities = systemInfo.installedModels;
-      }
     } catch (error) {
       this.deps.logger?.warn(
         'model',
@@ -527,18 +504,9 @@ export class ModelInstallManager {
     };
   }
 
-  private async fetchSystemInfo(): Promise<{
-    compiledAdapters: CompiledAdapterInfo[];
-    compiledRuntimes: CompiledRuntimeInfo[];
-    installedModels: InstalledModelCapabilities[];
-  } | null> {
+  private async fetchSystemInfo(): Promise<SystemInfoEvent | null> {
     try {
-      const info = await this.deps.sidecarConnection.getSystemInfo();
-      return {
-        compiledAdapters: info.compiledAdapters,
-        compiledRuntimes: info.compiledRuntimes,
-        installedModels: info.installedModels,
-      };
+      return await this.deps.sidecarConnection.getSystemInfo();
     } catch {
       return null;
     }

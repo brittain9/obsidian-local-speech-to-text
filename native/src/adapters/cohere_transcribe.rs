@@ -42,30 +42,17 @@ const TOKEN_LANG_EN: i64 = 62; // <|en|>
 /// `tokenizer.json`, which the loader now handles natively.
 const TOKENS_CANDIDATES: &[&str] = &["tokens.txt", "tokenizer.json"];
 
-pub struct CohereTranscribeAdapter {
-    capabilities: ModelFamilyCapabilities,
-}
+#[derive(Default)]
+pub struct CohereTranscribeAdapter;
 
-impl CohereTranscribeAdapter {
-    pub fn new() -> Self {
-        Self {
-            capabilities: ModelFamilyCapabilities {
-                supports_timed_segments: false,
-                supports_initial_prompt: false,
-                supports_language_selection: false,
-                supported_languages: LanguageSupport::EnglishOnly,
-                max_audio_duration_secs: Some(MAX_AUDIO_DURATION_SECS),
-                produces_punctuation: true,
-            },
-        }
-    }
-}
-
-impl Default for CohereTranscribeAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+const CAPABILITIES: ModelFamilyCapabilities = ModelFamilyCapabilities {
+    supports_timed_segments: false,
+    supports_initial_prompt: false,
+    supports_language_selection: false,
+    supported_languages: LanguageSupport::EnglishOnly,
+    max_audio_duration_secs: Some(MAX_AUDIO_DURATION_SECS),
+    produces_punctuation: true,
+};
 
 impl ModelFamilyAdapter for CohereTranscribeAdapter {
     fn runtime_id(&self) -> RuntimeId {
@@ -77,7 +64,7 @@ impl ModelFamilyAdapter for CohereTranscribeAdapter {
     }
 
     fn capabilities(&self) -> &ModelFamilyCapabilities {
-        &self.capabilities
+        &CAPABILITIES
     }
 
     fn probe_model(&self, path: &Path) -> Result<(), TranscriptionError> {
@@ -88,8 +75,20 @@ impl ModelFamilyAdapter for CohereTranscribeAdapter {
         })?;
 
         validate_model_path(path)?;
+        let encoder_path = find_encoder_path(model_dir)?;
         find_decoder_path(model_dir)?;
         find_tokens_path(model_dir)?;
+
+        // Parity with whisper: actually load the encoder so corrupt ONNX bytes
+        // or an unsupported opset fail install instead of first transcription.
+        // CPU-only: probe does not care about accelerator choice and the CUDA
+        // EP does not start cheaply enough to be worth registering here.
+        build_session(&encoder_path, GpuConfig { use_gpu: false }).map_err(|error| {
+            TranscriptionError::invalid_model_with_details(format!(
+                "encoder session failed to load: {}",
+                error.details.unwrap_or_else(|| error.message.to_string())
+            ))
+        })?;
 
         Ok(())
     }
@@ -168,8 +167,10 @@ fn load_cohere_model(
 
     let encoder = build_session(&encoder_path, gpu_config)?;
     // Decoder must run on CPU: ORT's CUDA GroupQueryAttention kernel does not
-    // support attention_bias, which the Cohere decoder graph requires.
+    // support attention_bias, which the Cohere decoder graph requires. See
+    // docs/decisions.md D-003 for the platform GPU-support implications.
     let decoder = build_session(&decoder_path, GpuConfig { use_gpu: false })?;
+    verify_decoder_topology(&decoder)?;
     let decoder_uses_fp16 = decoder_past_kv_is_fp16(&decoder);
     let vocab = load_vocab(&tokens_path)?;
     let mel_extractor = crate::mel::MelFeatureExtractor::new();
@@ -210,6 +211,63 @@ fn empty_kv_cache_value(use_fp16: bool) -> Result<DynValue, TranscriptionError> 
             .map(DynValue::from)
     };
     result.map_err(|e| TranscriptionError::transcription_failure("initial KV cache", &e))
+}
+
+/// Validate the decoder graph matches the layer/attention-head constants this
+/// adapter hard-codes elsewhere (cache-name generation, initial KV cache
+/// allocation, prompt tokens). A mismatched checkpoint — an interpolated or
+/// partially-converted model, for example — would otherwise surface as a shape
+/// mismatch inside the first `run()` call with a much less actionable message.
+fn verify_decoder_topology(decoder: &Session) -> Result<(), TranscriptionError> {
+    let mut decoder_kv_layer_count = 0_usize;
+    let mut observed_num_heads: Option<i64> = None;
+    let mut observed_head_dim: Option<i64> = None;
+
+    for input in decoder.inputs().iter() {
+        let name = input.name();
+        if !name.starts_with("past_key_values.") {
+            continue;
+        }
+        // Counting only the decoder self-attention keys avoids double-counting
+        // against cross-attention cache entries (`encoder.key` / `encoder.value`).
+        if !name.ends_with(".decoder.key") {
+            continue;
+        }
+
+        decoder_kv_layer_count += 1;
+
+        if let ValueType::Tensor { shape, .. } = input.dtype()
+            && shape.len() == 4
+        {
+            observed_num_heads.get_or_insert(shape[1]);
+            observed_head_dim.get_or_insert(shape[3]);
+        }
+    }
+
+    if decoder_kv_layer_count != NUM_DECODER_LAYERS {
+        return Err(TranscriptionError::invalid_model_with_details(format!(
+            "decoder layer mismatch: expected {NUM_DECODER_LAYERS} self-attention KV inputs, \
+             found {decoder_kv_layer_count}"
+        )));
+    }
+
+    if let Some(num_heads) = observed_num_heads
+        && num_heads != NUM_HEADS as i64
+    {
+        return Err(TranscriptionError::invalid_model_with_details(format!(
+            "decoder num_heads mismatch: expected {NUM_HEADS}, found {num_heads}"
+        )));
+    }
+
+    if let Some(head_dim) = observed_head_dim
+        && head_dim != HEAD_DIM as i64
+    {
+        return Err(TranscriptionError::invalid_model_with_details(format!(
+            "decoder head_dim mismatch: expected {HEAD_DIM}, found {head_dim}"
+        )));
+    }
+
+    Ok(())
 }
 
 fn decoder_past_kv_is_fp16(decoder: &Session) -> bool {
@@ -579,13 +637,19 @@ fn build_prompt_tokens() -> Vec<i64> {
 }
 
 fn validate_audio_duration(audio_samples: &[f32]) -> Result<(), TranscriptionError> {
+    // Single source of truth: the limit lives in CAPABILITIES so the wire
+    // contract and the runtime check can never drift.
+    let Some(max_secs) = CAPABILITIES.max_audio_duration_secs else {
+        return Ok(());
+    };
+
     let duration_secs = audio_samples.len() as f32 / SAMPLE_RATE as f32;
-    if duration_secs > MAX_AUDIO_DURATION_SECS {
+    if duration_secs > max_secs {
         return Err(TranscriptionError {
             code: "audio_too_long",
             message: "Audio clip exceeds the maximum duration for this engine.",
             details: Some(format!(
-                "duration {duration_secs:.1}s exceeds {MAX_AUDIO_DURATION_SECS}s limit"
+                "duration {duration_secs:.1}s exceeds {max_secs}s limit"
             )),
         });
     }
@@ -602,7 +666,7 @@ mod tests {
 
     #[test]
     fn probe_rejects_missing_encoder() {
-        let adapter = CohereTranscribeAdapter::new();
+        let adapter = CohereTranscribeAdapter;
         let result = adapter.probe_model(Path::new("/tmp/nonexistent/encoder_model.onnx"));
         let error = result.expect_err("should fail");
         assert_eq!(error.code, "missing_model_file");
@@ -614,7 +678,7 @@ mod tests {
         let encoder = temp.join("encoder_model_fp16.onnx");
         std::fs::write(&encoder, b"fake").unwrap();
 
-        let adapter = CohereTranscribeAdapter::new();
+        let adapter = CohereTranscribeAdapter;
         let error = adapter
             .probe_model(&encoder)
             .expect_err("should fail without decoder");
@@ -629,7 +693,7 @@ mod tests {
         std::fs::write(temp.join("encoder_model_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
 
-        let adapter = CohereTranscribeAdapter::new();
+        let adapter = CohereTranscribeAdapter;
         let error = adapter
             .probe_model(&temp.join("encoder_model_fp16.onnx"))
             .expect_err("should fail without tokenizer");
@@ -639,54 +703,60 @@ mod tests {
     }
 
     #[test]
-    fn probe_succeeds_with_tokens_txt() {
-        let temp = temp_dir("probe-ok-tsv");
+    fn probe_rejects_corrupt_encoder_when_tokens_txt_present() {
+        // File layout is valid (every candidate found), but the encoder bytes
+        // are not a real ONNX model. Probe must fail with invalid_model_file
+        // rather than let install report success.
+        let temp = temp_dir("probe-corrupt-tsv");
         std::fs::write(temp.join("encoder_model_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
 
-        let adapter = CohereTranscribeAdapter::new();
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&temp.join("encoder_model_fp16.onnx"))
+            .expect_err("corrupt encoder bytes must fail probe");
+        assert_eq!(error.code, "invalid_model_file");
         assert!(
-            adapter
-                .probe_model(&temp.join("encoder_model_fp16.onnx"))
-                .is_ok()
+            error
+                .details
+                .as_deref()
+                .is_some_and(|details| details.contains("encoder"))
         );
 
         let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
-    fn probe_succeeds_with_quantized_decoder() {
-        let temp = temp_dir("probe-ok-quant");
+    fn probe_finds_quantized_encoder_before_failing_to_load() {
+        let temp = temp_dir("probe-corrupt-quant");
         std::fs::write(temp.join("encoder_model_quantized.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("decoder_model_merged_quantized.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
 
-        let adapter = CohereTranscribeAdapter::new();
-        assert!(
-            adapter
-                .probe_model(&temp.join("encoder_model_quantized.onnx"))
-                .is_ok()
-        );
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&temp.join("encoder_model_quantized.onnx"))
+            .expect_err("corrupt encoder bytes must fail probe");
+        assert_eq!(error.code, "invalid_model_file");
 
         let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
-    fn probe_succeeds_with_tokenizer_json_in_parent() {
-        let temp = temp_dir("probe-ok-json");
+    fn probe_finds_tokenizer_json_in_parent_before_failing_to_load() {
+        let temp = temp_dir("probe-corrupt-json");
         let onnx_dir = temp.join("onnx");
         std::fs::create_dir_all(&onnx_dir).unwrap();
         std::fs::write(onnx_dir.join("encoder_model_fp16.onnx"), b"fake").unwrap();
         std::fs::write(onnx_dir.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokenizer.json"), b"{}").unwrap();
 
-        let adapter = CohereTranscribeAdapter::new();
-        assert!(
-            adapter
-                .probe_model(&onnx_dir.join("encoder_model_fp16.onnx"))
-                .is_ok()
-        );
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&onnx_dir.join("encoder_model_fp16.onnx"))
+            .expect_err("corrupt encoder bytes must fail probe");
+        assert_eq!(error.code, "invalid_model_file");
 
         let _ = std::fs::remove_dir_all(&temp);
     }

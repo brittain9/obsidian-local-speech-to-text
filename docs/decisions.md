@@ -25,10 +25,17 @@ Durable workflow, product, and architecture decisions. Update in the same change
 
   | Platform | Whisper GPU | Cohere GPU | Notes |
   |---|---|---|---|
-  | Windows | CUDA | CUDA | No sandbox, just works |
+  | Windows | CUDA | Encoder only (CUDA) | Decoder pinned to CPU — see Cohere note below |
   | macOS | Metal | CPU only | CoreML not viable; CPU performance is acceptable |
-  | Linux native | CUDA | CUDA | Host env inherited, RPATH resolves |
-  | Linux Flatpak | CUDA | CUDA | Requires advanced setup (see `docs/guides/linux-flatpak-gpu-setup.md`) |
+  | Linux native | CUDA | Encoder only (CUDA) | Decoder pinned to CPU — see Cohere note below |
+  | Linux Flatpak | CUDA | Encoder only (CUDA) | Requires advanced setup (see `docs/guides/linux-flatpak-gpu-setup.md`); decoder still CPU |
+
+- Cohere note: the Cohere Transcribe decoder runs on CPU even when CUDA is the
+  selected accelerator. ORT's CUDA `GroupQueryAttention` kernel does not support
+  the `attention_bias` input that the decoder graph requires, so offloading the
+  decoder triggers a runtime kernel-fallback error. Only the encoder benefits
+  from CUDA today. Enforced in `native/src/adapters/cohere_transcribe.rs` by
+  building the decoder session with `GpuConfig { use_gpu: false }`.
 
 ### D-004: Ships Both Whisper And Cohere Transcribe Families
 

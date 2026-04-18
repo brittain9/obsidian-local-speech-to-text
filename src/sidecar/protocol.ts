@@ -2,7 +2,6 @@ import {
   type AcceleratorAvailability,
   type AcceleratorId,
   type CatalogModelRecord,
-  type EngineCapabilitiesRecord,
   getPrimaryArtifact,
   type InstalledModelRecord,
   isModelFamilyId,
@@ -18,7 +17,6 @@ import {
   type ModelInstallUpdateRecord,
   type ModelProbeResultRecord,
   type ModelRemovedRecord,
-  type ModelRuntimeRecord,
   type ModelStoreRecord,
   normalizeSelectedModel,
   type RequestWarning,
@@ -68,14 +66,6 @@ export interface CompiledAdapterInfo {
   displayName: string;
   familyCapabilities: ModelFamilyCapabilitiesRecord;
   familyId: ModelFamilyId;
-  runtimeId: RuntimeId;
-}
-
-export interface InstalledModelCapabilities {
-  familyId: ModelFamilyId;
-  filePath: string | null;
-  mergedCapabilities: EngineCapabilitiesRecord;
-  modelId: string | null;
   runtimeId: RuntimeId;
 }
 
@@ -162,7 +152,6 @@ export interface HealthOkEvent extends EnvelopeBase<'health_ok'> {
 export interface SystemInfoEvent extends EnvelopeBase<'system_info'> {
   compiledAdapters: CompiledAdapterInfo[];
   compiledRuntimes: CompiledRuntimeInfo[];
-  installedModels: InstalledModelCapabilities[];
   sidecarVersion: string;
   systemInfo: string;
 }
@@ -432,7 +421,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         collections: readModelCollections(parsedValue.collections),
         families: readModelFamilies(parsedValue.families),
         models: readCatalogModels(parsedValue.models),
-        runtimes: readModelRuntimes(parsedValue.runtimes),
         type,
       };
 
@@ -486,7 +474,6 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
       return {
         compiledAdapters: readCompiledAdapters(parsedValue.compiledAdapters),
         compiledRuntimes: readCompiledRuntimes(parsedValue.compiledRuntimes),
-        installedModels: readInstalledModelCapabilities(parsedValue.installedModels),
         sidecarVersion: readString(parsedValue.sidecarVersion, 'event.sidecarVersion'),
         systemInfo: readString(parsedValue.systemInfo, 'event.systemInfo'),
         type,
@@ -868,17 +855,6 @@ function readModelFamilyCapabilities(
   };
 }
 
-function readEngineCapabilities(value: unknown, fieldName: string): EngineCapabilitiesRecord {
-  const record = readRecord(value, fieldName);
-
-  return {
-    family: readModelFamilyCapabilities(record.family, `${fieldName}.family`),
-    familyId: readModelFamilyId(record.familyId, `${fieldName}.familyId`),
-    runtime: readRuntimeCapabilities(record.runtime, `${fieldName}.runtime`),
-    runtimeId: readRuntimeId(record.runtimeId, `${fieldName}.runtimeId`),
-  };
-}
-
 function readCompiledRuntimes(value: unknown): CompiledRuntimeInfo[] {
   return readArray(value, 'event.compiledRuntimes').map((entry, index) => {
     const record = readRecord(entry, `event.compiledRuntimes[${index}]`);
@@ -904,22 +880,6 @@ function readCompiledAdapters(value: unknown): CompiledAdapterInfo[] {
       ),
       familyId: readModelFamilyId(record.familyId, `event.compiledAdapters[${index}].familyId`),
       runtimeId: readRuntimeId(record.runtimeId, `event.compiledAdapters[${index}].runtimeId`),
-    };
-  });
-}
-
-function readInstalledModelCapabilities(value: unknown): InstalledModelCapabilities[] {
-  return readArray(value, 'event.installedModels').map((entry, index) => {
-    const record = readRecord(entry, `event.installedModels[${index}]`);
-    return {
-      familyId: readModelFamilyId(record.familyId, `event.installedModels[${index}].familyId`),
-      filePath: readNullableString(record.filePath, `event.installedModels[${index}].filePath`),
-      mergedCapabilities: readEngineCapabilities(
-        record.mergedCapabilities,
-        `event.installedModels[${index}].mergedCapabilities`,
-      ),
-      modelId: readNullableString(record.modelId, `event.installedModels[${index}].modelId`),
-      runtimeId: readRuntimeId(record.runtimeId, `event.installedModels[${index}].runtimeId`),
     };
   });
 }
@@ -970,18 +930,6 @@ function readTranscriptSegments(value: unknown): TranscriptSegment[] {
       endMs: readNonNegativeNumber(segment.endMs, `event.segments[${index}].endMs`),
       startMs: readNonNegativeNumber(segment.startMs, `event.segments[${index}].startMs`),
       text: readString(segment.text, `event.segments[${index}].text`),
-    };
-  });
-}
-
-function readModelRuntimes(value: unknown): ModelRuntimeRecord[] {
-  return readArray(value, 'event.runtimes').map((entry, index) => {
-    const record = readRecord(entry, `event.runtimes[${index}]`);
-
-    return {
-      displayName: readString(record.displayName, `event.runtimes[${index}].displayName`),
-      runtimeId: readRuntimeId(record.runtimeId, `event.runtimes[${index}].runtimeId`),
-      summary: readString(record.summary, `event.runtimes[${index}].summary`),
     };
   });
 }

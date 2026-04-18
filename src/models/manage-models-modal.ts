@@ -27,7 +27,6 @@ interface ManageModelsModalDependencies {
   onChanged: () => void;
 }
 
-// A tab represents a compiled (runtime, family) adapter.
 interface AdapterTabKey {
   runtimeId: RuntimeId;
   familyId: ModelFamilyId;
@@ -118,7 +117,6 @@ export class ManageModelsModal extends Modal {
         familyId: adapter.familyId,
       }));
 
-    // Default to first adapter if current tab is no longer valid.
     if (
       this.activeTab === null ||
       !adapters.some(
@@ -373,8 +371,6 @@ export class ManageModelsModal extends Modal {
       }
     }
 
-    // Full re-render for terminal events, tab switch, or if the progress
-    // element is not visible.
     this.renderModelList();
   }
 

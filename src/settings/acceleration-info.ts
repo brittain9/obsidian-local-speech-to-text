@@ -31,11 +31,11 @@ export function buildAccelerationSummary(systemInfo: SystemInfoEvent | null): st
     return 'Sidecar capability data is unavailable until the sidecar starts successfully.';
   }
 
-  const gpuRuntimes = systemInfo.compiledRuntimes.filter((runtime) =>
+  const hasGpuRuntime = systemInfo.compiledRuntimes.some((runtime) =>
     runtime.runtimeCapabilities.availableAccelerators.some((id) => id !== 'cpu'),
   );
 
-  if (gpuRuntimes.length === 0) {
+  if (!hasGpuRuntime) {
     return 'This sidecar build is CPU-only.';
   }
 

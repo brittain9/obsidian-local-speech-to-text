@@ -51,7 +51,6 @@ function systemInfo(
   return {
     compiledAdapters: adapters,
     compiledRuntimes: runtimes,
-    installedModels: [],
     sidecarVersion: '0.0.0-test',
     systemInfo: 'stub',
     type: 'system_info',

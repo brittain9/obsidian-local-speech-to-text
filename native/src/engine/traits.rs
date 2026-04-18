@@ -6,14 +6,14 @@ use crate::engine::capabilities::{
 use crate::transcription::{GpuConfig, Transcript, TranscriptionError, TranscriptionRequest};
 
 /// Execution-framework layer. Owns accelerator registration/probe and the
-/// model-file formats it understands. Queried once at startup.
+/// model-file formats it understands.
 pub trait Runtime: Send + Sync {
     fn id(&self) -> RuntimeId;
     fn capabilities(&self) -> &RuntimeCapabilities;
 }
 
 /// Model-family layer. Owns graph I/O names, tokenizer, prompt tokens,
-/// audio limits, and per-model probe rules. Queried once on selection.
+/// audio limits, and per-model probe rules.
 pub trait ModelFamilyAdapter: Send + Sync {
     fn runtime_id(&self) -> RuntimeId;
     fn family_id(&self) -> ModelFamilyId;

@@ -264,6 +264,13 @@ export class DictationSessionController {
       `transcript received (${event.text.length} chars, ${event.processingDurationMs}ms processing)`,
     );
 
+    for (const warning of event.warnings) {
+      this.dependencies.logger?.debug(
+        'session',
+        `capability gate dropped "${warning.field}": ${warning.reason}`,
+      );
+    }
+
     const text = normalizeTranscriptText(event);
 
     if (text === null) {

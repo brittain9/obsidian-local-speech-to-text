@@ -38,13 +38,6 @@ export interface ModelFamilyCapabilitiesRecord {
   producesPunctuation: boolean;
 }
 
-export interface EngineCapabilitiesRecord {
-  runtimeId: RuntimeId;
-  familyId: ModelFamilyId;
-  runtime: RuntimeCapabilitiesRecord;
-  family: ModelFamilyCapabilitiesRecord;
-}
-
 export interface RequestWarning {
   field: string;
   reason: string;
@@ -76,12 +69,6 @@ export interface ModelArtifactRecord {
   role: ModelArtifactRole;
   sha256: string;
   sizeBytes: number;
-}
-
-export interface ModelRuntimeRecord {
-  displayName: string;
-  runtimeId: RuntimeId;
-  summary: string;
 }
 
 export interface ModelFamilyRecord {
@@ -119,7 +106,6 @@ export interface ModelCatalogRecord {
   collections: ModelCollectionRecord[];
   families: ModelFamilyRecord[];
   models: CatalogModelRecord[];
-  runtimes: ModelRuntimeRecord[];
 }
 
 export interface InstalledModelRecord {

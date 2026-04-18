@@ -73,7 +73,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.pauseWhileProcessing,
       DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing,
     ),
-    schemaVersion: SETTINGS_SCHEMA_VERSION,
+    schemaVersion: readSchemaVersion(raw.schemaVersion),
     selectedModel: readSelectedModel(raw.selectedModel),
     sidecarPathOverride: readString(
       raw.sidecarPathOverride,
@@ -113,6 +113,18 @@ function readPositiveInteger(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+/**
+ * Preserve a schemaVersion written by a newer build of the plugin so that a
+ * temporary downgrade does not silently erase that marker. Older or absent
+ * values migrate forward to the current schema.
+ */
+function readSchemaVersion(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= SETTINGS_SCHEMA_VERSION) {
+    return value;
+  }
+  return SETTINGS_SCHEMA_VERSION;
+}
+
 function readInsertionMode(value: unknown): InsertionMode {
   return isInsertionMode(value) ? value : DEFAULT_PLUGIN_SETTINGS.insertionMode;
 }
@@ -135,8 +147,7 @@ function readSelectedModel(selectedModel: unknown): SelectedModel | null {
  * One-shot migration: legacy `{engineId, kind, modelId|filePath}` → new
  * `{runtimeId, familyId, kind, modelId|filePath}`. Unknown legacy engineIds
  * or missing fields collapse to `null`, which the caller resets to the
- * default (no selection). Once schemaVersion 2 becomes universal this can
- * be deleted.
+ * default (no selection).
  */
 function migrateLegacySelection(value: unknown): unknown {
   if (!isRecord(value)) {

@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::future::Future;
-use std::io::Write;
+use std::io::{self, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -36,7 +36,7 @@ pub struct InstallRequest {
     pub model: CatalogModel,
     pub model_id: String,
     pub store_root: PathBuf,
-    pub catalog: ModelCatalog,
+    pub catalog: Arc<ModelCatalog>,
 }
 
 struct ActiveInstall {
@@ -678,17 +678,19 @@ async fn install_model_with_downloader(
         downloaded_total,
     )?;
 
-    if target_dir.exists() {
-        fs::remove_dir_all(&target_dir).map_err(|error| {
+    match fs::remove_dir_all(&target_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
             cleanup_stage_dir(&stage_dir);
-            fail_install(
+            return Err(fail_install(
                 downloaded_total,
                 format!(
                     "Failed to replace existing install {}: {error}",
                     target_dir.display()
                 ),
-            )
-        })?;
+            ));
+        }
     }
 
     fs::create_dir_all(&family_root).map_err(|error| {
@@ -1442,7 +1444,7 @@ mod tests {
         };
 
         InstallRequest {
-            catalog,
+            catalog: Arc::new(catalog),
             runtime_id: RuntimeId::WhisperCpp,
             family_id: ModelFamilyId::Whisper,
             install_id: "install-1".to_string(),

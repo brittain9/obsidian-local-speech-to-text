@@ -92,22 +92,9 @@ describe('sidecar protocol', () => {
       familyId: 'whisper' as const,
       runtimeId: 'whisper_cpp' as const,
     };
-    const installedModel = {
-      familyId: 'whisper' as const,
-      filePath: '/tmp/ggml-small.en-q5_1.bin',
-      mergedCapabilities: {
-        family: familyCapabilities,
-        familyId: 'whisper' as const,
-        runtime: runtimeCapabilities,
-        runtimeId: 'whisper_cpp' as const,
-      },
-      modelId: 'whisper_small_en_q5_1',
-      runtimeId: 'whisper_cpp' as const,
-    };
     const frame = encodeJsonFrame({
       compiledAdapters: [compiledAdapter],
       compiledRuntimes: [compiledRuntime],
-      installedModels: [installedModel],
       sidecarVersion: '0.0.0-test',
       systemInfo: 'AVX = 1 | CUDA = 1',
       type: 'system_info',
@@ -119,7 +106,6 @@ describe('sidecar protocol', () => {
       envelope: {
         compiledAdapters: [compiledAdapter],
         compiledRuntimes: [compiledRuntime],
-        installedModels: [installedModel],
         sidecarVersion: '0.0.0-test',
         systemInfo: 'AVX = 1 | CUDA = 1',
         type: 'system_info',
