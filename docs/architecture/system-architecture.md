@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Local Speech-to-Text is an Obsidian plugin that transcribes speech to text entirely on-device. Audio flows from the microphone through a browser-based capture layer, across a binary protocol into a native Rust sidecar process, through a Whisper (or Cohere) inference engine, and back as text that is inserted into the active editor.
+Local Speech-to-Text is an Obsidian plugin that transcribes speech to text entirely on-device. Audio flows from the microphone through a browser-based capture layer, across a binary protocol into a native Rust sidecar process, through a three-layer engine registry (runtime → family adapter → loaded model), and back as text that is inserted into the active editor.
 
 ```mermaid
 ---
@@ -22,7 +22,7 @@ flowchart LR
     PROTO_TS -->|"stdin"| PROTO_RS["Protocol Decoder"]
 
     subgraph Sidecar ["Rust Sidecar"]
-        PROTO_RS --> SESSION["Session + VAD"] --> WORKER["Inference: Whisper / Cohere"]
+        PROTO_RS --> SESSION["Session + VAD"] --> WORKER["Worker -> EngineRegistry (Runtime / Adapter / LoadedModel)"]
     end
 
     WORKER -->|"stdout"| CTRL["Session Controller"] --> EDITOR["Editor Insert"]
@@ -133,7 +133,7 @@ sequenceDiagram
 | Command | Purpose |
 |---------|---------|
 | `health` | Liveness ping |
-| `get_system_info` | Query compiled backends and runtime capabilities |
+| `get_system_info` | Enumerate compiled runtimes and family adapters (inventory with static capabilities) |
 | `start_session` | Begin transcription (specifies model, mode, sessionId) |
 | `stop_session` | Graceful stop (drain pending transcriptions) |
 | `cancel_session` | Immediate cancel (discard pending) |
@@ -151,17 +151,17 @@ sequenceDiagram
 | Event | Purpose |
 |-------|---------|
 | `health_ok` | Health reply with version |
-| `system_info` | Backend/engine/capability matrix |
+| `system_info` | `compiledRuntimes[]` + `compiledAdapters[]` with declared capabilities |
 | `session_started` | Session confirmed active |
 | `session_state_changed` | State machine transition |
-| `transcript_ready` | Completed transcript with segments + timing |
+| `transcript_ready` | Completed transcript with segments + timing + `warnings[]` for capability-dropped fields |
 | `session_stopped` | Session ended with reason |
 | `warning` | Non-fatal warning |
 | `error` | Fatal error |
 | `model_store` | Model store path info |
 | `model_catalog` | Full catalog payload |
 | `installed_models` | Installed model list |
-| `model_probe_result` | Model availability check result |
+| `model_probe_result` | Availability check + `mergedCapabilities` (`RuntimeCapabilities ⊕ ModelFamilyCapabilities`) for the selected model |
 | `model_install_update` | Install progress updates |
 | `model_removed` | Deletion confirmation |
 
@@ -234,24 +234,37 @@ flowchart LR
     end
 
     subgraph Worker Thread
-        CMD["command_rx.recv()"] --> NORM["Normalize: i16 → f32"]
-        NORM --> WHISPER["Whisper / Cohere Inference"]
-        WHISPER --> SEG["Extract Segments"]
-        SEG --> EVT["WorkerEvent::TranscriptReady"]
+        CMD["command_rx.recv()"] --> LOOKUP["EngineRegistry.adapter(runtimeId, familyId)"]
+        LOOKUP --> GATE["apply_capability_gates -> warnings[]"]
+        GATE --> NORM["Normalize: i16 -> f32"]
+        NORM --> INF["LoadedModel.transcribe(request)"]
+        INF --> EVT["WorkerEvent::TranscriptReady"]
     end
 
     ENQUEUE -->|"mpsc channel"| CMD
     EVT -->|"mpsc channel"| DRAIN["drain_worker_events()"]
 ```
 
-**What it does:** Runs the speech-to-text model on a completed utterance and produces timestamped text segments.
+**What it does:** Looks up the family adapter for the session's `(runtimeId, familyId)`, soft-drops request fields the adapter doesn't declare support for (emitting `RequestWarning[]`), runs the model on the completed utterance, and produces timestamped text segments.
 
-**Key technology:**
+**Three-layer engine abstraction (see D-008):**
 
-| Engine | Library | Model Format | Description |
-|--------|---------|-------------|-------------|
-| `whisper_cpp` | **whisper-rs** (Rust bindings to whisper.cpp) | GGML quantized `.bin` | OpenAI Whisper models, quantized for CPU/GPU |
-| `cohere_onnx` | **ort** (ONNX Runtime for Rust) | ONNX | Cohere Transcribe 2B-param model |
+| Layer | Trait | Owns |
+|---|---|---|
+| Runtime | `Runtime` | Execution-framework concerns: accelerator registration/probe, supported model formats |
+| Family adapter | `ModelFamilyAdapter` | Model-shape semantics: graph I/O, tokenizer, prompt tokens, audio limits, per-model probe rules |
+| Loaded model | `LoadedModel` | Per-session inference state; only `transcribe(&TranscriptionRequest)` is contract |
+
+`EngineRegistry::build()` is the single registration site. Worker dispatch is `registry.lookup((runtimeId, familyId)) → adapter.load → loaded.transcribe`. Capabilities flow to the plugin via two seams: inventory (`system_info.compiledRuntimes[]` + `compiledAdapters[]`) and per-selection merge (`model_probe_result.mergedCapabilities`).
+
+**Compiled runtimes and adapters (today):**
+
+| Runtime | Crate | Model Formats | Adapters Registered Under |
+|---|---|---|---|
+| `whisper_cpp` | **whisper-rs** (Rust bindings to whisper.cpp) | GGML `.bin` | `whisper` family adapter |
+| `onnx_runtime` | **ort** (ONNX Runtime for Rust) | ONNX | `cohere_transcribe` family adapter |
+
+Cargo features: `engine-whisper`, `engine-cohere-transcribe`, `gpu-metal`, `gpu-cuda`, `gpu-ort-cuda`. Missing `(runtimeId, familyId)` pairs surface as `unsupported_engine` errors rather than silent failures.
 
 **Whisper inference parameters:**
 - Strategy: `Greedy { best_of: 0 }`
@@ -263,6 +276,7 @@ flowchart LR
 
 **Worker architecture:**
 - Dedicated thread communicating via two `mpsc` channels (commands in, events out)
+- Holds `Arc<EngineRegistry>`; dispatches via `(runtimeId, familyId)` lookup on each `BeginSession`
 - All inference is **synchronous and blocking** in the worker thread
 - Back-pressure: `MAX_QUEUED_UTTERANCES = 1`. If a transcription is in-flight and 1 is already queued, additional utterances are **dropped** with a warning event
 - `pause_while_processing` setting (default `true`): discards incoming audio frames while the worker is busy, preventing unbounded queue growth
@@ -270,18 +284,18 @@ flowchart LR
 
 **Available models:**
 
-| Model | Engine | Quantization | Size | Notes |
+| Model | Runtime · Family | Quantization | Size | Notes |
 |-------|--------|-------------|------|-------|
-| Whisper Tiny EN | whisper_cpp | Q8_0 | 42 MB | Fastest, lowest quality |
-| Whisper Base EN | whisper_cpp | Q8_0 | 78 MB | |
-| Whisper Small EN | whisper_cpp | Q5_1 | 181 MB | Recommended starter |
-| Whisper Medium EN | whisper_cpp | Q5_0 | 514 MB | |
-| Whisper Large V3 Turbo | whisper_cpp | Q8_0 | 834 MB | Best with GPU |
-| Cohere Transcribe FP16 | cohere_onnx | FP16 | 3.8 GB | 2B params, 14 languages |
-| Cohere Transcribe INT8 | cohere_onnx | INT8 | 2.9 GB | |
-| Cohere Transcribe Q4 | cohere_onnx | Q4 | 2.0 GB | |
+| Whisper Tiny EN | `whisper_cpp` · `whisper` | Q8_0 | 42 MB | Fastest, lowest quality |
+| Whisper Base EN | `whisper_cpp` · `whisper` | Q8_0 | 78 MB | |
+| Whisper Small EN | `whisper_cpp` · `whisper` | Q5_1 | 181 MB | Recommended starter |
+| Whisper Medium EN | `whisper_cpp` · `whisper` | Q5_0 | 514 MB | |
+| Whisper Large V3 Turbo | `whisper_cpp` · `whisper` | Q8_0 | 834 MB | Best with GPU |
+| Cohere Transcribe FP16 | `onnx_runtime` · `cohere_transcribe` | FP16 | 3.8 GB | 2B params, 14 languages |
+| Cohere Transcribe INT8 | `onnx_runtime` · `cohere_transcribe` | INT8 | 2.9 GB | |
+| Cohere Transcribe Q4 | `onnx_runtime` · `cohere_transcribe` | Q4 | 2.0 GB | |
 
-**Code weight:** ~540 LOC (`worker.rs` 214 + `transcription.rs` 326) for whisper, ~846 LOC (`cohere.rs`) for Cohere, ~431 LOC (`mel.rs`) for audio preprocessing.
+**Code weight:** engine abstraction surface ~670 LOC (`engine/registry.rs` 406 + `engine/capabilities.rs` 218 + `engine/traits.rs` 34 + mods); Whisper path ~180 LOC (`adapters/whisper.rs` 138 + `runtimes/whisper_cpp.rs` 42); Cohere path ~980 LOC (`adapters/cohere_transcribe.rs` 883 + `runtimes/onnx.rs` 97); worker dispatch ~230 LOC (`worker.rs`); shared transcription surface ~155 LOC (`transcription.rs`); audio preprocessing ~431 LOC (`mel.rs`).
 
 **Time cost: This is the bottleneck.** Inference time depends heavily on model size, hardware, and utterance length. The `processing_duration_ms` field in `transcript_ready` events tracks this. Typical ranges:
 
@@ -429,7 +443,7 @@ gantt
 | Audio capture | 410 | -- | 410 | 3% |
 | Protocol + transport | 1,700 | 655 | 2,355 | 16% |
 | Session + VAD + boundary | 468 | 865 | 1,333 | 9% |
-| Inference engines | -- | 1,820 | 1,820 | 12% |
+| Engine registry + adapters + runtimes | -- | 1,830 | 1,830 | 12% |
 | Model management | 1,630 | 1,170 | 2,800 | 19% |
 | Plugin orchestration + UI | 1,270 | -- | 1,270 | 8% |
 | Settings + commands | 800 | -- | 800 | 5% |

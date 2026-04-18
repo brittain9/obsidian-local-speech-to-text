@@ -1,5 +1,5 @@
-import type { CompiledAdapterInfo, CompiledRuntimeInfo } from '../sidecar/protocol';
 import { formatAcceleratorLabel } from '../settings/acceleration-info';
+import type { CompiledAdapterInfo, CompiledRuntimeInfo } from '../sidecar/protocol';
 import type {
   EngineCapabilitiesRecord,
   ModelFamilyCapabilitiesRecord,

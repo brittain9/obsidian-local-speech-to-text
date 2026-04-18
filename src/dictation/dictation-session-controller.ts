@@ -264,6 +264,9 @@ export class DictationSessionController {
       `transcript received (${event.text.length} chars, ${event.processingDurationMs}ms processing)`,
     );
 
+    // Capability-gate warnings are intentionally dev-console only (see D-008) —
+    // users don't need to know the worker soft-dropped an unsupported field.
+    // Do not surface these via Notice.
     for (const warning of event.warnings) {
       this.dependencies.logger?.debug(
         'session',

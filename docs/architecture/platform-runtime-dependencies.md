@@ -95,7 +95,7 @@ The full Flatpak GPU setup procedure is documented in `docs/guides/linux-flatpak
 
 ## Engine Runtime Paths
 
-Whisper and Cohere do not use identical GPU runtime paths, even within the same sidecar binary.
+The two compiled `Runtime` implementations (`whisper_cpp` and `onnx_runtime`) do not share GPU paths, even within the same sidecar binary.
 
 ### Whisper (whisper-rs / whisper.cpp)
 
@@ -119,15 +119,15 @@ This means Cohere CUDA has a strictly larger dependency set than Whisper CUDA: i
 
 ## Runtime Capability Probing
 
-The sidecar probes GPU availability at startup and caches the results. The plugin displays per-engine effective backends in the settings UI.
+Accelerator probing lives on the `Runtime` layer (D-008). Each compiled `Runtime` reports `RuntimeCapabilities { availableAccelerators, acceleratorDetails, supportedModelFormats }` at startup; results are cached and surfaced to the plugin through `system_info.compiledRuntimes[]`. Per-selection merges (`model_probe_result.mergedCapabilities`) combine runtime caps with the family adapter's `ModelFamilyCapabilities`.
 
-| Engine | Probe method |
+| Runtime | Probe method |
 |---|---|
-| Whisper (Metal) | Compile-time: reports available if built with `gpu-metal` on macOS |
-| Whisper (CUDA) | Fast heuristic: checks for `/dev/nvidiactl` and `/dev/nvidia0` device nodes |
-| Cohere (CUDA) | Full probe: attempts ONNX Runtime CUDA EP registration via `CUDAExecutionProvider::is_available()` + `.build().error_on_failure()` |
+| `whisper_cpp` (Metal) | Compile-time: reports available if built with `gpu-metal` on macOS |
+| `whisper_cpp` (CUDA) | Fast heuristic: checks for `/dev/nvidiactl` and `/dev/nvidia0` device nodes |
+| `onnx_runtime` (CUDA) | Full probe: attempts ONNX Runtime CUDA EP registration via `CUDAExecutionProvider::is_available()` + `.build().error_on_failure()` |
 
-The Cohere probe is stronger — it catches missing userspace libraries, driver mismatches, and cuDNN version issues. The Whisper probe confirms the driver is loaded but does not verify the full library chain. If the Whisper probe reports CUDA available but inference fails, the root cause is usually a missing CUDA userspace library.
+The `onnx_runtime` probe is stronger — it catches missing userspace libraries, driver mismatches, and cuDNN version issues. The `whisper_cpp` probe confirms the driver is loaded but does not verify the full library chain. If the Whisper probe reports CUDA available but inference fails, the root cause is usually a missing CUDA userspace library.
 
 ## Bundling Principles
 
