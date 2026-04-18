@@ -2,6 +2,7 @@ import type { App } from 'obsidian';
 import { Modal, Notice, Setting } from 'obsidian';
 
 import { formatBytes, formatErrorMessage } from '../shared/format-utils';
+import { resolveEngineCapabilities } from './capability-view';
 import { isCancellingPhase, type ModelInstallManager } from './model-install-manager';
 import {
   createInstallProgressElement,
@@ -325,10 +326,17 @@ export class ManageModelsModal extends Modal {
                 const installedModel = state.installedModels.find((m) =>
                   matchesModelTriple(m, row.model.runtimeId, row.model.familyId, row.model.modelId),
                 );
+                const capabilities = resolveEngineCapabilities(
+                  state.compiledRuntimes,
+                  state.compiledAdapters,
+                  row.model.runtimeId,
+                  row.model.familyId,
+                );
                 new ModelDetailsModal(
                   this.app,
                   row.model,
                   installedModel?.installPath ?? null,
+                  capabilities,
                 ).open();
               });
           });

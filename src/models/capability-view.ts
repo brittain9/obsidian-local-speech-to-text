@@ -1,90 +1,68 @@
-import type { ModelManagerState } from './model-install-manager';
+import type { CompiledAdapterInfo, CompiledRuntimeInfo } from '../sidecar/protocol';
+import { formatAcceleratorLabel } from '../settings/acceleration-info';
 import type {
   EngineCapabilitiesRecord,
   ModelFamilyCapabilitiesRecord,
   ModelFamilyId,
+  ModelFormat,
   RuntimeId,
-  SelectedModelCapabilities,
 } from './model-management-types';
 
-export interface CapabilityRow {
-  label: string;
-  value: string;
+const MODEL_FORMAT_LABELS: Record<ModelFormat, string> = {
+  ggml: 'GGML',
+  gguf: 'GGUF',
+  onnx: 'ONNX',
+};
+
+export function resolveEngineCapabilities(
+  compiledRuntimes: readonly CompiledRuntimeInfo[],
+  compiledAdapters: readonly CompiledAdapterInfo[],
+  runtimeId: RuntimeId,
+  familyId: ModelFamilyId,
+): EngineCapabilitiesRecord | null {
+  const runtime = compiledRuntimes.find((r) => r.runtimeId === runtimeId);
+  const adapter = compiledAdapters.find(
+    (a) => a.runtimeId === runtimeId && a.familyId === familyId,
+  );
+  if (runtime === undefined || adapter === undefined) return null;
+  return {
+    family: adapter.familyCapabilities,
+    familyId,
+    runtime: runtime.runtimeCapabilities,
+    runtimeId,
+  };
 }
 
-export type CapabilityView =
-  | { status: 'none' }
-  | { status: 'pending' }
-  | { status: 'unavailable'; message: string }
-  | { status: 'ready'; rows: CapabilityRow[] };
+export function buildCapabilityLabels(caps: EngineCapabilitiesRecord): string[] {
+  const labels: string[] = [];
 
-export function buildCapabilityView(state: ModelManagerState): CapabilityView {
-  const caps = state.selectedModelCapabilities;
-
-  switch (caps.status) {
-    case 'none':
-      return { status: 'none' };
-    case 'pending':
-      return { status: 'pending' };
-    case 'unavailable':
-      return { message: describeUnavailableReason(caps), status: 'unavailable' };
-    case 'ready':
-      return { rows: buildReadyCapabilityRows(state, caps.capabilities), status: 'ready' };
-  }
-}
-
-function describeUnavailableReason(
-  caps: Extract<SelectedModelCapabilities, { status: 'unavailable' }>,
-): string {
-  switch (caps.reason) {
-    case 'invalid':
-      return caps.details ?? 'Selected model file is invalid.';
-    case 'missing':
-      return caps.details ?? 'Selected model is not installed.';
-    case 'probe_failed':
-      return 'Capability detection failed.';
-  }
-}
-
-function buildReadyCapabilityRows(
-  state: ModelManagerState,
-  capabilities: EngineCapabilitiesRecord,
-): CapabilityRow[] {
-  const rows: CapabilityRow[] = [
-    { label: 'Runtime', value: resolveRuntimeDisplayName(state, capabilities.runtimeId) },
-    {
-      label: 'Model family',
-      value: resolveFamilyDisplayName(state, capabilities.runtimeId, capabilities.familyId),
-    },
-    {
-      label: 'Accelerators',
-      value:
-        capabilities.runtime.availableAccelerators.length > 0
-          ? capabilities.runtime.availableAccelerators.join(', ')
-          : 'CPU only',
-    },
-    { label: 'Model formats', value: capabilities.runtime.supportedModelFormats.join(', ') },
-    { label: 'Timed segments', value: yesNo(capabilities.family.supportsTimedSegments) },
-    { label: 'Initial prompt', value: yesNo(capabilities.family.supportsInitialPrompt) },
-    { label: 'Language support', value: describeLanguageSupport(capabilities.family) },
-    { label: 'Punctuation', value: yesNo(capabilities.family.producesPunctuation) },
-  ];
-
-  if (capabilities.family.maxAudioDurationSecs !== null) {
-    rows.push({
-      label: 'Max audio duration',
-      value: `${Math.round(capabilities.family.maxAudioDurationSecs)} s`,
-    });
+  const accelerators =
+    caps.runtime.availableAccelerators.length > 0
+      ? caps.runtime.availableAccelerators
+      : (['cpu'] as const);
+  for (const id of accelerators) {
+    labels.push(formatAcceleratorLabel(id));
   }
 
-  return rows;
+  for (const format of caps.runtime.supportedModelFormats) {
+    labels.push(MODEL_FORMAT_LABELS[format]);
+  }
+
+  if (caps.family.supportsTimedSegments) labels.push('Timed segments');
+  if (caps.family.supportsInitialPrompt) labels.push('Initial prompt');
+  if (caps.family.producesPunctuation) labels.push('Punctuation');
+
+  const languageLabel = describeLanguageSupport(caps.family);
+  if (languageLabel !== null) labels.push(languageLabel);
+
+  if (caps.family.maxAudioDurationSecs !== null) {
+    labels.push(`Max audio: ${Math.round(caps.family.maxAudioDurationSecs)}s`);
+  }
+
+  return labels;
 }
 
-function yesNo(value: boolean): string {
-  return value ? 'Yes' : 'No';
-}
-
-function describeLanguageSupport(family: ModelFamilyCapabilitiesRecord): string {
+function describeLanguageSupport(family: ModelFamilyCapabilitiesRecord): string | null {
   switch (family.supportedLanguages.kind) {
     case 'all':
       return 'Any language';
@@ -93,23 +71,6 @@ function describeLanguageSupport(family: ModelFamilyCapabilitiesRecord): string 
     case 'list':
       return `${family.supportedLanguages.tags.length} languages`;
     case 'unknown':
-      return family.supportsLanguageSelection
-        ? 'Selectable (language list unknown)'
-        : 'Single language (no selection)';
+      return family.supportsLanguageSelection ? 'Language selection' : null;
   }
-}
-
-function resolveRuntimeDisplayName(state: ModelManagerState, runtimeId: RuntimeId): string {
-  return state.compiledRuntimes.find((r) => r.runtimeId === runtimeId)?.displayName ?? runtimeId;
-}
-
-function resolveFamilyDisplayName(
-  state: ModelManagerState,
-  runtimeId: RuntimeId,
-  familyId: ModelFamilyId,
-): string {
-  return (
-    state.compiledAdapters.find((a) => a.runtimeId === runtimeId && a.familyId === familyId)
-      ?.displayName ?? familyId
-  );
 }

@@ -1,5 +1,6 @@
 import type { App, Plugin } from 'obsidian';
 import { Platform, PluginSettingTab, Setting } from 'obsidian';
+import { resolveEngineCapabilities } from '../models/capability-view';
 import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
@@ -309,7 +310,18 @@ export class LocalSttSettingTab extends PluginSettingTab {
       const installedModel = state.installedModels.find((m) =>
         matchesModelTriple(m, runtimeId, familyId, modelId),
       );
-      new ModelDetailsModal(this.app, catalogModel, installedModel?.installPath ?? null).open();
+      const capabilities = resolveEngineCapabilities(
+        state.compiledRuntimes,
+        state.compiledAdapters,
+        catalogModel.runtimeId,
+        catalogModel.familyId,
+      );
+      new ModelDetailsModal(
+        this.app,
+        catalogModel,
+        installedModel?.installPath ?? null,
+        capabilities,
+      ).open();
     };
   }
 
