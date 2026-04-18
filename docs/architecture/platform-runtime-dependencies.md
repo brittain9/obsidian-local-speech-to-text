@@ -6,11 +6,11 @@ This document describes the runtime dependency contract for each platform and si
 
 The sidecar ships as a single native binary per platform. Three build flavors exist, each enabling different Cargo feature sets:
 
-| Flavor | Command | Cargo features | Engines |
+| Flavor | Command | Cargo features | Model families |
 |---|---|---|---|
-| CPU | `npm run build:sidecar` (Linux) | `engine-cohere` | Whisper (CPU), Cohere (CPU) |
-| Metal | `npm run build:sidecar` (macOS) | `engine-cohere,gpu-metal` | Whisper (Metal GPU), Cohere (CPU) |
-| CUDA | `npm run build:sidecar:cuda` | `engine-cohere,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere (CUDA GPU) |
+| CPU | `npm run build:sidecar` (Linux) | `engine-whisper,engine-cohere-transcribe` | Whisper (CPU), Cohere Transcribe (CPU) |
+| Metal | `npm run build:sidecar` (macOS) | `engine-whisper,engine-cohere-transcribe,gpu-metal` | Whisper (Metal GPU), Cohere Transcribe (CPU) |
+| CUDA | `npm run build:sidecar:cuda` | `engine-whisper,engine-cohere-transcribe,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere Transcribe (CUDA GPU) |
 
 The CPU flavor is the default everywhere. GPU flavors are additive — they include all CPU capabilities plus GPU acceleration for the engines listed.
 
@@ -95,7 +95,7 @@ The full Flatpak GPU setup procedure is documented in `docs/guides/linux-flatpak
 
 ## Engine Runtime Paths
 
-Whisper and Cohere do not use identical GPU runtime paths, even within the same sidecar binary.
+The two compiled `Runtime` implementations (`whisper_cpp` and `onnx_runtime`) do not share GPU paths, even within the same sidecar binary.
 
 ### Whisper (whisper-rs / whisper.cpp)
 
@@ -119,15 +119,15 @@ This means Cohere CUDA has a strictly larger dependency set than Whisper CUDA: i
 
 ## Runtime Capability Probing
 
-The sidecar probes GPU availability at startup and caches the results. The plugin displays per-engine effective backends in the settings UI.
+Accelerator probing lives on the `Runtime` layer (D-008). Each compiled `Runtime` reports `RuntimeCapabilities { availableAccelerators, acceleratorDetails, supportedModelFormats }` at startup; results are cached and surfaced to the plugin through `system_info.compiledRuntimes[]`. Per-selection merges (`model_probe_result.mergedCapabilities`) combine runtime caps with the family adapter's `ModelFamilyCapabilities`.
 
-| Engine | Probe method |
+| Runtime | Probe method |
 |---|---|
-| Whisper (Metal) | Compile-time: reports available if built with `gpu-metal` on macOS |
-| Whisper (CUDA) | Fast heuristic: checks for `/dev/nvidiactl` and `/dev/nvidia0` device nodes |
-| Cohere (CUDA) | Full probe: attempts ONNX Runtime CUDA EP registration via `CUDAExecutionProvider::is_available()` + `.build().error_on_failure()` |
+| `whisper_cpp` (Metal) | Compile-time: reports available if built with `gpu-metal` on macOS |
+| `whisper_cpp` (CUDA) | Fast heuristic: checks for `/dev/nvidiactl` and `/dev/nvidia0` device nodes |
+| `onnx_runtime` (CUDA) | Full probe: attempts ONNX Runtime CUDA EP registration via `CUDAExecutionProvider::is_available()` + `.build().error_on_failure()` |
 
-The Cohere probe is stronger — it catches missing userspace libraries, driver mismatches, and cuDNN version issues. The Whisper probe confirms the driver is loaded but does not verify the full library chain. If the Whisper probe reports CUDA available but inference fails, the root cause is usually a missing CUDA userspace library.
+The `onnx_runtime` probe is stronger — it catches missing userspace libraries, driver mismatches, and cuDNN version issues. The `whisper_cpp` probe confirms the driver is loaded but does not verify the full library chain. If the Whisper probe reports CUDA available but inference fails, the root cause is usually a missing CUDA userspace library.
 
 ## Bundling Principles
 

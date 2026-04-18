@@ -182,9 +182,10 @@ export class SidecarConnection {
       createRemoveModelCommand(payload),
       (event): event is ModelRemovedEvent =>
         event.type === 'model_removed' &&
-        event.engineId === payload.engineId &&
+        event.runtimeId === payload.runtimeId &&
+        event.familyId === payload.familyId &&
         event.modelId === payload.modelId,
-      `model_removed:${payload.engineId}:${payload.modelId}`,
+      `model_removed:${payload.runtimeId}:${payload.familyId}:${payload.modelId}`,
       timeoutMs,
     );
   }

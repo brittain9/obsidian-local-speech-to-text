@@ -1,19 +1,67 @@
 import { isRecord } from '../shared/type-guards';
 
-export const ENGINE_IDS = ['cohere_onnx', 'whisper_cpp'] as const;
+export const RUNTIME_IDS = ['onnx_runtime', 'whisper_cpp'] as const;
 
-export type EngineId = (typeof ENGINE_IDS)[number];
+export type RuntimeId = (typeof RUNTIME_IDS)[number];
+
+export const MODEL_FAMILY_IDS = ['cohere_transcribe', 'whisper'] as const;
+
+export type ModelFamilyId = (typeof MODEL_FAMILY_IDS)[number];
+
+export type AcceleratorId = 'cpu' | 'cuda' | 'direct_ml' | 'metal';
+
+export type ModelFormat = 'ggml' | 'gguf' | 'onnx';
+
+export type LanguageSupport =
+  | { kind: 'all' }
+  | { kind: 'english_only' }
+  | { kind: 'list'; tags: string[] }
+  | { kind: 'unknown' };
+
+export interface AcceleratorAvailability {
+  available: boolean;
+  unavailableReason: string | null;
+}
+
+export interface RuntimeCapabilitiesRecord {
+  availableAccelerators: AcceleratorId[];
+  acceleratorDetails: Partial<Record<AcceleratorId, AcceleratorAvailability>>;
+  supportedModelFormats: ModelFormat[];
+}
+
+export interface ModelFamilyCapabilitiesRecord {
+  supportsTimedSegments: boolean;
+  supportsInitialPrompt: boolean;
+  supportsLanguageSelection: boolean;
+  supportedLanguages: LanguageSupport;
+  maxAudioDurationSecs: number | null;
+  producesPunctuation: boolean;
+}
+
+export interface EngineCapabilitiesRecord {
+  familyId: ModelFamilyId;
+  family: ModelFamilyCapabilitiesRecord;
+  runtime: RuntimeCapabilitiesRecord;
+  runtimeId: RuntimeId;
+}
+
+export interface RequestWarning {
+  field: string;
+  reason: string;
+}
 
 export interface CatalogModelSelection {
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   kind: 'catalog_model';
   modelId: string;
+  runtimeId: RuntimeId;
 }
 
 export interface ExternalFileModelSelection {
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   filePath: string;
   kind: 'external_file';
+  runtimeId: RuntimeId;
 }
 
 export type SelectedModel = CatalogModelSelection | ExternalFileModelSelection;
@@ -30,9 +78,10 @@ export interface ModelArtifactRecord {
   sizeBytes: number;
 }
 
-export interface ModelEngineRecord {
+export interface ModelFamilyRecord {
   displayName: string;
-  engineId: EngineId;
+  familyId: ModelFamilyId;
+  runtimeId: RuntimeId;
   summary: string;
 }
 
@@ -44,16 +93,16 @@ export interface ModelCollectionRecord {
 
 export interface CatalogModelRecord {
   artifacts: ModelArtifactRecord[];
-  capabilityFlags: string[];
   collectionId: string;
   displayName: string;
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   languageTags: string[];
   licenseLabel: string;
   licenseUrl: string;
   modelCardUrl: string | null;
   modelId: string;
   notes: string[];
+  runtimeId: RuntimeId;
   sourceUrl: string;
   summary: string;
   uxTags: string[];
@@ -62,16 +111,17 @@ export interface CatalogModelRecord {
 export interface ModelCatalogRecord {
   catalogVersion: number;
   collections: ModelCollectionRecord[];
-  engines: ModelEngineRecord[];
+  families: ModelFamilyRecord[];
   models: CatalogModelRecord[];
 }
 
 export interface InstalledModelRecord {
   catalogVersion: number;
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   installPath: string;
   installedAtUnixMs: number;
   modelId: string;
+  runtimeId: RuntimeId;
   runtimePath: string | null;
   totalSizeBytes: number;
 }
@@ -88,15 +138,32 @@ export interface ModelProbeResultRecord {
   available: boolean;
   details: string | null;
   displayName: string | null;
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   installed: boolean;
+  mergedCapabilities: EngineCapabilitiesRecord | null;
   message: string;
   modelId: string | null;
   resolvedPath: string | null;
+  runtimeId: RuntimeId;
   selection: SelectedModel;
   sizeBytes: number | null;
   status: ModelProbeStatus;
 }
+
+export type SelectedModelCapabilities =
+  | { status: 'none' }
+  | { status: 'pending'; selection: SelectedModel }
+  | {
+      status: 'unavailable';
+      selection: SelectedModel;
+      reason: 'invalid' | 'missing' | 'probe_failed';
+      details?: string;
+    }
+  | {
+      status: 'ready';
+      selection: SelectedModel;
+      capabilities: EngineCapabilitiesRecord;
+    };
 
 export type ModelInstallState =
   | 'cancelled'
@@ -110,31 +177,28 @@ export type ModelInstallState =
 export interface ModelInstallUpdateRecord {
   details: string | null;
   downloadedBytes: number | null;
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   installId: string;
   message: string | null;
   modelId: string;
+  runtimeId: RuntimeId;
   state: ModelInstallState;
   totalBytes: number | null;
 }
 
 export interface ModelRemovedRecord {
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   modelId: string;
   removed: boolean;
+  runtimeId: RuntimeId;
 }
 
-export function getEngineDisplayName(engineId: EngineId): string {
-  switch (engineId) {
-    case 'cohere_onnx':
-      return 'Cohere Transcribe';
-    case 'whisper_cpp':
-      return 'Whisper';
-  }
+export function isRuntimeId(value: unknown): value is RuntimeId {
+  return typeof value === 'string' && (RUNTIME_IDS as readonly string[]).includes(value);
 }
 
-export function isEngineId(value: unknown): value is EngineId {
-  return typeof value === 'string' && (ENGINE_IDS as readonly string[]).includes(value);
+export function isModelFamilyId(value: unknown): value is ModelFamilyId {
+  return typeof value === 'string' && (MODEL_FAMILY_IDS as readonly string[]).includes(value);
 }
 
 export function isSelectedModel(value: unknown): value is SelectedModel {
@@ -142,18 +206,16 @@ export function isSelectedModel(value: unknown): value is SelectedModel {
     return false;
   }
 
+  if (!isRuntimeId(value.runtimeId) || !isModelFamilyId(value.familyId)) {
+    return false;
+  }
+
   if (value.kind === 'catalog_model') {
-    return (
-      isEngineId(value.engineId) && typeof value.modelId === 'string' && value.modelId.length > 0
-    );
+    return typeof value.modelId === 'string' && value.modelId.length > 0;
   }
 
   if (value.kind === 'external_file') {
-    return (
-      isEngineId(value.engineId) &&
-      typeof value.filePath === 'string' &&
-      value.filePath.trim().length > 0
-    );
+    return typeof value.filePath === 'string' && value.filePath.trim().length > 0;
   }
 
   return false;
@@ -162,16 +224,18 @@ export function isSelectedModel(value: unknown): value is SelectedModel {
 export function normalizeSelectedModel(value: SelectedModel): SelectedModel {
   if (value.kind === 'catalog_model') {
     return {
-      engineId: value.engineId,
+      familyId: value.familyId,
       kind: value.kind,
       modelId: value.modelId.trim(),
+      runtimeId: value.runtimeId,
     };
   }
 
   return {
-    engineId: value.engineId,
+    familyId: value.familyId,
     filePath: value.filePath.trim(),
     kind: value.kind,
+    runtimeId: value.runtimeId,
   };
 }
 
@@ -179,8 +243,23 @@ export function getTotalModelSize(model: CatalogModelRecord): number {
   return model.artifacts.reduce((sum, a) => sum + a.sizeBytes, 0);
 }
 
+export function matchesModelTriple(
+  record: { familyId: ModelFamilyId; modelId: string; runtimeId: RuntimeId },
+  runtimeId: RuntimeId,
+  familyId: ModelFamilyId,
+  modelId: string,
+): boolean {
+  return (
+    record.runtimeId === runtimeId && record.familyId === familyId && record.modelId === modelId
+  );
+}
+
 export function selectedModelEquals(left: SelectedModel, right: SelectedModel): boolean {
-  if (left.kind !== right.kind || left.engineId !== right.engineId) {
+  if (
+    left.kind !== right.kind ||
+    left.runtimeId !== right.runtimeId ||
+    left.familyId !== right.familyId
+  ) {
     return false;
   }
 

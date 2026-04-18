@@ -3,10 +3,10 @@
 ## Current Pipeline
 
 ```
-Sidecar Engine (Whisper / Cohere)
+Sidecar Worker -> EngineRegistry.adapter(runtimeId, familyId) -> LoadedModel.transcribe()
     |
     v
-TranscriptReadyEvent { segments[], text, processingDurationMs, utteranceDurationMs }
+TranscriptReadyEvent { segments[], text, processingDurationMs, utteranceDurationMs, warnings[] }
     |
     v
 normalizeTranscriptText()       -- trim text, fall back to joining segment texts
@@ -15,15 +15,15 @@ normalizeTranscriptText()       -- trim text, fall back to joining segment texts
 EditorService.insertTranscript() -- dispatch by InsertionMode (cursor / new line / new paragraph)
 ```
 
-The current pipeline is direct: engine output is normalized to a string and inserted. There is no formatting step, no text processing, and no context-aware insertion. Cohere returns empty segments; only Whisper produces timing metadata.
+The current pipeline is direct: engine output is normalized to a string and inserted. There is no formatting step, no text processing, and no context-aware insertion. The Cohere family adapter declares `supports_timed_segments = false` and returns an empty segment list; only the Whisper adapter produces timing metadata. `warnings[]` carries `RequestWarning` entries for request fields the adapter soft-dropped under capability gating (dev-console only).
 
 ## Target Pipeline
 
 ```
-Sidecar Engine (Whisper / Cohere)
+Sidecar Worker -> LoadedModel.transcribe()
     |
     v
-Transcript { segments[], text }  -- both engines produce segments with timing
+Transcript { segments[], text }  -- both family adapters produce segments with timing
     |
     v
 TranscriptFormatter              -- selects output format: plain text, inline timestamps
@@ -51,7 +51,7 @@ Listening mode and speech segmentation happen upstream of transcription. How aud
 
 | Slice | Branch | Dependency | Scope |
 |---|---|---|---|
-| 1. Cohere synthetic segments | `feat/cohere-segments` | none | Rust sidecar |
+| 1. Cohere synthetic segments | `feat/cohere-segments` | none | Rust sidecar (flip `supports_timed_segments` on `cohere_transcribe` adapter) |
 | 2. TranscriptFormatter layer | `feat/transcript-formatter` | none | TypeScript plugin |
 | 3. TextProcessor pipeline | `feat/text-processor-pipeline` | Slice 2 | TypeScript plugin |
 | 4. Smart cursor insertion | `feat/smart-insertion` | none | TypeScript plugin |
@@ -75,6 +75,11 @@ Listening mode and speech segmentation happen upstream of transcription. How aud
 | `src/editor/editor-service.ts` | Insertion dispatch |
 | `src/editor/transcript-placement.ts` | Append placement calculations |
 | `src/settings/plugin-settings.ts` | Settings interface and defaults |
-| `native/src/cohere.rs` | Cohere backend (Slice 1 target) |
-| `native/src/transcription.rs` | Transcript struct and TranscriptionBackend trait |
-| `src/sidecar/protocol.ts` | TranscriptSegment and TranscriptReadyEvent types |
+| `native/src/engine/traits.rs` | `Runtime`, `ModelFamilyAdapter`, `LoadedModel` traits |
+| `native/src/engine/registry.rs` | `EngineRegistry::build()` and `apply_capability_gates` |
+| `native/src/engine/capabilities.rs` | `RuntimeCapabilities`, `ModelFamilyCapabilities`, `EngineCapabilities`, `RequestWarning` |
+| `native/src/adapters/cohere_transcribe.rs` | Cohere family adapter (Slice 1 target) |
+| `native/src/adapters/whisper.rs` | Whisper family adapter |
+| `native/src/transcription.rs` | `Transcript`, `TranscriptionRequest`, `TranscriptionError` shared types |
+| `src/sidecar/protocol.ts` | `TranscriptSegment`, `TranscriptReadyEvent`, `CompiledRuntimeInfo`, `CompiledAdapterInfo` |
+| `src/models/model-management-types.ts` | Merged capability wire shapes + `SelectedModelCapabilities` discriminated union |

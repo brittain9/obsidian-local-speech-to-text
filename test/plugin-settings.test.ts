@@ -17,9 +17,10 @@ describe('resolvePluginSettings', () => {
         modelStorePathOverride: ' /tmp/models ',
         pauseWhileProcessing: false,
         selectedModel: {
-          engineId: 'whisper_cpp',
+          familyId: 'whisper',
           kind: 'catalog_model',
           modelId: 'whisper_large_v3_turbo_q8_0',
+          runtimeId: 'whisper_cpp',
         },
         sidecarPathOverride: ' /tmp/sidecar ',
         sidecarRequestTimeoutMs: 12_000,
@@ -35,9 +36,10 @@ describe('resolvePluginSettings', () => {
       modelStorePathOverride: '/tmp/models',
       pauseWhileProcessing: false,
       selectedModel: {
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         kind: 'catalog_model',
         modelId: 'whisper_large_v3_turbo_q8_0',
+        runtimeId: 'whisper_cpp',
       },
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,

@@ -15,10 +15,10 @@ jobs:
         include:
           - os: ubuntu-latest
             build_metal: false
-            rust_cache_key: engine-cohere
+            rust_cache_key: engine-cohere-transcribe
           - os: macos-15
             build_metal: true
-            rust_cache_key: engine-cohere-gpu-metal
+            rust_cache_key: engine-cohere-transcribe-gpu-metal
 
     runs-on: ${{ matrix.os }}
 

@@ -37,7 +37,12 @@ describe('sidecar protocol', () => {
       accelerationPreference: 'auto',
       language: 'en',
       mode: 'always_on',
-      modelSelection: { kind: 'external_file', engineId: 'whisper_cpp', filePath: '/tmp/m.bin' },
+      modelSelection: {
+        familyId: 'whisper',
+        filePath: '/tmp/m.bin',
+        kind: 'external_file',
+        runtimeId: 'whisper_cpp',
+      },
       pauseWhileProcessing: true,
       sessionId: 'session-gpu',
       speakingStyle: 'balanced',
@@ -60,17 +65,37 @@ describe('sidecar protocol', () => {
 
   it('parses system_info event', () => {
     const parser = new FramedMessageParser(parseEventFrame);
+    const runtimeCapabilities = {
+      acceleratorDetails: {
+        cpu: { available: true, unavailableReason: null },
+        cuda: { available: true, unavailableReason: null },
+      },
+      availableAccelerators: ['cpu' as const, 'cuda' as const],
+      supportedModelFormats: ['ggml' as const],
+    };
+    const familyCapabilities = {
+      maxAudioDurationSecs: null,
+      producesPunctuation: true,
+      supportedLanguages: { kind: 'all' as const },
+      supportsInitialPrompt: true,
+      supportsLanguageSelection: true,
+      supportsTimedSegments: true,
+    };
+    const compiledRuntime = {
+      displayName: 'whisper.cpp',
+      runtimeCapabilities,
+      runtimeId: 'whisper_cpp' as const,
+    };
+    const compiledAdapter = {
+      displayName: 'Whisper',
+      familyCapabilities,
+      familyId: 'whisper' as const,
+      runtimeId: 'whisper_cpp' as const,
+    };
     const frame = encodeJsonFrame({
-      compiledBackends: ['cpu', 'cuda'],
-      compiledEngines: ['whisper_cpp', 'cohere_onnx'],
-      runtimeCapabilities: [
-        {
-          available: true,
-          backend: 'cuda',
-          engine: 'whisper_cpp',
-          reason: null,
-        },
-      ],
+      compiledAdapters: [compiledAdapter],
+      compiledRuntimes: [compiledRuntime],
+      sidecarVersion: '0.0.0-test',
       systemInfo: 'AVX = 1 | CUDA = 1',
       type: 'system_info',
     });
@@ -79,16 +104,9 @@ describe('sidecar protocol', () => {
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toEqual({
       envelope: {
-        compiledBackends: ['cpu', 'cuda'],
-        compiledEngines: ['whisper_cpp', 'cohere_onnx'],
-        runtimeCapabilities: [
-          {
-            available: true,
-            backend: 'cuda',
-            engine: 'whisper_cpp',
-            reason: null,
-          },
-        ],
+        compiledAdapters: [compiledAdapter],
+        compiledRuntimes: [compiledRuntime],
+        sidecarVersion: '0.0.0-test',
         systemInfo: 'AVX = 1 | CUDA = 1',
         type: 'system_info',
       },
@@ -96,27 +114,76 @@ describe('sidecar protocol', () => {
     });
   });
 
-  it('defaults missing runtimeCapabilities to an empty list for backward compatibility', () => {
-    const parser = new FramedMessageParser(parseEventFrame);
-    const frame = encodeRawJsonFrame({
-      compiledBackends: ['cpu', 'cuda'],
-      compiledEngines: ['whisper_cpp'],
-      systemInfo: 'AVX = 1 | CUDA = 1',
-      type: 'system_info',
-    });
-    const parsed = parser.pushChunk(frame);
-
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0]).toEqual({
-      envelope: {
-        compiledBackends: ['cpu', 'cuda'],
-        compiledEngines: ['whisper_cpp'],
-        runtimeCapabilities: [],
-        systemInfo: 'AVX = 1 | CUDA = 1',
-        type: 'system_info',
+  it('parses model_probe_result event carrying merged capabilities', () => {
+    const mergedCapabilities = {
+      family: {
+        maxAudioDurationSecs: null,
+        producesPunctuation: true,
+        supportedLanguages: { kind: 'english_only' as const },
+        supportsInitialPrompt: true,
+        supportsLanguageSelection: false,
+        supportsTimedSegments: true,
       },
-      kind: JSON_FRAME_KIND,
-    });
+      familyId: 'whisper' as const,
+      runtime: {
+        acceleratorDetails: {
+          cpu: { available: true, unavailableReason: null },
+        },
+        availableAccelerators: ['cpu' as const],
+        supportedModelFormats: ['ggml' as const],
+      },
+      runtimeId: 'whisper_cpp' as const,
+    };
+    const payload = {
+      available: true,
+      details: null,
+      displayName: 'Whisper Small',
+      familyId: 'whisper' as const,
+      installed: true,
+      mergedCapabilities,
+      message: 'Model selection is ready.',
+      modelId: 'small',
+      resolvedPath: '/models/whisper-small.bin',
+      runtimeId: 'whisper_cpp' as const,
+      selection: {
+        familyId: 'whisper' as const,
+        kind: 'catalog_model' as const,
+        modelId: 'small',
+        runtimeId: 'whisper_cpp' as const,
+      },
+      sizeBytes: 100,
+      status: 'ready' as const,
+      type: 'model_probe_result' as const,
+    };
+    const event = parseEventFrame(JSON.stringify(payload));
+
+    expect(event).toEqual(payload);
+  });
+
+  it('parses model_probe_result event when merged capabilities are absent', () => {
+    const payload = {
+      available: false,
+      details: 'not installed',
+      displayName: null,
+      familyId: 'whisper' as const,
+      installed: false,
+      message: 'The selected managed model is not installed or is incomplete.',
+      modelId: 'small',
+      resolvedPath: null,
+      runtimeId: 'whisper_cpp' as const,
+      selection: {
+        familyId: 'whisper' as const,
+        kind: 'catalog_model' as const,
+        modelId: 'small',
+        runtimeId: 'whisper_cpp' as const,
+      },
+      sizeBytes: null,
+      status: 'missing' as const,
+      type: 'model_probe_result' as const,
+    };
+    const event = parseEventFrame(JSON.stringify(payload));
+
+    expect(event).toEqual({ ...payload, mergedCapabilities: null });
   });
 
   it('rejects non-object JSON in parseEventFrame', () => {
@@ -180,6 +247,7 @@ describe('sidecar protocol', () => {
       text: 'hello world',
       type: 'transcript_ready',
       utteranceDurationMs: 900,
+      warnings: [],
     });
     const audioFrame = encodeAudioFrame(new Uint8Array(PCM_BYTES_PER_FRAME).fill(3));
     const combined = new Uint8Array(transcriptFrame.byteLength + audioFrame.byteLength);
@@ -201,6 +269,7 @@ describe('sidecar protocol', () => {
         text: 'hello world',
         type: 'transcript_ready',
         utteranceDurationMs: 900,
+        warnings: [],
       },
       kind: JSON_FRAME_KIND,
     });
@@ -213,16 +282,4 @@ function readPayload(frame: Uint8Array): unknown {
   const payloadBytes = frame.slice(5, 5 + payloadLength);
 
   return JSON.parse(new TextDecoder().decode(payloadBytes));
-}
-
-function encodeRawJsonFrame(payload: unknown): Uint8Array {
-  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
-  const frame = new Uint8Array(5 + payloadBytes.byteLength);
-  const view = new DataView(frame.buffer);
-
-  frame[0] = JSON_FRAME_KIND;
-  view.setUint32(1, payloadBytes.byteLength, true);
-  frame.set(payloadBytes, 5);
-
-  return frame;
 }

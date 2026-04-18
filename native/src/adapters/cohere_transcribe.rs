@@ -2,14 +2,17 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "gpu-ort-cuda")]
-use ort::ep::{CUDAExecutionProvider, ExecutionProvider};
 use ort::session::{Session, SessionInputValue};
 use ort::value::{DynValue, TensorElementType, Value, ValueType};
 
+use crate::engine::capabilities::{
+    LanguageSupport, ModelFamilyCapabilities, ModelFamilyId, RuntimeId,
+};
+use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
+use crate::runtimes::onnx::build_session;
 use crate::transcription::{
-    GpuConfig, Transcript, TranscriptionBackend, TranscriptionError, TranscriptionRequest,
-    validate_audio_samples, validate_language, validate_model_path,
+    GpuConfig, Transcript, TranscriptionError, TranscriptionRequest, validate_audio_samples,
+    validate_language, validate_model_path,
 };
 
 const NUM_DECODER_LAYERS: usize = 8;
@@ -35,29 +38,88 @@ const TOKEN_LANG_EN: i64 = 62; // <|en|>
 
 /// Sibling filenames derived from the primary artifact path.
 /// `tokens.txt` is retained as a candidate for backward compatibility with
-/// manually converted tokenizer files.  The HuggingFace-shipped format is
+/// manually converted tokenizer files. The HuggingFace-shipped format is
 /// `tokenizer.json`, which the loader now handles natively.
 const TOKENS_CANDIDATES: &[&str] = &["tokens.txt", "tokenizer.json"];
 
-// ---------------------------------------------------------------------------
-// Backend
-// ---------------------------------------------------------------------------
-
 #[derive(Default)]
-pub struct CohereBackend {
-    loaded: Option<LoadedCohereModel>,
+pub struct CohereTranscribeAdapter;
+
+const CAPABILITIES: ModelFamilyCapabilities = ModelFamilyCapabilities {
+    supports_timed_segments: false,
+    supports_initial_prompt: false,
+    supports_language_selection: false,
+    supported_languages: LanguageSupport::EnglishOnly,
+    max_audio_duration_secs: Some(MAX_AUDIO_DURATION_SECS),
+    produces_punctuation: true,
+};
+
+impl ModelFamilyAdapter for CohereTranscribeAdapter {
+    fn runtime_id(&self) -> RuntimeId {
+        RuntimeId::OnnxRuntime
+    }
+
+    fn family_id(&self) -> ModelFamilyId {
+        ModelFamilyId::CohereTranscribe
+    }
+
+    fn capabilities(&self) -> &ModelFamilyCapabilities {
+        &CAPABILITIES
+    }
+
+    fn probe_model(&self, path: &Path) -> Result<(), TranscriptionError> {
+        let model_dir = path.parent().ok_or_else(|| {
+            TranscriptionError::invalid_model_with_details(
+                "cannot determine model directory from artifact path".to_string(),
+            )
+        })?;
+
+        validate_model_path(path)?;
+        let encoder_path = find_encoder_path(model_dir)?;
+        find_decoder_path(model_dir)?;
+        find_tokens_path(model_dir)?;
+
+        // Parity with whisper: actually load the encoder so corrupt ONNX bytes
+        // or an unsupported opset fail install instead of first transcription.
+        // CPU-only: probe does not care about accelerator choice and the CUDA
+        // EP does not start cheaply enough to be worth registering here.
+        build_session(&encoder_path, GpuConfig { use_gpu: false }).map_err(|error| {
+            TranscriptionError::invalid_model_with_details(format!(
+                "encoder session failed to load: {}",
+                error.details.unwrap_or_else(|| error.message.to_string())
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    fn load(
+        &self,
+        path: &Path,
+        gpu: GpuConfig,
+    ) -> Result<Box<dyn LoadedModel>, TranscriptionError> {
+        let model_dir = path.parent().ok_or_else(|| {
+            TranscriptionError::invalid_model_with_details(
+                "cannot determine model directory".to_string(),
+            )
+        })?;
+
+        let loaded = load_cohere_model(model_dir, gpu)?;
+        Ok(Box::new(loaded))
+    }
 }
 
 struct LoadedCohereModel {
     decoder: Session,
     encoder: Session,
-    gpu_config: GpuConfig,
     mel_extractor: crate::mel::MelFeatureExtractor,
-    model_dir: PathBuf,
     vocab: HashMap<u32, String>,
+    cache_names: Vec<String>,
+    decoder_uses_fp16: bool,
+    prompt_tokens: Vec<i64>,
 }
 
-impl TranscriptionBackend for CohereBackend {
+impl LoadedModel for LoadedCohereModel {
     fn transcribe(
         &mut self,
         request: &TranscriptionRequest,
@@ -66,17 +128,11 @@ impl TranscriptionBackend for CohereBackend {
         validate_audio_samples(&request.audio_samples)?;
         validate_audio_duration(&request.audio_samples)?;
 
-        self.ensure_loaded(&request.model_file_path, request.gpu_config)?;
-        let model = self.loaded.as_mut().unwrap();
-
-        // --- Feature extraction: raw audio → mel spectrogram [1, T, 128] ---
-        let mel = model.mel_extractor.extract(&request.audio_samples);
+        let mel = self.mel_extractor.extract(&request.audio_samples);
         let features_value = Value::from_array(mel.features)
             .map_err(|e| TranscriptionError::transcription_failure("encoder features", &e))?;
 
-        // --- Encoder: mel features → hidden states ---
-        // Encoder input: input_features f32 [batch, seq_len, 128]
-        let encoder_outputs = model
+        let encoder_outputs = self
             .encoder
             .run(ort::inputs!["input_features" => features_value])
             .map_err(|e| TranscriptionError::transcription_failure("encoder forward pass", &e))?;
@@ -85,100 +141,20 @@ impl TranscriptionBackend for CohereBackend {
             TranscriptionError::transcription_failure("encoder", "produced no output")
         })?;
 
-        // --- Decoder: autoregressive token generation ---
-        let text = autoregressive_decode(&mut model.decoder, &encoder_hidden, &model.vocab)?;
+        let text = autoregressive_decode(
+            &mut self.decoder,
+            &encoder_hidden,
+            &self.vocab,
+            &self.cache_names,
+            self.decoder_uses_fp16,
+            &self.prompt_tokens,
+        )?;
 
         Ok(Transcript {
             segments: Vec::new(),
             text: text.trim().to_string(),
         })
     }
-
-    fn probe_model(path: &Path) -> Result<(), TranscriptionError> {
-        let model_dir = path.parent().ok_or_else(|| {
-            TranscriptionError::invalid_model_with_details(
-                "cannot determine model directory from artifact path".to_string(),
-            )
-        })?;
-
-        validate_model_path(path)?;
-        find_decoder_path(model_dir)?;
-        find_tokens_path(model_dir)?;
-
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Model loading
-// ---------------------------------------------------------------------------
-
-impl CohereBackend {
-    fn ensure_loaded(
-        &mut self,
-        primary_artifact: &Path,
-        gpu_config: GpuConfig,
-    ) -> Result<(), TranscriptionError> {
-        let model_dir = primary_artifact.parent().ok_or_else(|| {
-            TranscriptionError::invalid_model_with_details(
-                "cannot determine model directory".to_string(),
-            )
-        })?;
-
-        let should_reload = self
-            .loaded
-            .as_ref()
-            .map(|m| m.model_dir != model_dir || m.gpu_config != gpu_config)
-            .unwrap_or(true);
-
-        if should_reload {
-            drop(self.loaded.take());
-            self.loaded = Some(load_cohere_model(model_dir, gpu_config)?);
-        }
-
-        Ok(())
-    }
-}
-
-fn build_session(model_path: &Path, gpu_config: GpuConfig) -> Result<Session, TranscriptionError> {
-    let mut builder = Session::builder()
-        .map_err(|e| TranscriptionError::transcription_failure("session builder", &e))?;
-
-    #[cfg(feature = "gpu-ort-cuda")]
-    if gpu_config.use_gpu {
-        builder = builder
-            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
-            .map_err(|e| TranscriptionError::transcription_failure("CUDA EP registration", &e))?;
-    }
-
-    #[cfg(not(feature = "gpu-ort-cuda"))]
-    let _ = gpu_config;
-
-    builder
-        .commit_from_file(model_path)
-        .map_err(|e| TranscriptionError::transcription_failure("model loading", &e))
-}
-
-#[cfg(feature = "gpu-ort-cuda")]
-pub fn probe_cuda_execution_provider() -> Result<(), String> {
-    let execution_provider = CUDAExecutionProvider::default();
-    match execution_provider.is_available() {
-        Ok(false) => {
-            return Err("ONNX Runtime CUDA execution provider is unavailable.".to_string());
-        }
-        Err(error) => {
-            return Err(format!(
-                "Failed to query ONNX Runtime CUDA execution provider: {error}"
-            ));
-        }
-        Ok(true) => {}
-    }
-
-    Session::builder()
-        .map_err(|error| format!("Failed to create an ONNX Runtime session builder: {error}"))?
-        .with_execution_providers([execution_provider.build().error_on_failure()])
-        .map(|_| ())
-        .map_err(|error| format!("CUDA execution provider registration failed: {error}"))
 }
 
 fn load_cohere_model(
@@ -191,53 +167,155 @@ fn load_cohere_model(
 
     let encoder = build_session(&encoder_path, gpu_config)?;
     // Decoder must run on CPU: ORT's CUDA GroupQueryAttention kernel does not
-    // support attention_bias, which the Cohere decoder graph requires.
+    // support attention_bias, which the Cohere decoder graph requires. See
+    // docs/decisions.md D-003 for the platform GPU-support implications.
     let decoder = build_session(&decoder_path, GpuConfig { use_gpu: false })?;
+    verify_decoder_topology(&decoder)?;
+    let decoder_uses_fp16 = decoder_past_kv_is_fp16(&decoder);
     let vocab = load_vocab(&tokens_path)?;
     let mel_extractor = crate::mel::MelFeatureExtractor::new();
 
     Ok(LoadedCohereModel {
         decoder,
         encoder,
-        gpu_config,
         mel_extractor,
-        model_dir: model_dir.to_path_buf(),
         vocab,
+        cache_names: build_cache_names(),
+        decoder_uses_fp16,
+        prompt_tokens: build_prompt_tokens(),
     })
 }
 
-fn find_encoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
-    let candidates = [
-        "encoder_model_fp16.onnx",
-        "encoder_model.onnx",
-        "encoder_model_int8.onnx",
-        "encoder_model_q4.onnx",
-        "encoder_model_quantized.onnx",
-    ];
+fn build_cache_names() -> Vec<String> {
+    (0..NUM_DECODER_LAYERS)
+        .flat_map(|layer| {
+            ["decoder", "encoder"]
+                .into_iter()
+                .flat_map(move |attn_type| {
+                    ["key", "value"]
+                        .into_iter()
+                        .map(move |kv| format!("past_key_values.{layer}.{attn_type}.{kv}"))
+                })
+        })
+        .collect()
+}
 
-    for name in &candidates {
-        let path = model_dir.join(name);
-        if path.is_file() {
-            return Ok(path);
+fn empty_kv_cache_value(use_fp16: bool) -> Result<DynValue, TranscriptionError> {
+    let result = if use_fp16 {
+        Value::from_array(ndarray::Array4::<half::f16>::zeros((
+            1, NUM_HEADS, 0, HEAD_DIM,
+        )))
+        .map(DynValue::from)
+    } else {
+        Value::from_array(ndarray::Array4::<f32>::zeros((1, NUM_HEADS, 0, HEAD_DIM)))
+            .map(DynValue::from)
+    };
+    result.map_err(|e| TranscriptionError::transcription_failure("initial KV cache", &e))
+}
+
+/// Validate the decoder graph matches the layer/attention-head constants this
+/// adapter hard-codes elsewhere (cache-name generation, initial KV cache
+/// allocation, prompt tokens). A mismatched checkpoint — an interpolated or
+/// partially-converted model, for example — would otherwise surface as a shape
+/// mismatch inside the first `run()` call with a much less actionable message.
+fn verify_decoder_topology(decoder: &Session) -> Result<(), TranscriptionError> {
+    let mut decoder_kv_layer_count = 0_usize;
+    let mut observed_num_heads: Option<i64> = None;
+    let mut observed_head_dim: Option<i64> = None;
+
+    for input in decoder.inputs().iter() {
+        let name = input.name();
+        if !name.starts_with("past_key_values.") {
+            continue;
+        }
+        // Counting only the decoder self-attention keys avoids double-counting
+        // against cross-attention cache entries (`encoder.key` / `encoder.value`).
+        if !name.ends_with(".decoder.key") {
+            continue;
+        }
+
+        decoder_kv_layer_count += 1;
+
+        if let ValueType::Tensor { shape, .. } = input.dtype()
+            && shape.len() == 4
+        {
+            observed_num_heads.get_or_insert(shape[1]);
+            observed_head_dim.get_or_insert(shape[3]);
         }
     }
 
-    Err(TranscriptionError::invalid_model_with_details(format!(
-        "no encoder ONNX file found in {}",
-        model_dir.display()
-    )))
+    if decoder_kv_layer_count != NUM_DECODER_LAYERS {
+        return Err(TranscriptionError::invalid_model_with_details(format!(
+            "decoder layer mismatch: expected {NUM_DECODER_LAYERS} self-attention KV inputs, \
+             found {decoder_kv_layer_count}"
+        )));
+    }
+
+    if let Some(num_heads) = observed_num_heads
+        && num_heads != NUM_HEADS as i64
+    {
+        return Err(TranscriptionError::invalid_model_with_details(format!(
+            "decoder num_heads mismatch: expected {NUM_HEADS}, found {num_heads}"
+        )));
+    }
+
+    if let Some(head_dim) = observed_head_dim
+        && head_dim != HEAD_DIM as i64
+    {
+        return Err(TranscriptionError::invalid_model_with_details(format!(
+            "decoder head_dim mismatch: expected {HEAD_DIM}, found {head_dim}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn decoder_past_kv_is_fp16(decoder: &Session) -> bool {
+    decoder
+        .inputs()
+        .iter()
+        .find(|o| o.name().starts_with("past_key_values."))
+        .is_some_and(|o| {
+            matches!(
+                o.dtype(),
+                ValueType::Tensor {
+                    ty: TensorElementType::Float16,
+                    ..
+                }
+            )
+        })
+}
+
+const ENCODER_CANDIDATES: &[&str] = &[
+    "encoder_model_fp16.onnx",
+    "encoder_model.onnx",
+    "encoder_model_int8.onnx",
+    "encoder_model_q4.onnx",
+    "encoder_model_quantized.onnx",
+];
+
+const DECODER_CANDIDATES: &[&str] = &[
+    "decoder_model_merged_fp16.onnx",
+    "decoder_model_merged.onnx",
+    "decoder_model_merged_int8.onnx",
+    "decoder_model_merged_q4.onnx",
+    "decoder_model_merged_quantized.onnx",
+];
+
+fn find_encoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
+    find_first_existing(model_dir, ENCODER_CANDIDATES, "encoder")
 }
 
 fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
-    let candidates = [
-        "decoder_model_merged_fp16.onnx",
-        "decoder_model_merged.onnx",
-        "decoder_model_merged_int8.onnx",
-        "decoder_model_merged_q4.onnx",
-        "decoder_model_merged_quantized.onnx",
-    ];
+    find_first_existing(model_dir, DECODER_CANDIDATES, "decoder")
+}
 
-    for name in &candidates {
+fn find_first_existing(
+    model_dir: &Path,
+    candidates: &[&str],
+    kind: &str,
+) -> Result<PathBuf, TranscriptionError> {
+    for name in candidates {
         let path = model_dir.join(name);
         if path.is_file() {
             return Ok(path);
@@ -245,7 +323,7 @@ fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
     }
 
     Err(TranscriptionError::invalid_model_with_details(format!(
-        "decoder model missing: no decoder ONNX file found in {}",
+        "{kind} model missing: no {kind} ONNX file found in {}",
         model_dir.display()
     )))
 }
@@ -257,7 +335,6 @@ fn find_decoder_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
 /// files outside the model directory itself when the chosen model path lives in
 /// an arbitrary user directory.
 fn find_tokens_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
-    // Check model_dir itself first, then parent (for tokenizer.json at repo root).
     let search_dirs: Vec<&Path> = if let Some(parent) = model_dir.parent() {
         vec![model_dir, parent]
     } else {
@@ -279,10 +356,6 @@ fn find_tokens_path(model_dir: &Path) -> Result<PathBuf, TranscriptionError> {
     )))
 }
 
-// ---------------------------------------------------------------------------
-// Tokenizer
-// ---------------------------------------------------------------------------
-
 fn load_vocab(path: &Path) -> Result<HashMap<u32, String>, TranscriptionError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
         TranscriptionError::invalid_model_with_details(format!(
@@ -302,8 +375,6 @@ fn load_vocab(path: &Path) -> Result<HashMap<u32, String>, TranscriptionError> {
     }
 }
 
-/// Parse a HuggingFace `tokenizer.json` file.
-/// The vocab lives at `model.vocab` as `{ token_string: id, ... }`.
 fn load_vocab_from_json(content: &str) -> Result<HashMap<u32, String>, TranscriptionError> {
     let root: serde_json::Value = serde_json::from_str(content).map_err(|e| {
         TranscriptionError::invalid_model_with_details(format!(
@@ -331,7 +402,6 @@ fn load_vocab_from_json(content: &str) -> Result<HashMap<u32, String>, Transcrip
     Ok(vocab)
 }
 
-/// Parse a tab-separated `tokens.txt` file (id\ttoken per line).
 fn load_vocab_from_tsv(content: &str) -> Result<HashMap<u32, String>, TranscriptionError> {
     let mut vocab = HashMap::new();
 
@@ -368,7 +438,6 @@ fn detokenize(token_ids: &[i64], vocab: &HashMap<u32, String>) -> String {
     for &id in token_ids {
         let id = id as u32;
 
-        // Skip special/control tokens (IDs 0-254 are added_tokens).
         const SPECIAL_TOKEN_BOUNDARY: u32 = 255;
         if id < SPECIAL_TOKEN_BOUNDARY {
             continue;
@@ -384,15 +453,12 @@ fn detokenize(token_ids: &[i64], vocab: &HashMap<u32, String>) -> String {
 }
 
 fn decode_bpe_bytes(text: &str) -> String {
-    // Step 1: Replace ▁ (U+2581) with space (tokenizer decoder pipeline rule)
     let text = text.replace('\u{2581}', " ");
-    // Step 2: ByteFallback — decode <0xNN> byte tokens
     let mut result = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
 
     while i < bytes.len() {
-        // Check for <0xNN> byte token pattern.
         if bytes[i] == b'<'
             && i + 5 < bytes.len()
             && bytes[i + 1] == b'0'
@@ -414,59 +480,39 @@ fn decode_bpe_bytes(text: &str) -> String {
     String::from_utf8_lossy(&result).to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Autoregressive decode
-// ---------------------------------------------------------------------------
-
 type NamedInput<'v> = (Cow<'v, str>, SessionInputValue<'v>);
 
 fn autoregressive_decode(
     decoder: &mut Session,
     encoder_hidden: &DynValue,
     vocab: &HashMap<u32, String>,
+    cache_names: &[String],
+    use_fp16: bool,
+    prompt: &[i64],
 ) -> Result<String, TranscriptionError> {
-    let prompt = build_prompt_tokens();
     let mut generated_ids: Vec<i64> = Vec::new();
     let mut kv_cache: Option<Vec<DynValue>> = None;
     let mut past_seq_len: i64 = 0;
 
-    // KV cache names: past_key_values.{layer}.{decoder,encoder}.{key,value}
-    // Must match the ONNX decoder model input names exactly.
-    let cache_names: Vec<String> = (0..NUM_DECODER_LAYERS)
-        .flat_map(|layer| {
-            ["decoder", "encoder"]
-                .into_iter()
-                .flat_map(move |attn_type| {
-                    ["key", "value"]
-                        .into_iter()
-                        .map(move |kv| format!("past_key_values.{layer}.{attn_type}.{kv}"))
-                })
-        })
-        .collect();
-
     for step in 0..MAX_SEQ_LEN {
         let input_ids: Vec<i64> = if step == 0 {
-            prompt.clone()
+            prompt.to_vec()
         } else {
             vec![*generated_ids.last().unwrap()]
         };
 
         let seq_len = input_ids.len();
 
-        // input_ids: [1, seq_len]
         let input_ids_arr = ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
             .map_err(|e| TranscriptionError::transcription_failure("decoder input shape", &e))?;
 
-        // position_ids: [1, seq_len] — absolute positions starting at past_seq_len
         let positions: Vec<i64> = (past_seq_len..past_seq_len + seq_len as i64).collect();
         let position_ids_arr = ndarray::Array2::from_shape_vec((1, seq_len), positions)
             .map_err(|e| TranscriptionError::transcription_failure("decoder position_ids", &e))?;
 
-        // attention_mask: [1, total_seq_len] — all ones (no padding in single-utterance)
         let total_len = past_seq_len as usize + seq_len;
         let attn_mask_arr = ndarray::Array2::from_elem((1, total_len), 1_i64);
 
-        // num_logits_to_keep: scalar i64 — only produce logits for the last token
         let num_logits_arr = ndarray::Array0::from_elem((), 1_i64);
 
         let input_ids_value = Value::from_array(input_ids_arr)
@@ -489,7 +535,6 @@ fn autoregressive_decode(
             SessionInputValue::from(encoder_hidden),
         ));
 
-        // KV cache inputs.
         if let Some(ref cache_values) = kv_cache {
             for (idx, name) in cache_names.iter().enumerate() {
                 inputs.push((
@@ -498,34 +543,9 @@ fn autoregressive_decode(
                 ));
             }
         } else {
-            let use_fp16 = decoder
-                .inputs()
-                .iter()
-                .find(|o| o.name().starts_with("past_key_values."))
-                .is_some_and(|o| {
-                    matches!(
-                        o.dtype(),
-                        ValueType::Tensor {
-                            ty: TensorElementType::Float16,
-                            ..
-                        }
-                    )
-                });
-
-            for name in &cache_names {
-                if use_fp16 {
-                    let cache = ndarray::Array4::<half::f16>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
-                    let cache_value = Value::from_array(cache).map_err(|e| {
-                        TranscriptionError::transcription_failure("initial KV cache", &e)
-                    })?;
-                    inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
-                } else {
-                    let cache = ndarray::Array4::<f32>::zeros((1, NUM_HEADS, 0, HEAD_DIM));
-                    let cache_value = Value::from_array(cache).map_err(|e| {
-                        TranscriptionError::transcription_failure("initial KV cache", &e)
-                    })?;
-                    inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
-                }
+            for name in cache_names {
+                let cache_value = empty_kv_cache_value(use_fp16)?;
+                inputs.push((Cow::Borrowed(name.as_str()), cache_value.into()));
             }
         }
 
@@ -533,8 +553,6 @@ fn autoregressive_decode(
             .run(inputs)
             .map_err(|e| TranscriptionError::transcription_failure("decoder forward pass", &e))?;
 
-        // Separate logits (first output) from KV cache (remaining outputs).
-        // Output order: logits, then present.{layer}.{decoder,encoder}.{key,value}
         let mut output_iter = decoder_outputs.into_iter();
 
         let (_, logits_value) = output_iter.next().ok_or_else(|| {
@@ -550,7 +568,6 @@ fn autoregressive_decode(
         generated_ids.push(best_id);
         past_seq_len += seq_len as i64;
 
-        // Collect updated KV cache tensors from remaining decoder outputs.
         let new_cache: Vec<DynValue> = output_iter.map(|(_, v)| v).collect();
         if new_cache.len() == cache_names.len() {
             kv_cache = Some(new_cache);
@@ -560,8 +577,6 @@ fn autoregressive_decode(
     Ok(detokenize(&generated_ids, vocab))
 }
 
-/// Extract the token ID with the highest logit at the last sequence position.
-/// Handles both f32 (int8/default) and f16 (fp16) model outputs.
 fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
     if let Ok((shape, data)) = logits_value.try_extract_tensor::<f32>() {
         return argmax_from_logits(shape, data);
@@ -608,31 +623,33 @@ fn argmax_from_logits(dims: &[i64], logits_data: &[f32]) -> Result<i64, Transcri
 
 fn build_prompt_tokens() -> Vec<i64> {
     vec![
-        TOKEN_DECODER_START,       // ▁
-        TOKEN_START_OF_CONTEXT,    // <|startofcontext|>
-        TOKEN_START_OF_TRANSCRIPT, // <|startoftranscript|>
-        TOKEN_EMO_UNDEFINED,       // <|emo:undefined|>
-        TOKEN_LANG_EN,             // <|en|> (first)
-        TOKEN_LANG_EN,             // <|en|> (second — official repeats this)
-        TOKEN_PNC_ON,              // <|pnc|>
-        TOKEN_NO_ITN,              // <|noitn|>
-        TOKEN_NO_TIMESTAMP,        // <|notimestamp|>
-        TOKEN_NO_DIARIZE,          // <|nodiarize|>
+        TOKEN_DECODER_START,
+        TOKEN_START_OF_CONTEXT,
+        TOKEN_START_OF_TRANSCRIPT,
+        TOKEN_EMO_UNDEFINED,
+        TOKEN_LANG_EN,
+        TOKEN_LANG_EN,
+        TOKEN_PNC_ON,
+        TOKEN_NO_ITN,
+        TOKEN_NO_TIMESTAMP,
+        TOKEN_NO_DIARIZE,
     ]
 }
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
 fn validate_audio_duration(audio_samples: &[f32]) -> Result<(), TranscriptionError> {
+    // Single source of truth: the limit lives in CAPABILITIES so the wire
+    // contract and the runtime check can never drift.
+    let Some(max_secs) = CAPABILITIES.max_audio_duration_secs else {
+        return Ok(());
+    };
+
     let duration_secs = audio_samples.len() as f32 / SAMPLE_RATE as f32;
-    if duration_secs > MAX_AUDIO_DURATION_SECS {
+    if duration_secs > max_secs {
         return Err(TranscriptionError {
             code: "audio_too_long",
             message: "Audio clip exceeds the maximum duration for this engine.",
             details: Some(format!(
-                "duration {duration_secs:.1}s exceeds {MAX_AUDIO_DURATION_SECS}s limit"
+                "duration {duration_secs:.1}s exceeds {max_secs}s limit"
             )),
         });
     }
@@ -640,20 +657,17 @@ fn validate_audio_duration(audio_samples: &[f32]) -> Result<(), TranscriptionErr
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::transcription::TranscriptionBackend;
+    use crate::engine::traits::ModelFamilyAdapter;
 
     #[test]
     fn probe_rejects_missing_encoder() {
-        let result = CohereBackend::probe_model(Path::new("/tmp/nonexistent/encoder_model.onnx"));
+        let adapter = CohereTranscribeAdapter;
+        let result = adapter.probe_model(Path::new("/tmp/nonexistent/encoder_model.onnx"));
         let error = result.expect_err("should fail");
         assert_eq!(error.code, "missing_model_file");
     }
@@ -664,7 +678,10 @@ mod tests {
         let encoder = temp.join("encoder_model_fp16.onnx");
         std::fs::write(&encoder, b"fake").unwrap();
 
-        let error = CohereBackend::probe_model(&encoder).expect_err("should fail without decoder");
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&encoder)
+            .expect_err("should fail without decoder");
         assert!(error.details.unwrap().contains("decoder"));
 
         let _ = std::fs::remove_dir_all(&temp);
@@ -676,7 +693,9 @@ mod tests {
         std::fs::write(temp.join("encoder_model_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
 
-        let error = CohereBackend::probe_model(&temp.join("encoder_model_fp16.onnx"))
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&temp.join("encoder_model_fp16.onnx"))
             .expect_err("should fail without tokenizer");
         assert!(error.details.unwrap().contains("tokenizer"));
 
@@ -684,41 +703,60 @@ mod tests {
     }
 
     #[test]
-    fn probe_succeeds_with_tokens_txt() {
-        let temp = temp_dir("probe-ok-tsv");
+    fn probe_rejects_corrupt_encoder_when_tokens_txt_present() {
+        // File layout is valid (every candidate found), but the encoder bytes
+        // are not a real ONNX model. Probe must fail with invalid_model_file
+        // rather than let install report success.
+        let temp = temp_dir("probe-corrupt-tsv");
         std::fs::write(temp.join("encoder_model_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
 
-        assert!(CohereBackend::probe_model(&temp.join("encoder_model_fp16.onnx")).is_ok());
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&temp.join("encoder_model_fp16.onnx"))
+            .expect_err("corrupt encoder bytes must fail probe");
+        assert_eq!(error.code, "invalid_model_file");
+        assert!(
+            error
+                .details
+                .as_deref()
+                .is_some_and(|details| details.contains("encoder"))
+        );
 
         let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
-    fn probe_succeeds_with_quantized_decoder() {
-        let temp = temp_dir("probe-ok-quant");
+    fn probe_finds_quantized_encoder_before_failing_to_load() {
+        let temp = temp_dir("probe-corrupt-quant");
         std::fs::write(temp.join("encoder_model_quantized.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("decoder_model_merged_quantized.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokens.txt"), b"0\thello").unwrap();
 
-        assert!(CohereBackend::probe_model(&temp.join("encoder_model_quantized.onnx")).is_ok());
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&temp.join("encoder_model_quantized.onnx"))
+            .expect_err("corrupt encoder bytes must fail probe");
+        assert_eq!(error.code, "invalid_model_file");
 
         let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
-    fn probe_succeeds_with_tokenizer_json_in_parent() {
-        // Simulates the HuggingFace layout: onnx/ subdir with models,
-        // tokenizer.json at repo root (parent of onnx/).
-        let temp = temp_dir("probe-ok-json");
+    fn probe_finds_tokenizer_json_in_parent_before_failing_to_load() {
+        let temp = temp_dir("probe-corrupt-json");
         let onnx_dir = temp.join("onnx");
         std::fs::create_dir_all(&onnx_dir).unwrap();
         std::fs::write(onnx_dir.join("encoder_model_fp16.onnx"), b"fake").unwrap();
         std::fs::write(onnx_dir.join("decoder_model_merged_fp16.onnx"), b"fake").unwrap();
         std::fs::write(temp.join("tokenizer.json"), b"{}").unwrap();
 
-        assert!(CohereBackend::probe_model(&onnx_dir.join("encoder_model_fp16.onnx")).is_ok());
+        let adapter = CohereTranscribeAdapter;
+        let error = adapter
+            .probe_model(&onnx_dir.join("encoder_model_fp16.onnx"))
+            .expect_err("corrupt encoder bytes must fail probe");
+        assert_eq!(error.code, "invalid_model_file");
 
         let _ = std::fs::remove_dir_all(&temp);
     }
@@ -779,7 +817,6 @@ mod tests {
 
     #[test]
     fn decode_bpe_bytes_converts_word_separator() {
-        // U+2581 (▁) is the BPE word separator; should become ASCII space
         assert_eq!(
             decode_bpe_bytes("\u{2581}Hello\u{2581}world"),
             " Hello world"
@@ -818,16 +855,16 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                TOKEN_DECODER_START,       // ▁
-                TOKEN_START_OF_CONTEXT,    // <|startofcontext|>
-                TOKEN_START_OF_TRANSCRIPT, // <|startoftranscript|>
-                TOKEN_EMO_UNDEFINED,       // <|emo:undefined|>
-                TOKEN_LANG_EN,             // <|en|>
-                TOKEN_LANG_EN,             // <|en|> (repeated)
-                TOKEN_PNC_ON,              // <|pnc|>
-                TOKEN_NO_ITN,              // <|noitn|>
-                TOKEN_NO_TIMESTAMP,        // <|notimestamp|>
-                TOKEN_NO_DIARIZE,          // <|nodiarize|>
+                TOKEN_DECODER_START,
+                TOKEN_START_OF_CONTEXT,
+                TOKEN_START_OF_TRANSCRIPT,
+                TOKEN_EMO_UNDEFINED,
+                TOKEN_LANG_EN,
+                TOKEN_LANG_EN,
+                TOKEN_PNC_ON,
+                TOKEN_NO_ITN,
+                TOKEN_NO_TIMESTAMP,
+                TOKEN_NO_DIARIZE,
             ]
         );
     }

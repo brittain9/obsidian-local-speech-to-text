@@ -2,8 +2,13 @@ import type { App } from 'obsidian';
 import { Modal, Notice, Setting } from 'obsidian';
 
 import { formatBytes, formatErrorMessage } from '../shared/format-utils';
+import { buildCapabilityLabels } from './capability-view';
 import type { ModelInstallManager } from './model-install-manager';
-import { type CatalogModelRecord, getTotalModelSize } from './model-management-types';
+import {
+  type CatalogModelRecord,
+  type EngineCapabilitiesRecord,
+  getTotalModelSize,
+} from './model-management-types';
 
 interface ExternalModelFileModalDependencies {
   manager: ModelInstallManager;
@@ -64,6 +69,7 @@ export class ModelDetailsModal extends Modal {
     app: App,
     private readonly model: CatalogModelRecord,
     private readonly installPath: string | null,
+    private readonly capabilities: EngineCapabilitiesRecord | null,
   ) {
     super(app);
   }
@@ -86,6 +92,11 @@ export class ModelDetailsModal extends Modal {
 
     dl.createEl('dt', { text: 'License' });
     appendDetailsLink(dl.createEl('dd'), this.model.licenseLabel, this.model.licenseUrl);
+
+    if (this.capabilities !== null) {
+      dl.createEl('dt', { text: 'Capabilities' });
+      dl.createEl('dd', { text: buildCapabilityLabels(this.capabilities).join(', ') });
+    }
 
     if (this.installPath !== null) {
       dl.createEl('dt', { text: 'Install path' });

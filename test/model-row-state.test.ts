@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ActiveInstallInfo, ModelManagerState } from '../src/models/model-install-manager';
 import type {
-  CatalogModelRecord,
   InstalledModelRecord,
-  ModelCatalogRecord,
   ModelInstallUpdateRecord,
   SelectedModel,
 } from '../src/models/model-management-types';
@@ -12,83 +10,20 @@ import {
   deriveModelRowStates,
   type ModelRowState,
 } from '../src/models/model-row-state';
+import { sampleCatalog } from './fixtures/catalog';
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function sampleCatalog(): ModelCatalogRecord {
-  return {
-    catalogVersion: 1,
-    collections: [
-      {
-        collectionId: 'english_cpu_first',
-        displayName: 'English CPU First',
-        summary: 'summary',
-      },
-    ],
-    engines: [
-      {
-        displayName: 'Whisper',
-        engineId: 'whisper_cpp',
-        summary: 'summary',
-      },
-    ],
-    models: [
-      sampleCatalogModel({
-        displayName: 'Whisper Large V3 Turbo Q8_0',
-        modelId: 'whisper_large_v3_turbo_q8_0',
-        sizeBytes: 900,
-      }),
-      sampleCatalogModel({
-        displayName: 'Whisper Small English Q5_1',
-        modelId: 'whisper_small_en_q5_1',
-        sizeBytes: 100,
-      }),
-    ],
-  };
-}
-
-function sampleCatalogModel(input: {
-  displayName: string;
-  modelId: string;
-  sizeBytes: number;
-}): CatalogModelRecord {
-  return {
-    artifacts: [
-      {
-        artifactId: 'transcription',
-        downloadUrl: `https://example.com/${input.modelId}.bin`,
-        filename: `${input.modelId}.bin`,
-        required: true,
-        role: 'transcription_model',
-        sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-        sizeBytes: input.sizeBytes,
-      },
-    ],
-    capabilityFlags: ['dictation'],
-    collectionId: 'english_cpu_first',
-    displayName: input.displayName,
-    engineId: 'whisper_cpp',
-    languageTags: ['en'],
-    licenseLabel: 'MIT',
-    licenseUrl: 'https://example.com/license',
-    modelCardUrl: null,
-    modelId: input.modelId,
-    notes: [],
-    sourceUrl: 'https://example.com/source',
-    summary: 'Test model',
-    uxTags: [],
-  };
-}
-
 function sampleInstalledModel(modelId = 'whisper_large_v3_turbo_q8_0'): InstalledModelRecord {
   return {
     catalogVersion: 1,
-    engineId: 'whisper_cpp',
+    familyId: 'whisper',
     installPath: `/models/whisper_cpp/${modelId}`,
     installedAtUnixMs: 1_700_000_000_000,
     modelId,
+    runtimeId: 'whisper_cpp',
     runtimePath: `/models/whisper_cpp/${modelId}/model.bin`,
     totalSizeBytes: modelId === 'whisper_large_v3_turbo_q8_0' ? 900 : 100,
   };
@@ -100,10 +35,11 @@ function sampleInstallUpdate(
   return {
     details: null,
     downloadedBytes: 50,
-    engineId: 'whisper_cpp',
+    familyId: 'whisper',
     installId: 'install-1',
     message: 'Downloading',
     modelId: 'whisper_large_v3_turbo_q8_0',
+    runtimeId: 'whisper_cpp',
     state: 'downloading',
     totalBytes: 900,
     ...overrides,
@@ -122,12 +58,14 @@ function buildState(overrides?: Partial<ModelManagerState>): ModelManagerState {
   return {
     activeInstall: null,
     catalog: sampleCatalog(),
+    compiledAdapters: [],
+    compiledRuntimes: [],
     installedModels: [],
     loadError: null,
     loadStatus: 'ready',
     modelStore: { overridePath: null, path: '/models', usingDefaultPath: true },
     selectedModel: null,
-    supportedEngineIds: ['whisper_cpp'],
+    selectedModelCapabilities: { status: 'none' },
     ...overrides,
   };
 }
@@ -231,9 +169,10 @@ describe('deriveModelRowStates', () => {
   describe('action rules — installed, selected', () => {
     it('allows selected (disabled) and details', () => {
       const selectedModel: SelectedModel = {
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         kind: 'catalog_model',
         modelId: 'whisper_large_v3_turbo_q8_0',
+        runtimeId: 'whisper_cpp',
       };
       const rows = deriveModelRowStates(
         buildState({ installedModels: [sampleInstalledModel()], selectedModel }),
@@ -249,7 +188,6 @@ describe('deriveModelRowStates', () => {
   describe('active install effects on other rows', () => {
     it('use remains allowed on installed non-selected model during another install', () => {
       const activeInstall = sampleActiveInstall('installing');
-      // Large model is installing; small model is installed but not selected.
       const rows = deriveModelRowStates(
         buildState({
           activeInstall,
@@ -266,9 +204,10 @@ describe('deriveModelRowStates', () => {
 
     it('selected action remains allowed on currently selected model during another install', () => {
       const selectedModel: SelectedModel = {
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         kind: 'catalog_model',
         modelId: 'whisper_small_en_q5_1',
+        runtimeId: 'whisper_cpp',
       };
       const activeInstall = sampleActiveInstall('installing');
       const rows = deriveModelRowStates(
@@ -310,14 +249,12 @@ describe('deriveModelRowStates', () => {
 
     it('remove is blocked on the actively installing model', () => {
       const activeInstall = sampleActiveInstall('installing');
-      // Install model is in installed list to verify remove logic
       const rows = deriveModelRowStates(
         buildState({
           activeInstall,
           installedModels: [sampleInstalledModel('whisper_large_v3_turbo_q8_0')],
         }),
       );
-      // The installing model gets cancel+details, not remove.
       const largeRow = getRow(rows, 'whisper_large_v3_turbo_q8_0');
 
       expect(largeRow.allowedActions).not.toContain('remove');
@@ -349,9 +286,10 @@ describe('deriveCurrentModelDisplay', () => {
   describe('catalog model — installed', () => {
     it('returns installed model details from installed records', () => {
       const selectedModel: SelectedModel = {
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         kind: 'catalog_model',
         modelId: 'whisper_large_v3_turbo_q8_0',
+        runtimeId: 'whisper_cpp',
       };
       const installed = sampleInstalledModel('whisper_large_v3_turbo_q8_0');
       const display = deriveCurrentModelDisplay(
@@ -373,9 +311,10 @@ describe('deriveCurrentModelDisplay', () => {
   describe('catalog model — not installed', () => {
     it('shows not-installed label and falls back to catalog size', () => {
       const selectedModel: SelectedModel = {
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         kind: 'catalog_model',
         modelId: 'whisper_small_en_q5_1',
+        runtimeId: 'whisper_cpp',
       };
       const display = deriveCurrentModelDisplay(buildState({ selectedModel, installedModels: [] }));
 
@@ -388,9 +327,10 @@ describe('deriveCurrentModelDisplay', () => {
 
     it('falls back to modelId as displayName when catalog entry is absent', () => {
       const selectedModel: SelectedModel = {
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         kind: 'catalog_model',
         modelId: 'unknown_model_xyz',
+        runtimeId: 'whisper_cpp',
       };
       const display = deriveCurrentModelDisplay(buildState({ selectedModel }));
 
@@ -402,9 +342,10 @@ describe('deriveCurrentModelDisplay', () => {
   describe('external file model', () => {
     it('uses basename as displayName and filePath as resolvedPath', () => {
       const selectedModel: SelectedModel = {
-        engineId: 'whisper_cpp',
+        familyId: 'whisper',
         filePath: '/tmp/models/custom-model.bin',
         kind: 'external_file',
+        runtimeId: 'whisper_cpp',
       };
       const display = deriveCurrentModelDisplay(buildState({ selectedModel }));
 

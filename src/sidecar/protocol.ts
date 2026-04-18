@@ -1,18 +1,28 @@
 import {
+  type AcceleratorAvailability,
+  type AcceleratorId,
   type CatalogModelRecord,
-  type EngineId,
+  type EngineCapabilitiesRecord,
   getPrimaryArtifact,
   type InstalledModelRecord,
-  isEngineId,
+  isModelFamilyId,
+  isRuntimeId,
+  type LanguageSupport,
   type ModelCatalogRecord,
   type ModelCollectionRecord,
-  type ModelEngineRecord,
+  type ModelFamilyCapabilitiesRecord,
+  type ModelFamilyId,
+  type ModelFamilyRecord,
+  type ModelFormat,
   type ModelInstallState,
   type ModelInstallUpdateRecord,
   type ModelProbeResultRecord,
   type ModelRemovedRecord,
   type ModelStoreRecord,
   normalizeSelectedModel,
+  type RequestWarning,
+  type RuntimeCapabilitiesRecord,
+  type RuntimeId,
   type SelectedModel,
 } from '../models/model-management-types';
 import { PCM_BYTES_PER_FRAME } from '../shared/pcm-format';
@@ -47,6 +57,19 @@ export interface TranscriptSegment {
   text: string;
 }
 
+export interface CompiledRuntimeInfo {
+  displayName: string;
+  runtimeCapabilities: RuntimeCapabilitiesRecord;
+  runtimeId: RuntimeId;
+}
+
+export interface CompiledAdapterInfo {
+  displayName: string;
+  familyCapabilities: ModelFamilyCapabilitiesRecord;
+  familyId: ModelFamilyId;
+  runtimeId: RuntimeId;
+}
+
 interface EnvelopeBase<TType extends string> {
   type: TType;
 }
@@ -55,6 +78,7 @@ export interface HealthCommand extends EnvelopeBase<'health'> {}
 
 export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   accelerationPreference: AccelerationPreference;
+  initialPrompt?: string;
   language: 'en';
   mode: ListeningMode;
   modelSelection: SelectedModel;
@@ -62,13 +86,6 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   pauseWhileProcessing: boolean;
   sessionId: string;
   speakingStyle: SpeakingStyle;
-}
-
-export interface RuntimeCapability {
-  available: boolean;
-  backend: string;
-  engine: string;
-  reason: string | null;
 }
 
 export interface GetModelStoreCommand extends EnvelopeBase<'get_model_store'> {
@@ -87,16 +104,18 @@ export interface ProbeModelSelectionCommand extends EnvelopeBase<'probe_model_se
 }
 
 export interface RemoveModelCommand extends EnvelopeBase<'remove_model'> {
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   modelId: string;
   modelStorePathOverride?: string;
+  runtimeId: RuntimeId;
 }
 
 export interface InstallModelCommand extends EnvelopeBase<'install_model'> {
-  engineId: EngineId;
+  familyId: ModelFamilyId;
   installId: string;
   modelId: string;
   modelStorePathOverride?: string;
+  runtimeId: RuntimeId;
 }
 
 export interface CancelModelInstallCommand extends EnvelopeBase<'cancel_model_install'> {
@@ -132,9 +151,9 @@ export interface HealthOkEvent extends EnvelopeBase<'health_ok'> {
 }
 
 export interface SystemInfoEvent extends EnvelopeBase<'system_info'> {
-  compiledBackends: string[];
-  compiledEngines: string[];
-  runtimeCapabilities: RuntimeCapability[];
+  compiledAdapters: CompiledAdapterInfo[];
+  compiledRuntimes: CompiledRuntimeInfo[];
+  sidecarVersion: string;
   systemInfo: string;
 }
 
@@ -172,6 +191,7 @@ export interface TranscriptReadyEvent extends EnvelopeBase<'transcript_ready'> {
   sessionId: string;
   text: string;
   utteranceDurationMs: number;
+  warnings: RequestWarning[];
 }
 
 export interface WarningEvent extends EnvelopeBase<'warning'> {
@@ -400,7 +420,7 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
       return {
         catalogVersion: readPositiveInteger(parsedValue.catalogVersion, 'event.catalogVersion'),
         collections: readModelCollections(parsedValue.collections),
-        engines: readModelEngines(parsedValue.engines),
+        families: readModelFamilies(parsedValue.families),
         models: readCatalogModels(parsedValue.models),
         type,
       };
@@ -416,11 +436,16 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         available: readBoolean(parsedValue.available, 'event.available'),
         details: readNullableString(parsedValue.details, 'event.details'),
         displayName: readNullableString(parsedValue.displayName, 'event.displayName'),
-        engineId: readEngineId(parsedValue.engineId, 'event.engineId'),
+        familyId: readModelFamilyId(parsedValue.familyId, 'event.familyId'),
         installed: readBoolean(parsedValue.installed, 'event.installed'),
+        mergedCapabilities: readOptionalEngineCapabilities(
+          parsedValue.mergedCapabilities,
+          'event.mergedCapabilities',
+        ),
         message: readString(parsedValue.message, 'event.message'),
         modelId: readNullableString(parsedValue.modelId, 'event.modelId'),
         resolvedPath: readNullableString(parsedValue.resolvedPath, 'event.resolvedPath'),
+        runtimeId: readRuntimeId(parsedValue.runtimeId, 'event.runtimeId'),
         selection: readSelectedModel(parsedValue.selection, 'event.selection'),
         sizeBytes: readNullableNumber(parsedValue.sizeBytes, 'event.sizeBytes'),
         status: readModelProbeStatus(parsedValue.status, 'event.status'),
@@ -429,9 +454,10 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
 
     case 'model_removed':
       return {
-        engineId: readEngineId(parsedValue.engineId, 'event.engineId'),
+        familyId: readModelFamilyId(parsedValue.familyId, 'event.familyId'),
         modelId: readString(parsedValue.modelId, 'event.modelId'),
         removed: readBoolean(parsedValue.removed, 'event.removed'),
+        runtimeId: readRuntimeId(parsedValue.runtimeId, 'event.runtimeId'),
         type,
       };
 
@@ -439,10 +465,11 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
       return {
         details: readNullableString(parsedValue.details, 'event.details'),
         downloadedBytes: readNullableNumber(parsedValue.downloadedBytes, 'event.downloadedBytes'),
-        engineId: readEngineId(parsedValue.engineId, 'event.engineId'),
+        familyId: readModelFamilyId(parsedValue.familyId, 'event.familyId'),
         installId: readString(parsedValue.installId, 'event.installId'),
         message: readNullableString(parsedValue.message, 'event.message'),
         modelId: readString(parsedValue.modelId, 'event.modelId'),
+        runtimeId: readRuntimeId(parsedValue.runtimeId, 'event.runtimeId'),
         state: readModelInstallState(parsedValue.state, 'event.state'),
         totalBytes: readNullableNumber(parsedValue.totalBytes, 'event.totalBytes'),
         type,
@@ -450,9 +477,9 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
 
     case 'system_info':
       return {
-        compiledBackends: readStringArray(parsedValue.compiledBackends, 'event.compiledBackends'),
-        compiledEngines: readStringArray(parsedValue.compiledEngines, 'event.compiledEngines'),
-        runtimeCapabilities: readRuntimeCapabilities(parsedValue.runtimeCapabilities),
+        compiledAdapters: readCompiledAdapters(parsedValue.compiledAdapters),
+        compiledRuntimes: readCompiledRuntimes(parsedValue.compiledRuntimes),
+        sidecarVersion: readString(parsedValue.sidecarVersion, 'event.sidecarVersion'),
         systemInfo: readString(parsedValue.systemInfo, 'event.systemInfo'),
         type,
       };
@@ -485,6 +512,7 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
           parsedValue.utteranceDurationMs,
           'event.utteranceDurationMs',
         ),
+        warnings: readRequestWarnings(parsedValue.warnings),
       };
 
     case 'warning':
@@ -650,14 +678,24 @@ function readSessionStopReason(value: unknown, fieldName: string): SessionStopRe
   throw new Error(`Unsupported session stop reason: ${reason}`);
 }
 
-function readEngineId(value: unknown, fieldName: string): EngineId {
-  const engineId = readString(value, fieldName);
+function readRuntimeId(value: unknown, fieldName: string): RuntimeId {
+  const runtimeId = readString(value, fieldName);
 
-  if (!isEngineId(engineId)) {
-    throw new Error(`Unsupported engine id: ${engineId}`);
+  if (!isRuntimeId(runtimeId)) {
+    throw new Error(`Unsupported runtime id: ${runtimeId}`);
   }
 
-  return engineId;
+  return runtimeId;
+}
+
+function readModelFamilyId(value: unknown, fieldName: string): ModelFamilyId {
+  const familyId = readString(value, fieldName);
+
+  if (!isModelFamilyId(familyId)) {
+    throw new Error(`Unsupported model family id: ${familyId}`);
+  }
+
+  return familyId;
 }
 
 function readSelectedModel(value: unknown, fieldName: string): SelectedModel {
@@ -666,20 +704,24 @@ function readSelectedModel(value: unknown, fieldName: string): SelectedModel {
   }
 
   const kind = readString(value.kind, `${fieldName}.kind`);
+  const runtimeId = readRuntimeId(value.runtimeId, `${fieldName}.runtimeId`);
+  const familyId = readModelFamilyId(value.familyId, `${fieldName}.familyId`);
 
   if (kind === 'catalog_model') {
     return normalizeSelectedModel({
-      engineId: readEngineId(value.engineId, `${fieldName}.engineId`),
+      familyId,
       kind,
       modelId: readString(value.modelId, `${fieldName}.modelId`),
+      runtimeId,
     });
   }
 
   if (kind === 'external_file') {
     return normalizeSelectedModel({
-      engineId: readEngineId(value.engineId, `${fieldName}.engineId`),
+      familyId,
       filePath: readString(value.filePath, `${fieldName}.filePath`),
       kind,
+      runtimeId,
     });
   }
 
@@ -696,19 +738,185 @@ function readModelProbeStatus(value: unknown, fieldName: string): ModelProbeResu
   throw new Error(`Unsupported model probe status: ${status}`);
 }
 
-function readRuntimeCapabilities(value: unknown): RuntimeCapability[] {
-  if (value === undefined) {
+function readAcceleratorId(value: unknown, fieldName: string): AcceleratorId {
+  const id = readString(value, fieldName);
+
+  if (id === 'cpu' || id === 'cuda' || id === 'direct_ml' || id === 'metal') {
+    return id;
+  }
+
+  throw new Error(`Unsupported accelerator id: ${id}`);
+}
+
+function readModelFormat(value: unknown, fieldName: string): ModelFormat {
+  const format = readString(value, fieldName);
+
+  if (format === 'ggml' || format === 'gguf' || format === 'onnx') {
+    return format;
+  }
+
+  throw new Error(`Unsupported model format: ${format}`);
+}
+
+function readAcceleratorAvailability(value: unknown, fieldName: string): AcceleratorAvailability {
+  const record = readRecord(value, fieldName);
+
+  return {
+    available: readBoolean(record.available, `${fieldName}.available`),
+    unavailableReason: readNullableString(
+      record.unavailableReason,
+      `${fieldName}.unavailableReason`,
+    ),
+  };
+}
+
+function readAcceleratorDetails(
+  value: unknown,
+  fieldName: string,
+): Partial<Record<AcceleratorId, AcceleratorAvailability>> {
+  const record = readRecord(value, fieldName);
+  const result: Partial<Record<AcceleratorId, AcceleratorAvailability>> = {};
+
+  for (const [key, entry] of Object.entries(record)) {
+    const acceleratorId = readAcceleratorId(key, `${fieldName}[key]`);
+    result[acceleratorId] = readAcceleratorAvailability(entry, `${fieldName}[${key}]`);
+  }
+
+  return result;
+}
+
+function readRuntimeCapabilities(value: unknown, fieldName: string): RuntimeCapabilitiesRecord {
+  const record = readRecord(value, fieldName);
+
+  return {
+    acceleratorDetails: readAcceleratorDetails(
+      record.acceleratorDetails,
+      `${fieldName}.acceleratorDetails`,
+    ),
+    availableAccelerators: readArray(
+      record.availableAccelerators,
+      `${fieldName}.availableAccelerators`,
+    ).map((entry, index) =>
+      readAcceleratorId(entry, `${fieldName}.availableAccelerators[${index}]`),
+    ),
+    supportedModelFormats: readArray(
+      record.supportedModelFormats,
+      `${fieldName}.supportedModelFormats`,
+    ).map((entry, index) => readModelFormat(entry, `${fieldName}.supportedModelFormats[${index}]`)),
+  };
+}
+
+function readLanguageSupport(value: unknown, fieldName: string): LanguageSupport {
+  const record = readRecord(value, fieldName);
+  const kind = readString(record.kind, `${fieldName}.kind`);
+
+  if (kind === 'all' || kind === 'english_only' || kind === 'unknown') {
+    return { kind };
+  }
+
+  if (kind === 'list') {
+    return {
+      kind,
+      tags: readArray(record.tags, `${fieldName}.tags`).map((entry, index) =>
+        readString(entry, `${fieldName}.tags[${index}]`),
+      ),
+    };
+  }
+
+  throw new Error(`Unsupported language support kind: ${kind}`);
+}
+
+function readModelFamilyCapabilities(
+  value: unknown,
+  fieldName: string,
+): ModelFamilyCapabilitiesRecord {
+  const record = readRecord(value, fieldName);
+
+  return {
+    maxAudioDurationSecs: readNullableNumber(
+      record.maxAudioDurationSecs,
+      `${fieldName}.maxAudioDurationSecs`,
+    ),
+    producesPunctuation: readBoolean(
+      record.producesPunctuation,
+      `${fieldName}.producesPunctuation`,
+    ),
+    supportedLanguages: readLanguageSupport(
+      record.supportedLanguages,
+      `${fieldName}.supportedLanguages`,
+    ),
+    supportsInitialPrompt: readBoolean(
+      record.supportsInitialPrompt,
+      `${fieldName}.supportsInitialPrompt`,
+    ),
+    supportsLanguageSelection: readBoolean(
+      record.supportsLanguageSelection,
+      `${fieldName}.supportsLanguageSelection`,
+    ),
+    supportsTimedSegments: readBoolean(
+      record.supportsTimedSegments,
+      `${fieldName}.supportsTimedSegments`,
+    ),
+  };
+}
+
+function readOptionalEngineCapabilities(
+  value: unknown,
+  fieldName: string,
+): EngineCapabilitiesRecord | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const record = readRecord(value, fieldName);
+
+  return {
+    family: readModelFamilyCapabilities(record.family, `${fieldName}.family`),
+    familyId: readModelFamilyId(record.familyId, `${fieldName}.familyId`),
+    runtime: readRuntimeCapabilities(record.runtime, `${fieldName}.runtime`),
+    runtimeId: readRuntimeId(record.runtimeId, `${fieldName}.runtimeId`),
+  };
+}
+
+function readCompiledRuntimes(value: unknown): CompiledRuntimeInfo[] {
+  return readArray(value, 'event.compiledRuntimes').map((entry, index) => {
+    const record = readRecord(entry, `event.compiledRuntimes[${index}]`);
+    return {
+      displayName: readString(record.displayName, `event.compiledRuntimes[${index}].displayName`),
+      runtimeCapabilities: readRuntimeCapabilities(
+        record.runtimeCapabilities,
+        `event.compiledRuntimes[${index}].runtimeCapabilities`,
+      ),
+      runtimeId: readRuntimeId(record.runtimeId, `event.compiledRuntimes[${index}].runtimeId`),
+    };
+  });
+}
+
+function readCompiledAdapters(value: unknown): CompiledAdapterInfo[] {
+  return readArray(value, 'event.compiledAdapters').map((entry, index) => {
+    const record = readRecord(entry, `event.compiledAdapters[${index}]`);
+    return {
+      displayName: readString(record.displayName, `event.compiledAdapters[${index}].displayName`),
+      familyCapabilities: readModelFamilyCapabilities(
+        record.familyCapabilities,
+        `event.compiledAdapters[${index}].familyCapabilities`,
+      ),
+      familyId: readModelFamilyId(record.familyId, `event.compiledAdapters[${index}].familyId`),
+      runtimeId: readRuntimeId(record.runtimeId, `event.compiledAdapters[${index}].runtimeId`),
+    };
+  });
+}
+
+function readRequestWarnings(value: unknown): RequestWarning[] {
+  if (value === undefined || value === null) {
     return [];
   }
 
-  return readArray(value, 'event.runtimeCapabilities').map((capability, index) => {
-    const record = readRecord(capability, `event.runtimeCapabilities[${index}]`);
-
+  return readArray(value, 'event.warnings').map((entry, index) => {
+    const record = readRecord(entry, `event.warnings[${index}]`);
     return {
-      available: readBoolean(record.available, `event.runtimeCapabilities[${index}].available`),
-      backend: readString(record.backend, `event.runtimeCapabilities[${index}].backend`),
-      engine: readString(record.engine, `event.runtimeCapabilities[${index}].engine`),
-      reason: readNullableString(record.reason, `event.runtimeCapabilities[${index}].reason`),
+      field: readString(record.field, `event.warnings[${index}].field`),
+      reason: readString(record.reason, `event.warnings[${index}].reason`),
     };
   });
 }
@@ -749,14 +957,15 @@ function readTranscriptSegments(value: unknown): TranscriptSegment[] {
   });
 }
 
-function readModelEngines(value: unknown): ModelEngineRecord[] {
-  return readArray(value, 'event.engines').map((engine, index) => {
-    const record = readRecord(engine, `event.engines[${index}]`);
+function readModelFamilies(value: unknown): ModelFamilyRecord[] {
+  return readArray(value, 'event.families').map((entry, index) => {
+    const record = readRecord(entry, `event.families[${index}]`);
 
     return {
-      displayName: readString(record.displayName, `event.engines[${index}].displayName`),
-      engineId: readEngineId(record.engineId, `event.engines[${index}].engineId`),
-      summary: readString(record.summary, `event.engines[${index}].summary`),
+      displayName: readString(record.displayName, `event.families[${index}].displayName`),
+      familyId: readModelFamilyId(record.familyId, `event.families[${index}].familyId`),
+      runtimeId: readRuntimeId(record.runtimeId, `event.families[${index}].runtimeId`),
+      summary: readString(record.summary, `event.families[${index}].summary`),
     };
   });
 }
@@ -779,19 +988,16 @@ function readCatalogModels(value: unknown): CatalogModelRecord[] {
     const artifacts = readModelArtifacts(record.artifacts, `event.models[${index}].artifacts`);
     const parsedModel: CatalogModelRecord = {
       artifacts,
-      capabilityFlags: readStringArray(
-        record.capabilityFlags,
-        `event.models[${index}].capabilityFlags`,
-      ),
       collectionId: readString(record.collectionId, `event.models[${index}].collectionId`),
       displayName: readString(record.displayName, `event.models[${index}].displayName`),
-      engineId: readEngineId(record.engineId, `event.models[${index}].engineId`),
+      familyId: readModelFamilyId(record.familyId, `event.models[${index}].familyId`),
       languageTags: readStringArray(record.languageTags, `event.models[${index}].languageTags`),
       licenseLabel: readString(record.licenseLabel, `event.models[${index}].licenseLabel`),
       licenseUrl: readString(record.licenseUrl, `event.models[${index}].licenseUrl`),
       modelCardUrl: readNullableString(record.modelCardUrl, `event.models[${index}].modelCardUrl`),
       modelId: readString(record.modelId, `event.models[${index}].modelId`),
       notes: readStringArray(record.notes, `event.models[${index}].notes`),
+      runtimeId: readRuntimeId(record.runtimeId, `event.models[${index}].runtimeId`),
       sourceUrl: readString(record.sourceUrl, `event.models[${index}].sourceUrl`),
       summary: readString(record.summary, `event.models[${index}].summary`),
       uxTags: readStringArray(record.uxTags, `event.models[${index}].uxTags`),
@@ -835,13 +1041,14 @@ function readInstalledModels(value: unknown): InstalledModelRecord[] {
         record.catalogVersion,
         `event.models[${index}].catalogVersion`,
       ),
-      engineId: readEngineId(record.engineId, `event.models[${index}].engineId`),
+      familyId: readModelFamilyId(record.familyId, `event.models[${index}].familyId`),
       installPath: readString(record.installPath, `event.models[${index}].installPath`),
       installedAtUnixMs: readNonNegativeNumber(
         record.installedAtUnixMs,
         `event.models[${index}].installedAtUnixMs`,
       ),
       modelId: readString(record.modelId, `event.models[${index}].modelId`),
+      runtimeId: readRuntimeId(record.runtimeId, `event.models[${index}].runtimeId`),
       runtimePath: readNullableString(record.runtimePath, `event.models[${index}].runtimePath`),
       totalSizeBytes: readNonNegativeNumber(
         record.totalSizeBytes,

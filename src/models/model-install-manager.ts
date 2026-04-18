@@ -1,20 +1,24 @@
 import type { PluginSettings } from '../settings/plugin-settings';
 import type { PluginLogger } from '../shared/plugin-logger';
 import type {
+  CompiledAdapterInfo,
+  CompiledRuntimeInfo,
   ModelInstallUpdateEvent,
   ModelProbeResultEvent,
   SidecarEvent,
+  SystemInfoEvent,
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import {
   type CatalogModelSelection,
-  type EngineId,
   type InstalledModelRecord,
-  isEngineId,
   type ModelCatalogRecord,
   type ModelInstallUpdateRecord,
   type ModelStoreRecord,
+  matchesModelTriple,
   type SelectedModel,
+  type SelectedModelCapabilities,
+  selectedModelEquals,
 } from './model-management-types';
 
 // ---------------------------------------------------------------------------
@@ -34,12 +38,14 @@ type LoadStatus = 'error' | 'loading' | 'ready';
 export interface ModelManagerState {
   activeInstall: ActiveInstallInfo | null;
   catalog: ModelCatalogRecord;
+  compiledAdapters: CompiledAdapterInfo[];
+  compiledRuntimes: CompiledRuntimeInfo[];
   installedModels: InstalledModelRecord[];
   loadError: string | null;
   loadStatus: LoadStatus;
   modelStore: ModelStoreRecord;
   selectedModel: SelectedModel | null;
-  supportedEngineIds: EngineId[];
+  selectedModelCapabilities: SelectedModelCapabilities;
 }
 
 interface ModelInstallManagerDependencies {
@@ -105,7 +111,7 @@ const CANCEL_STUCK_TIMEOUT_MS = 30_000;
 const EMPTY_CATALOG: ModelCatalogRecord = {
   catalogVersion: 0,
   collections: [],
-  engines: [],
+  families: [],
   models: [],
 };
 
@@ -129,14 +135,6 @@ function createProbeFailureMessage(probeResult: ModelProbeResultEvent): string {
     : probeResult.message;
 }
 
-function installMatchesModel(
-  install: ActiveInstallInfo,
-  engineId: EngineId,
-  modelId: string,
-): boolean {
-  return install.installUpdate.engineId === engineId && install.installUpdate.modelId === modelId;
-}
-
 // ---------------------------------------------------------------------------
 // ModelInstallManager
 // ---------------------------------------------------------------------------
@@ -145,6 +143,8 @@ export class ModelInstallManager {
   private activeInstall: ActiveInstallInfo | null = null;
   private cancelStuckTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   private catalog: ModelCatalogRecord = EMPTY_CATALOG;
+  private compiledAdapters: CompiledAdapterInfo[] = [];
+  private compiledRuntimes: CompiledRuntimeInfo[] = [];
   private installedModels: InstalledModelRecord[] = [];
   private lastLoggedInstallStateKey: string | null = null;
   private readonly listeners = new Set<() => void>();
@@ -152,7 +152,7 @@ export class ModelInstallManager {
   private loadStatus: LoadStatus = 'loading';
   private modelStore: ModelStoreRecord = EMPTY_MODEL_STORE;
   private releaseSidecarSubscription: (() => void) | null = null;
-  private supportedEngineIds: EngineId[] = [];
+  private selectedModelCapabilities: SelectedModelCapabilities = { status: 'none' };
 
   constructor(private readonly deps: ModelInstallManagerDependencies) {}
 
@@ -176,24 +176,29 @@ export class ModelInstallManager {
       const settings = this.deps.getSettings();
       const overridePayload = createModelStoreOverridePayload(settings.modelStorePathOverride);
 
-      const [catalogEvent, installedEvent, modelStoreEvent, supportedEngineIds] = await Promise.all(
-        [
-          this.deps.sidecarConnection.listModelCatalog(),
-          this.deps.sidecarConnection.listInstalledModels(overridePayload.modelStorePathOverride),
-          this.deps.sidecarConnection.getModelStore(overridePayload.modelStorePathOverride),
-          this.fetchSupportedEngineIds(),
-        ],
-      );
+      const [catalogEvent, installedEvent, modelStoreEvent, systemInfo] = await Promise.all([
+        this.deps.sidecarConnection.listModelCatalog(),
+        this.deps.sidecarConnection.listInstalledModels(overridePayload.modelStorePathOverride),
+        this.deps.sidecarConnection.getModelStore(overridePayload.modelStorePathOverride),
+        this.fetchSystemInfo(),
+      ]);
 
       this.catalog = catalogEvent;
       this.installedModels = installedEvent.models;
       this.modelStore = modelStoreEvent;
-      this.supportedEngineIds = supportedEngineIds;
+      this.compiledRuntimes = systemInfo?.compiledRuntimes ?? [];
+      this.compiledAdapters = systemInfo?.compiledAdapters ?? [];
       this.loadStatus = 'ready';
       this.loadError = null;
     } catch (error) {
       this.loadStatus = 'error';
       this.loadError = error instanceof Error ? error.message : String(error);
+    }
+
+    const persistedSelection = this.deps.getSettings().selectedModel;
+    if (persistedSelection !== null) {
+      this.selectedModelCapabilities = { selection: persistedSelection, status: 'pending' };
+      void this.refreshSelectedCapabilities(persistedSelection);
     }
 
     this.notify();
@@ -232,12 +237,14 @@ export class ModelInstallManager {
     return {
       activeInstall: this.activeInstall,
       catalog: this.catalog,
+      compiledAdapters: this.compiledAdapters,
+      compiledRuntimes: this.compiledRuntimes,
       installedModels: this.installedModels,
       loadError: this.loadError,
       loadStatus: this.loadStatus,
       modelStore: this.modelStore,
       selectedModel: this.deps.getSettings().selectedModel,
-      supportedEngineIds: this.supportedEngineIds,
+      selectedModelCapabilities: this.selectedModelCapabilities,
     };
   }
 
@@ -252,12 +259,13 @@ export class ModelInstallManager {
 
     this.deps.logger?.debug(
       'model',
-      `initiating install for ${selection.engineId}:${selection.modelId}`,
+      `initiating install for ${selection.runtimeId}:${selection.familyId}:${selection.modelId}`,
     );
     return this.deps.sidecarConnection.installModel({
-      engineId: selection.engineId,
+      familyId: selection.familyId,
       installId: createInstallId(),
       modelId: selection.modelId,
+      runtimeId: selection.runtimeId,
       ...createModelStoreOverridePayload(this.deps.getSettings().modelStorePathOverride),
     });
   }
@@ -357,9 +365,14 @@ export class ModelInstallManager {
 
     this.deps.logger?.debug(
       'model',
-      `selected ${selection.kind === 'catalog_model' ? `${selection.engineId}:${selection.modelId}` : selection.filePath}`,
+      `selected ${
+        selection.kind === 'catalog_model'
+          ? `${selection.runtimeId}:${selection.familyId}:${selection.modelId}`
+          : selection.filePath
+      }`,
     );
     await this.updateSettings({ selectedModel: selection });
+    this.applyProbeResultToCapabilities(selection, probeResult);
     return probeResult;
   }
 
@@ -369,29 +382,42 @@ export class ModelInstallManager {
     if (
       currentSelection !== null &&
       currentSelection.kind === 'catalog_model' &&
-      currentSelection.engineId === selection.engineId &&
-      currentSelection.modelId === selection.modelId
+      matchesModelTriple(
+        currentSelection,
+        selection.runtimeId,
+        selection.familyId,
+        selection.modelId,
+      )
     ) {
       throw new Error('Cannot remove the currently selected model. Clear the selection first.');
     }
 
     if (
       this.activeInstall !== null &&
-      installMatchesModel(this.activeInstall, selection.engineId, selection.modelId)
+      matchesModelTriple(
+        this.activeInstall.installUpdate,
+        selection.runtimeId,
+        selection.familyId,
+        selection.modelId,
+      )
     ) {
       throw new Error('This model is currently being installed and cannot be removed.');
     }
 
-    this.deps.logger?.debug('model', `removing ${selection.engineId}:${selection.modelId}`);
+    this.deps.logger?.debug(
+      'model',
+      `removing ${selection.runtimeId}:${selection.familyId}:${selection.modelId}`,
+    );
     const event = await this.deps.sidecarConnection.removeModel({
-      engineId: selection.engineId,
+      familyId: selection.familyId,
       modelId: selection.modelId,
+      runtimeId: selection.runtimeId,
       ...createModelStoreOverridePayload(this.deps.getSettings().modelStorePathOverride),
     });
 
     if (event.removed) {
       this.installedModels = this.installedModels.filter(
-        (m) => !(m.engineId === selection.engineId && m.modelId === selection.modelId),
+        (m) => !matchesModelTriple(m, selection.runtimeId, selection.familyId, selection.modelId),
       );
       this.notify();
     }
@@ -400,13 +426,16 @@ export class ModelInstallManager {
   async clearSelection(): Promise<void> {
     this.deps.logger?.debug('model', 'cleared selected model');
     await this.updateSettings({ selectedModel: null });
+    this.selectedModelCapabilities = { status: 'none' };
+    this.notify();
   }
 
   async validateAndSelectExternalFile(filePath: string): Promise<ModelProbeResultEvent> {
     const selection: SelectedModel = {
-      engineId: 'whisper_cpp',
+      familyId: 'whisper',
       filePath: filePath.trim(),
       kind: 'external_file',
+      runtimeId: 'whisper_cpp',
     };
     return this.select(selection);
   }
@@ -414,6 +443,63 @@ export class ModelInstallManager {
   // -----------------------------------------------------------------------
   // Private
   // -----------------------------------------------------------------------
+
+  private async refreshSelectedCapabilities(selection: SelectedModel): Promise<void> {
+    try {
+      const probeResult = await this.deps.sidecarConnection.probeModelSelection({
+        modelSelection: selection,
+        ...createModelStoreOverridePayload(this.deps.getSettings().modelStorePathOverride),
+      });
+      this.applyProbeResultToCapabilities(selection, probeResult);
+    } catch (error) {
+      this.deps.logger?.warn(
+        'model',
+        `failed to probe selected model capabilities: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      const current = this.deps.getSettings().selectedModel;
+      if (current !== null && selectedModelEquals(current, selection)) {
+        this.selectedModelCapabilities = {
+          reason: 'probe_failed',
+          selection,
+          status: 'unavailable',
+        };
+        this.notify();
+      }
+    }
+  }
+
+  private applyProbeResultToCapabilities(
+    selection: SelectedModel,
+    probeResult: ModelProbeResultEvent,
+  ): void {
+    const current = this.deps.getSettings().selectedModel;
+    if (current === null || !selectedModelEquals(current, selection)) {
+      return;
+    }
+
+    if (probeResult.status === 'ready' && probeResult.mergedCapabilities !== null) {
+      this.selectedModelCapabilities = {
+        capabilities: probeResult.mergedCapabilities,
+        selection,
+        status: 'ready',
+      };
+    } else if (probeResult.status === 'missing' || probeResult.status === 'invalid') {
+      this.selectedModelCapabilities = {
+        details: createProbeFailureMessage(probeResult),
+        reason: probeResult.status,
+        selection,
+        status: 'unavailable',
+      };
+    } else {
+      this.selectedModelCapabilities = {
+        reason: 'probe_failed',
+        selection,
+        status: 'unavailable',
+      };
+    }
+
+    this.notify();
+  }
 
   private handleSidecarEvent(event: SidecarEvent): void {
     if (event.type !== 'model_install_update') {
@@ -442,14 +528,14 @@ export class ModelInstallManager {
     // On completed installs, refresh the installed models list so the UI
     // reflects the new model without requiring a restart.
     if (event.state === 'completed') {
-      void this.refreshInstalledModels();
+      void this.refreshAfterInstall();
       return;
     }
 
     this.notify();
   }
 
-  private async refreshInstalledModels(): Promise<void> {
+  private async refreshAfterInstall(): Promise<void> {
     try {
       const overridePayload = createModelStoreOverridePayload(
         this.deps.getSettings().modelStorePathOverride,
@@ -489,12 +575,11 @@ export class ModelInstallManager {
     };
   }
 
-  private async fetchSupportedEngineIds(): Promise<EngineId[]> {
+  private async fetchSystemInfo(): Promise<SystemInfoEvent | null> {
     try {
-      const info = await this.deps.sidecarConnection.getSystemInfo();
-      return info.compiledEngines.filter(isEngineId);
+      return await this.deps.sidecarConnection.getSystemInfo();
     } catch {
-      return ['whisper_cpp'];
+      return null;
     }
   }
 

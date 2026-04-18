@@ -231,6 +231,7 @@ describe('DictationSessionController', () => {
       text: 'hello obsidian',
       type: 'transcript_ready',
       utteranceDurationMs: 700,
+      warnings: [],
     });
 
     expect(editorService.insertedTranscripts).toEqual([
@@ -259,6 +260,7 @@ describe('DictationSessionController', () => {
       text: '   ',
       type: 'transcript_ready',
       utteranceDurationMs: 700,
+      warnings: [],
     });
 
     await vi.waitFor(() => {
@@ -401,8 +403,9 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
 
 function createExternalModelSelection() {
   return {
-    engineId: 'whisper_cpp' as const,
+    familyId: 'whisper' as const,
     filePath: '/tmp/ggml-small.en-q5_1.bin',
     kind: 'external_file' as const,
+    runtimeId: 'whisper_cpp' as const,
   };
 }

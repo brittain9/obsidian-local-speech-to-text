@@ -150,7 +150,7 @@ args=(
   build
   --manifest-path "$MANIFEST"
   --target-dir "$target_dir"
-  --features engine-cohere,gpu-cuda,gpu-ort-cuda
+  --features gpu-cuda,gpu-ort-cuda
   -j "$jobs"
   --config "host.linker=\"${CC}\""
   --config "host.rustflags=[\"-C\",\"link-arg=-fuse-ld=bfd\"]"

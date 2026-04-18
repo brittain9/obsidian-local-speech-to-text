@@ -1,13 +1,13 @@
+pub mod adapters;
 pub mod app;
-pub mod capabilities;
 pub mod catalog;
-#[cfg(feature = "engine-cohere")]
-pub mod cohere;
+pub mod engine;
 pub mod installer;
-#[cfg(feature = "engine-cohere")]
+#[cfg(feature = "engine-cohere-transcribe")]
 pub mod mel;
 pub mod model_store;
 pub mod protocol;
+pub mod runtimes;
 pub mod session;
 pub mod transcription;
 pub mod vad;

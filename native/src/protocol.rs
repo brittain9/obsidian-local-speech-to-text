@@ -3,7 +3,13 @@ use std::io::{ErrorKind, Read, Write};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{CatalogModel, ModelCollection, ModelEngine};
+use crate::catalog::{
+    CatalogModel, ModelCollection, ModelFamilyDescriptor, ModelRuntimeDescriptor,
+};
+use crate::engine::capabilities::{
+    EngineCapabilities, ModelFamilyCapabilities, ModelFamilyId, RequestWarning,
+    RuntimeCapabilities, RuntimeId,
+};
 use crate::model_store::InstalledModelRecord;
 use crate::session::SpeakingStyle;
 
@@ -19,37 +25,43 @@ pub const PCM_FRAME_DURATION_MS: usize = 20;
 pub const PCM_SAMPLES_PER_FRAME: usize = (PCM_SAMPLE_RATE_HZ / 1_000) * PCM_FRAME_DURATION_MS;
 pub const PCM_BYTES_PER_FRAME: usize = PCM_SAMPLES_PER_FRAME * PCM_CHANNEL_COUNT * PCM_SAMPLE_BYTES;
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EngineId {
-    CohereOnnx,
-    WhisperCpp,
-}
-
-impl EngineId {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::CohereOnnx => "cohere_onnx",
-            Self::WhisperCpp => "whisper_cpp",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SelectedModel {
     CatalogModel {
-        #[serde(rename = "engineId")]
-        engine_id: EngineId,
+        #[serde(rename = "runtimeId")]
+        runtime_id: RuntimeId,
+        #[serde(rename = "familyId")]
+        family_id: ModelFamilyId,
         #[serde(rename = "modelId")]
         model_id: String,
     },
     ExternalFile {
-        #[serde(rename = "engineId")]
-        engine_id: EngineId,
+        #[serde(rename = "runtimeId")]
+        runtime_id: RuntimeId,
+        #[serde(rename = "familyId")]
+        family_id: ModelFamilyId,
         #[serde(rename = "filePath")]
         file_path: String,
     },
+}
+
+impl SelectedModel {
+    pub fn runtime_id(&self) -> RuntimeId {
+        match self {
+            Self::CatalogModel { runtime_id, .. } | Self::ExternalFile { runtime_id, .. } => {
+                *runtime_id
+            }
+        }
+    }
+
+    pub fn family_id(&self) -> ModelFamilyId {
+        match self {
+            Self::CatalogModel { family_id, .. } | Self::ExternalFile { family_id, .. } => {
+                *family_id
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,13 +136,26 @@ pub struct TranscriptSegment {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeCapability {
-    pub available: bool,
-    pub backend: String,
-    pub engine: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompiledRuntimeInfo {
+    #[serde(rename = "runtimeId")]
+    pub runtime_id: RuntimeId,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(rename = "runtimeCapabilities")]
+    pub runtime_capabilities: RuntimeCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompiledAdapterInfo {
+    #[serde(rename = "runtimeId")]
+    pub runtime_id: RuntimeId,
+    #[serde(rename = "familyId")]
+    pub family_id: ModelFamilyId,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(rename = "familyCapabilities")]
+    pub family_capabilities: ModelFamilyCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,6 +171,8 @@ pub enum Command {
     StartSession {
         #[serde(rename = "accelerationPreference", default)]
         acceleration_preference: AccelerationPreference,
+        #[serde(rename = "initialPrompt", default)]
+        initial_prompt: Option<String>,
         language: String,
         mode: ListeningMode,
         #[serde(rename = "modelSelection")]
@@ -160,8 +187,6 @@ pub enum Command {
         speaking_style: SpeakingStyle,
     },
     GetSystemInfo,
-    /// Internal-only. Not exposed to the plugin protocol.
-    RefreshCapabilities,
     GetModelStore {
         #[serde(rename = "modelStorePathOverride", default)]
         model_store_path_override: Option<String>,
@@ -178,16 +203,20 @@ pub enum Command {
         model_store_path_override: Option<String>,
     },
     RemoveModel {
-        #[serde(rename = "engineId")]
-        engine_id: EngineId,
+        #[serde(rename = "runtimeId")]
+        runtime_id: RuntimeId,
+        #[serde(rename = "familyId")]
+        family_id: ModelFamilyId,
         #[serde(rename = "modelId")]
         model_id: String,
         #[serde(rename = "modelStorePathOverride", default)]
         model_store_path_override: Option<String>,
     },
     InstallModel {
-        #[serde(rename = "engineId")]
-        engine_id: EngineId,
+        #[serde(rename = "runtimeId")]
+        runtime_id: RuntimeId,
+        #[serde(rename = "familyId")]
+        family_id: ModelFamilyId,
         #[serde(rename = "installId")]
         install_id: String,
         #[serde(rename = "modelId")]
@@ -204,13 +233,13 @@ pub enum Command {
     Shutdown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct EventEnvelope {
     #[serde(flatten)]
     pub event: Event,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     HealthOk {
@@ -229,7 +258,8 @@ pub enum Event {
         #[serde(rename = "catalogVersion")]
         catalog_version: u32,
         collections: Vec<ModelCollection>,
-        engines: Vec<ModelEngine>,
+        runtimes: Vec<ModelRuntimeDescriptor>,
+        families: Vec<ModelFamilyDescriptor>,
         models: Vec<CatalogModel>,
     },
     InstalledModels {
@@ -241,9 +271,13 @@ pub enum Event {
         details: Option<String>,
         #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
         display_name: Option<String>,
-        #[serde(rename = "engineId")]
-        engine_id: EngineId,
+        #[serde(rename = "runtimeId")]
+        runtime_id: RuntimeId,
+        #[serde(rename = "familyId")]
+        family_id: ModelFamilyId,
         installed: bool,
+        #[serde(rename = "mergedCapabilities", skip_serializing_if = "Option::is_none")]
+        merged_capabilities: Option<EngineCapabilities>,
         message: String,
         #[serde(rename = "modelId", skip_serializing_if = "Option::is_none")]
         model_id: Option<String>,
@@ -255,8 +289,10 @@ pub enum Event {
         status: ModelProbeStatus,
     },
     ModelRemoved {
-        #[serde(rename = "engineId")]
-        engine_id: EngineId,
+        #[serde(rename = "runtimeId")]
+        runtime_id: RuntimeId,
+        #[serde(rename = "familyId")]
+        family_id: ModelFamilyId,
         #[serde(rename = "modelId")]
         model_id: String,
         removed: bool,
@@ -266,8 +302,10 @@ pub enum Event {
         details: Option<String>,
         #[serde(rename = "downloadedBytes", skip_serializing_if = "Option::is_none")]
         downloaded_bytes: Option<u64>,
-        #[serde(rename = "engineId")]
-        engine_id: EngineId,
+        #[serde(rename = "runtimeId")]
+        runtime_id: RuntimeId,
+        #[serde(rename = "familyId")]
+        family_id: ModelFamilyId,
         #[serde(rename = "installId")]
         install_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,12 +317,12 @@ pub enum Event {
         total_bytes: Option<u64>,
     },
     SystemInfo {
-        #[serde(rename = "compiledBackends")]
-        compiled_backends: Vec<String>,
-        #[serde(rename = "compiledEngines")]
-        compiled_engines: Vec<String>,
-        #[serde(rename = "runtimeCapabilities")]
-        runtime_capabilities: Vec<RuntimeCapability>,
+        #[serde(rename = "sidecarVersion")]
+        sidecar_version: String,
+        #[serde(rename = "compiledRuntimes")]
+        compiled_runtimes: Vec<CompiledRuntimeInfo>,
+        #[serde(rename = "compiledAdapters")]
+        compiled_adapters: Vec<CompiledAdapterInfo>,
         #[serde(rename = "systemInfo")]
         system_info: String,
     },
@@ -307,6 +345,8 @@ pub enum Event {
         text: String,
         #[serde(rename = "utteranceDurationMs")]
         utterance_duration_ms: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<RequestWarning>,
     },
     Warning {
         code: String,
@@ -406,43 +446,15 @@ fn write_frame<W: Write>(writer: &mut W, frame_kind: u8, payload: &[u8]) -> Resu
     Ok(())
 }
 
-/// Build flavors compiled into this sidecar binary.
-pub fn compiled_backends() -> Vec<String> {
-    #[allow(unused_mut)]
-    let mut backends = vec!["cpu".to_string()];
-
-    #[cfg(feature = "gpu-metal")]
-    backends.push("metal".to_string());
-
-    #[cfg(feature = "gpu-cuda")]
-    backends.push("cuda".to_string());
-
-    #[cfg(feature = "gpu-ort-cuda")]
-    backends.push("ort-cuda".to_string());
-
-    backends
-}
-
-/// Inference engines compiled into this build.  whisper_cpp is always
-/// present; additional engines are gated on compile-time features.
-pub fn compiled_engines() -> Vec<String> {
-    #[allow(unused_mut)]
-    let mut engines = vec!["whisper_cpp".to_string()];
-
-    #[cfg(feature = "engine-cohere")]
-    engines.push("cohere_onnx".to_string());
-
-    engines
-}
-
 /// Collect system info from all compiled engines into a single string.
 pub fn system_info_string() -> String {
     let mut parts = Vec::new();
 
+    #[cfg(feature = "engine-whisper")]
     parts.push(format!("whisper.cpp: {}", whisper_rs::print_system_info()));
 
-    #[cfg(feature = "engine-cohere")]
-    parts.push("cohere-onnx: enabled".to_string());
+    #[cfg(feature = "engine-cohere-transcribe")]
+    parts.push("cohere-transcribe: enabled".to_string());
 
     parts.join(" | ")
 }
@@ -466,11 +478,12 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buffer: &mut [u8]) -> Result<usize
 #[cfg(test)]
 mod tests {
     use super::{
-        AUDIO_FRAME_KIND, AccelerationPreference, Command, EngineId, Event, EventEnvelope,
+        AUDIO_FRAME_KIND, AccelerationPreference, Command, Event, EventEnvelope,
         FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, MAX_FRAME_PAYLOAD,
-        PCM_BYTES_PER_FRAME, RuntimeCapability, SelectedModel, SpeakingStyle, compiled_backends,
-        compiled_engines, read_frame, write_event_frame, write_frame,
+        PCM_BYTES_PER_FRAME, SelectedModel, SpeakingStyle, read_frame, write_event_frame,
+        write_frame,
     };
+    use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
 
     #[test]
     fn command_frame_round_trip_preserves_start_session_shape() {
@@ -480,7 +493,8 @@ mod tests {
             "mode": "always_on",
             "modelSelection": {
                 "kind": "external_file",
-                "engineId": "whisper_cpp",
+                "runtimeId": "whisper_cpp",
+                "familyId": "whisper",
                 "filePath": "/tmp/model.bin"
             },
             "language": "en",
@@ -498,56 +512,17 @@ mod tests {
             parsed,
             IncomingFrame::Command(Command::StartSession {
                 acceleration_preference: AccelerationPreference::Auto,
+                initial_prompt: None,
                 language: "en".to_string(),
                 mode: ListeningMode::AlwaysOn,
                 model_selection: SelectedModel::ExternalFile {
-                    engine_id: EngineId::WhisperCpp,
+                    runtime_id: RuntimeId::WhisperCpp,
+                    family_id: ModelFamilyId::Whisper,
                     file_path: "/tmp/model.bin".to_string(),
                 },
                 model_store_path_override: None,
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
-                speaking_style: SpeakingStyle::Balanced,
-            })
-        );
-    }
-
-    #[test]
-    fn start_session_with_acceleration_preference_auto() {
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "type": "start_session",
-            "sessionId": "session-3",
-            "mode": "always_on",
-            "modelSelection": {
-                "kind": "external_file",
-                "engineId": "whisper_cpp",
-                "filePath": "/tmp/model.bin"
-            },
-            "language": "en",
-            "pauseWhileProcessing": true,
-            "accelerationPreference": "auto"
-        }))
-        .expect("payload should serialize");
-        let mut framed = Vec::new();
-        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
-
-        let parsed = read_frame(&mut framed.as_slice())
-            .expect("frame should parse")
-            .expect("frame should exist");
-
-        assert_eq!(
-            parsed,
-            IncomingFrame::Command(Command::StartSession {
-                acceleration_preference: AccelerationPreference::Auto,
-                language: "en".to_string(),
-                mode: ListeningMode::AlwaysOn,
-                model_selection: SelectedModel::ExternalFile {
-                    engine_id: EngineId::WhisperCpp,
-                    file_path: "/tmp/model.bin".to_string(),
-                },
-                model_store_path_override: None,
-                pause_while_processing: true,
-                session_id: "session-3".to_string(),
                 speaking_style: SpeakingStyle::Balanced,
             })
         );
@@ -566,7 +541,8 @@ mod tests {
                 "mode": "always_on",
                 "modelSelection": {
                     "kind": "external_file",
-                    "engineId": "whisper_cpp",
+                    "runtimeId": "whisper_cpp",
+                    "familyId": "whisper",
                     "filePath": "/tmp/model.bin"
                 },
                 "language": "en",
@@ -603,29 +579,6 @@ mod tests {
             .expect("frame should exist");
 
         assert_eq!(parsed, IncomingFrame::Command(Command::GetSystemInfo));
-    }
-
-    #[test]
-    fn system_info_event_round_trip() {
-        let event = Event::SystemInfo {
-            compiled_backends: compiled_backends(),
-            compiled_engines: compiled_engines(),
-            runtime_capabilities: vec![RuntimeCapability {
-                available: true,
-                backend: "cpu".to_string(),
-                engine: "whisper_cpp".to_string(),
-                reason: None,
-            }],
-            system_info: "AVX = 1 | NEON = 0 | CUDA = 0".to_string(),
-        };
-        let mut framed = Vec::new();
-        write_event_frame(&mut framed, &event).expect("frame should write");
-        let payload_length =
-            u32::from_le_bytes([framed[1], framed[2], framed[3], framed[4]]) as usize;
-        let payload = &framed[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + payload_length];
-        let parsed: EventEnvelope = serde_json::from_slice(payload).expect("event should parse");
-
-        assert_eq!(parsed.event, event);
     }
 
     #[test]

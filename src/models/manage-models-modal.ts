@@ -2,6 +2,7 @@ import type { App } from 'obsidian';
 import { Modal, Notice, Setting } from 'obsidian';
 
 import { formatBytes, formatErrorMessage } from '../shared/format-utils';
+import { resolveEngineCapabilities } from './capability-view';
 import { isCancellingPhase, type ModelInstallManager } from './model-install-manager';
 import {
   createInstallProgressElement,
@@ -11,8 +12,10 @@ import {
 import { ModelDetailsModal } from './model-management-modals';
 import {
   type CatalogModelRecord,
-  type EngineId,
   getTotalModelSize,
+  type ModelFamilyId,
+  matchesModelTriple,
+  type RuntimeId,
 } from './model-management-types';
 import { deriveModelRowStates, type ModelRowState } from './model-row-state';
 
@@ -25,17 +28,26 @@ interface ManageModelsModalDependencies {
   onChanged: () => void;
 }
 
+interface AdapterTabKey {
+  runtimeId: RuntimeId;
+  familyId: ModelFamilyId;
+}
+
+function adapterTabId(key: AdapterTabKey): string {
+  return `${key.runtimeId}:${key.familyId}`;
+}
+
 // ---------------------------------------------------------------------------
 // ManageModelsModal
 // ---------------------------------------------------------------------------
 
 export class ManageModelsModal extends Modal {
   private actionInProgress = false;
-  private activeEngineId: EngineId | null = null;
+  private activeTab: AdapterTabKey | null = null;
   private listContainer: HTMLDivElement | null = null;
   private readonly progressElements = new Map<string, HTMLDivElement>();
   private releaseSubscription: (() => void) | null = null;
-  private tabButtons = new Map<EngineId, HTMLButtonElement>();
+  private tabButtons = new Map<string, HTMLButtonElement>();
   private tabBarEl: HTMLDivElement | null = null;
 
   constructor(
@@ -88,41 +100,67 @@ export class ManageModelsModal extends Modal {
     this.tabButtons.clear();
 
     const state = this.deps.manager.getState();
-    const supportedEngines = state.catalog.engines.filter((e) =>
-      state.supportedEngineIds.includes(e.engineId),
-    );
 
-    // Default to first supported engine if current tab is no longer valid.
+    // Only show adapter tabs for (runtime, family) pairs present in both the
+    // compiled sidecar AND the catalog — compiled alone doesn't guarantee any
+    // downloadable models, and catalog alone doesn't guarantee the sidecar can
+    // run them.
+    const adapters = state.compiledAdapters
+      .filter((adapter) =>
+        state.catalog.families.some(
+          (family) =>
+            family.runtimeId === adapter.runtimeId && family.familyId === adapter.familyId,
+        ),
+      )
+      .map((adapter) => ({
+        displayName: adapter.displayName,
+        runtimeId: adapter.runtimeId,
+        familyId: adapter.familyId,
+      }));
+
     if (
-      this.activeEngineId === null ||
-      !supportedEngines.some((e) => e.engineId === this.activeEngineId)
+      this.activeTab === null ||
+      !adapters.some(
+        (a) => a.runtimeId === this.activeTab?.runtimeId && a.familyId === this.activeTab?.familyId,
+      )
     ) {
-      this.activeEngineId = supportedEngines[0]?.engineId ?? null;
+      const first = adapters[0];
+      this.activeTab =
+        first !== undefined ? { runtimeId: first.runtimeId, familyId: first.familyId } : null;
     }
 
-    for (const engine of supportedEngines) {
+    for (const adapter of adapters) {
+      const tabKey: AdapterTabKey = {
+        runtimeId: adapter.runtimeId,
+        familyId: adapter.familyId,
+      };
       const btn = this.tabBarEl.createEl('button', {
         cls: 'local-stt-tab',
-        text: engine.displayName,
+        text: adapter.displayName,
       });
 
-      if (engine.engineId === this.activeEngineId) {
+      if (
+        this.activeTab !== null &&
+        tabKey.runtimeId === this.activeTab.runtimeId &&
+        tabKey.familyId === this.activeTab.familyId
+      ) {
         btn.addClass('local-stt-tab--active');
       }
 
       btn.addEventListener('click', () => {
-        this.activeEngineId = engine.engineId;
+        this.activeTab = tabKey;
         this.updateTabActiveStates();
         this.renderModelList();
       });
 
-      this.tabButtons.set(engine.engineId, btn);
+      this.tabButtons.set(adapterTabId(tabKey), btn);
     }
   }
 
   private updateTabActiveStates(): void {
-    for (const [engineId, btn] of this.tabButtons) {
-      btn.toggleClass('local-stt-tab--active', engineId === this.activeEngineId);
+    const activeId = this.activeTab === null ? null : adapterTabId(this.activeTab);
+    for (const [tabId, btn] of this.tabButtons) {
+      btn.toggleClass('local-stt-tab--active', tabId === activeId);
     }
   }
 
@@ -131,7 +169,7 @@ export class ManageModelsModal extends Modal {
   // -------------------------------------------------------------------------
 
   private renderModelList(): void {
-    if (this.listContainer === null || this.activeEngineId === null) {
+    if (this.listContainer === null || this.activeTab === null) {
       return;
     }
 
@@ -153,9 +191,13 @@ export class ManageModelsModal extends Modal {
     }
 
     const rows = deriveModelRowStates(state);
-    const engineRows = rows.filter((row) => row.model.engineId === this.activeEngineId);
+    const activeTab = this.activeTab;
+    const tabRows = rows.filter(
+      (row) =>
+        row.model.runtimeId === activeTab.runtimeId && row.model.familyId === activeTab.familyId,
+    );
 
-    if (engineRows.length === 0) {
+    if (tabRows.length === 0) {
       this.listContainer.createEl('p', {
         cls: 'local-stt-empty-state',
         text: 'No models available for this engine.',
@@ -163,7 +205,7 @@ export class ManageModelsModal extends Modal {
       return;
     }
 
-    for (const row of engineRows) {
+    for (const row of tabRows) {
       this.renderRow(row, this.listContainer.createDiv());
     }
   }
@@ -201,9 +243,10 @@ export class ManageModelsModal extends Modal {
               .onClick(() => {
                 void this.runAction(async () => {
                   await this.deps.manager.install({
-                    engineId: row.model.engineId,
+                    familyId: row.model.familyId,
                     kind: 'catalog_model',
                     modelId: row.model.modelId,
+                    runtimeId: row.model.runtimeId,
                   });
                 }, 'Model install started.');
               });
@@ -219,9 +262,10 @@ export class ManageModelsModal extends Modal {
               .onClick(() => {
                 void this.runAction(async () => {
                   await this.deps.manager.select({
-                    engineId: row.model.engineId,
+                    familyId: row.model.familyId,
                     kind: 'catalog_model',
                     modelId: row.model.modelId,
+                    runtimeId: row.model.runtimeId,
                   });
                   this.close();
                 }, 'Model selected.');
@@ -262,9 +306,10 @@ export class ManageModelsModal extends Modal {
               .onClick(() => {
                 void this.runAction(async () => {
                   await this.deps.manager.remove({
-                    engineId: row.model.engineId,
+                    familyId: row.model.familyId,
                     kind: 'catalog_model',
                     modelId: row.model.modelId,
+                    runtimeId: row.model.runtimeId,
                   });
                 }, 'Model removed.');
               });
@@ -278,13 +323,20 @@ export class ManageModelsModal extends Modal {
               .setTooltip('Details')
               .onClick(() => {
                 const state = this.deps.manager.getState();
-                const installedModel = state.installedModels.find(
-                  (m) => m.engineId === row.model.engineId && m.modelId === row.model.modelId,
+                const installedModel = state.installedModels.find((m) =>
+                  matchesModelTriple(m, row.model.runtimeId, row.model.familyId, row.model.modelId),
+                );
+                const capabilities = resolveEngineCapabilities(
+                  state.compiledRuntimes,
+                  state.compiledAdapters,
+                  row.model.runtimeId,
+                  row.model.familyId,
                 );
                 new ModelDetailsModal(
                   this.app,
                   row.model,
                   installedModel?.installPath ?? null,
+                  capabilities,
                 ).open();
               });
           });
@@ -304,7 +356,7 @@ export class ManageModelsModal extends Modal {
     // Fast path: if an install is active for a visible row, try in-place
     // progress update instead of full re-render.
     if (activeInstall !== null) {
-      const key = `${activeInstall.installUpdate.engineId}:${activeInstall.installUpdate.modelId}`;
+      const key = installTripleKey(activeInstall.installUpdate);
       const existingProgressEl = this.progressElements.get(key);
 
       if (existingProgressEl !== null && existingProgressEl !== undefined) {
@@ -315,16 +367,18 @@ export class ManageModelsModal extends Modal {
         return;
       }
 
-      // The active install belongs to a different engine than the visible tab.
+      // The active install belongs to a different adapter than the visible tab.
       // Progress ticks for that install don't affect visible rows — skip the
       // full re-render to avoid clobbering the DOM under the user's cursor.
-      if (activeInstall.installUpdate.engineId !== this.activeEngineId) {
+      if (
+        this.activeTab === null ||
+        activeInstall.installUpdate.runtimeId !== this.activeTab.runtimeId ||
+        activeInstall.installUpdate.familyId !== this.activeTab.familyId
+      ) {
         return;
       }
     }
 
-    // Full re-render for terminal events, tab switch, or if the progress
-    // element is not visible.
     this.renderModelList();
   }
 
@@ -365,7 +419,8 @@ export class ManageModelsModal extends Modal {
     }
 
     if (
-      activeInstall.installUpdate.engineId !== row.model.engineId ||
+      activeInstall.installUpdate.runtimeId !== row.model.runtimeId ||
+      activeInstall.installUpdate.familyId !== row.model.familyId ||
       activeInstall.installUpdate.modelId !== row.model.modelId
     ) {
       return null;
@@ -401,5 +456,13 @@ export class ManageModelsModal extends Modal {
 }
 
 function getRowKey(row: ModelRowState): string {
-  return `${row.model.engineId}:${row.model.modelId}`;
+  return `${row.model.runtimeId}:${row.model.familyId}:${row.model.modelId}`;
+}
+
+function installTripleKey(update: {
+  runtimeId: RuntimeId;
+  familyId: ModelFamilyId;
+  modelId: string;
+}): string {
+  return `${update.runtimeId}:${update.familyId}:${update.modelId}`;
 }

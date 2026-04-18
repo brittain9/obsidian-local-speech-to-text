@@ -1,15 +1,29 @@
 {
-  "catalogVersion": 1,
-  "engines": [
+  "catalogVersion": 2,
+  "runtimes": [
     {
-      "engineId": "whisper_cpp",
-      "displayName": "Whisper",
-      "summary": "Local CPU speech-to-text with whisper.cpp-compatible GGML model files."
+      "runtimeId": "whisper_cpp",
+      "displayName": "whisper.cpp",
+      "summary": "Local CPU/GPU execution of Whisper models via whisper.cpp."
     },
     {
-      "engineId": "cohere_onnx",
+      "runtimeId": "onnx_runtime",
+      "displayName": "ONNX Runtime",
+      "summary": "Cross-platform ONNX execution with optional CUDA acceleration."
+    }
+  ],
+  "families": [
+    {
+      "familyId": "whisper",
+      "runtimeId": "whisper_cpp",
+      "displayName": "Whisper",
+      "summary": "OpenAI Whisper architecture loaded via whisper.cpp-compatible GGML model files."
+    },
+    {
+      "familyId": "cohere_transcribe",
+      "runtimeId": "onnx_runtime",
       "displayName": "Cohere Transcribe",
-      "summary": "High-accuracy ONNX speech-to-text with Cohere Transcribe (2B parameters, 14 languages)."
+      "summary": "Cohere Transcribe (2B parameters, 14 languages) running on ONNX Runtime."
     }
   ],
   "collections": [
@@ -26,14 +40,14 @@
   ],
   "models": [
     {
-      "engineId": "whisper_cpp",
+      "runtimeId": "whisper_cpp",
+      "familyId": "whisper",
       "modelId": "whisper_tiny_en_q8_0",
       "collectionId": "english_cpu_first",
       "displayName": "Whisper Tiny English Q8_0",
       "summary": "Fastest model with lowest resource cost. Good for testing or low-power machines.",
       "languageTags": ["en"],
       "uxTags": ["fast", "lightweight", "cpu"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
       "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
@@ -55,14 +69,14 @@
       ]
     },
     {
-      "engineId": "whisper_cpp",
+      "runtimeId": "whisper_cpp",
+      "familyId": "whisper",
       "modelId": "whisper_base_en_q8_0",
       "collectionId": "english_cpu_first",
       "displayName": "Whisper Base English Q8_0",
       "summary": "Fast model with decent accuracy. A good choice for quick drafts on CPU.",
       "languageTags": ["en"],
       "uxTags": ["fast", "cpu"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
       "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
@@ -84,14 +98,14 @@
       ]
     },
     {
-      "engineId": "whisper_cpp",
+      "runtimeId": "whisper_cpp",
+      "familyId": "whisper",
       "modelId": "whisper_small_en_q5_1",
       "collectionId": "english_cpu_first",
       "displayName": "Whisper Small English Q5_1",
       "summary": "Recommended starter model with a good balance of accuracy and speed.",
       "languageTags": ["en"],
       "uxTags": ["starter", "cpu"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
       "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
@@ -113,14 +127,14 @@
       ]
     },
     {
-      "engineId": "whisper_cpp",
+      "runtimeId": "whisper_cpp",
+      "familyId": "whisper",
       "modelId": "whisper_medium_en_q5_0",
       "collectionId": "english_cpu_first",
       "displayName": "Whisper Medium English Q5_0",
       "summary": "High-accuracy model for users who prioritize transcription quality over speed.",
       "languageTags": ["en"],
       "uxTags": ["accuracy", "cpu"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
       "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
@@ -142,14 +156,14 @@
       ]
     },
     {
-      "engineId": "whisper_cpp",
+      "runtimeId": "whisper_cpp",
+      "familyId": "whisper",
       "modelId": "whisper_large_v3_turbo_q8_0",
       "collectionId": "english_cpu_first",
       "displayName": "Whisper Large V3 Turbo Q8_0",
       "summary": "Best accuracy with an architecture optimized for GPU acceleration.",
       "languageTags": ["en"],
       "uxTags": ["accuracy", "gpu"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/LICENSE",
       "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1",
@@ -171,29 +185,14 @@
       ]
     },
     {
-      "engineId": "cohere_onnx",
+      "runtimeId": "onnx_runtime",
+      "familyId": "cohere_transcribe",
       "modelId": "cohere_transcribe_fp16",
       "collectionId": "cohere_transcribe",
       "displayName": "Cohere Transcribe FP16",
       "summary": "Full-precision model with the highest accuracy. Recommended for users with sufficient RAM and storage.",
-      "languageTags": [
-        "en",
-        "es",
-        "fr",
-        "de",
-        "it",
-        "pt",
-        "nl",
-        "ja",
-        "ko",
-        "zh",
-        "ru",
-        "pl",
-        "tr",
-        "sv"
-      ],
+      "languageTags": ["en"],
       "uxTags": ["accuracy"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "Apache-2.0",
       "licenseUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026/blob/main/LICENSE",
       "sourceUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX",
@@ -260,29 +259,14 @@
       ]
     },
     {
-      "engineId": "cohere_onnx",
+      "runtimeId": "onnx_runtime",
+      "familyId": "cohere_transcribe",
       "modelId": "cohere_transcribe_int8",
       "collectionId": "cohere_transcribe",
       "displayName": "Cohere Transcribe INT8",
       "summary": "Balanced quantized model offering near-full accuracy at reduced size and memory use.",
-      "languageTags": [
-        "en",
-        "es",
-        "fr",
-        "de",
-        "it",
-        "pt",
-        "nl",
-        "ja",
-        "ko",
-        "zh",
-        "ru",
-        "pl",
-        "tr",
-        "sv"
-      ],
+      "languageTags": ["en"],
       "uxTags": ["balanced"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "Apache-2.0",
       "licenseUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026/blob/main/LICENSE",
       "sourceUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX",
@@ -349,29 +333,14 @@
       ]
     },
     {
-      "engineId": "cohere_onnx",
+      "runtimeId": "onnx_runtime",
+      "familyId": "cohere_transcribe",
       "modelId": "cohere_transcribe_q4",
       "collectionId": "cohere_transcribe",
       "displayName": "Cohere Transcribe Q4",
       "summary": "Compact 4-bit quantized model for constrained storage or memory environments.",
-      "languageTags": [
-        "en",
-        "es",
-        "fr",
-        "de",
-        "it",
-        "pt",
-        "nl",
-        "ja",
-        "ko",
-        "zh",
-        "ru",
-        "pl",
-        "tr",
-        "sv"
-      ],
+      "languageTags": ["en"],
       "uxTags": ["compact", "lightweight"],
-      "capabilityFlags": ["dictation"],
       "licenseLabel": "Apache-2.0",
       "licenseUrl": "https://huggingface.co/CohereForAI/cohere-transcribe-03-2026/blob/main/LICENSE",
       "sourceUrl": "https://huggingface.co/onnx-community/cohere-transcribe-03-2026-ONNX",

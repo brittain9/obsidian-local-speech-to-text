@@ -14,7 +14,7 @@ Apple Silicon is the dominant active Mac base, and Metal GPU acceleration is onl
 
 Building a universal binary with whisper.cpp + Metal is also costly: separate builds per architecture, no `gpu-metal` in the x86_64 build, then `lipo -create` to merge. That doubles build complexity for a shrinking target.
 
-Intel users who need the plugin can use `sidecarPathOverride` with a manually built CPU-only binary. If x86_64 demand becomes real, add a separate `macos-15-intel` CI job that builds `engine-cohere` without Metal and uploads `sidecar-darwin-x64`.
+Intel users who need the plugin can use `sidecarPathOverride` with a manually built CPU-only binary. If x86_64 demand becomes real, add a separate `macos-15-intel` CI job that builds `engine-cohere-transcribe` without Metal and uploads `sidecar-darwin-x64`.
 
 ## Code signing and notarization
 

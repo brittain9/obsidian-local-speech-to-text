@@ -6,7 +6,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::ModelCatalog;
-use crate::protocol::EngineId;
+use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
 
 const INSTALL_METADATA_FILENAME: &str = "install.json";
 
@@ -22,8 +22,10 @@ pub struct InstallMetadata {
     pub artifacts: Vec<InstalledArtifact>,
     #[serde(rename = "catalogVersion")]
     pub catalog_version: u32,
-    #[serde(rename = "engineId")]
-    pub engine_id: EngineId,
+    #[serde(rename = "runtimeId")]
+    pub runtime_id: RuntimeId,
+    #[serde(rename = "familyId")]
+    pub family_id: ModelFamilyId,
     #[serde(rename = "installedAtUnixMs")]
     pub installed_at_unix_ms: u64,
     #[serde(rename = "modelId")]
@@ -42,8 +44,10 @@ pub struct InstalledArtifact {
 pub struct InstalledModelRecord {
     #[serde(rename = "catalogVersion")]
     pub catalog_version: u32,
-    #[serde(rename = "engineId")]
-    pub engine_id: EngineId,
+    #[serde(rename = "runtimeId")]
+    pub runtime_id: RuntimeId,
+    #[serde(rename = "familyId")]
+    pub family_id: ModelFamilyId,
     #[serde(rename = "installPath")]
     pub install_path: String,
     #[serde(rename = "installedAtUnixMs")]
@@ -58,12 +62,19 @@ pub struct InstalledModelRecord {
 
 pub fn create_install_metadata(
     catalog: &ModelCatalog,
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
     model_id: &str,
 ) -> Result<InstallMetadata> {
     let model = catalog
-        .find_model(engine_id, model_id)
-        .ok_or_else(|| anyhow!("unknown model {}:{model_id}", engine_id.as_str()))?;
+        .find_model(runtime_id, family_id, model_id)
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown model {}:{}:{model_id}",
+                runtime_id.as_str(),
+                family_id.as_str()
+            )
+        })?;
 
     Ok(InstallMetadata {
         artifacts: model
@@ -77,7 +88,8 @@ pub fn create_install_metadata(
             })
             .collect(),
         catalog_version: catalog.catalog_version,
-        engine_id,
+        runtime_id,
+        family_id,
         installed_at_unix_ms: current_unix_ms()?,
         model_id: model_id.to_string(),
     })
@@ -94,15 +106,19 @@ pub fn read_install_metadata(install_dir: &Path) -> Result<InstallMetadata> {
 pub fn resolve_catalog_model_runtime_path(
     catalog: &ModelCatalog,
     model_store_root: &Path,
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
     model_id: &str,
 ) -> Result<PathBuf> {
-    let install_dir = resolve_model_install_dir(model_store_root, engine_id, model_id);
+    let install_dir = resolve_model_install_dir(model_store_root, runtime_id, family_id, model_id);
     let metadata = read_install_metadata(&install_dir)?;
     ensure!(
-        metadata.engine_id == engine_id && metadata.model_id == model_id,
-        "install metadata does not match {}:{model_id}",
-        engine_id.as_str()
+        metadata.runtime_id == runtime_id
+            && metadata.family_id == family_id
+            && metadata.model_id == model_id,
+        "install metadata does not match {}:{}:{model_id}",
+        runtime_id.as_str(),
+        family_id.as_str()
     );
 
     for artifact in &metadata.artifacts {
@@ -115,12 +131,19 @@ pub fn resolve_catalog_model_runtime_path(
     }
 
     let model = catalog
-        .find_model(engine_id, model_id)
-        .ok_or_else(|| anyhow!("unknown model {}:{model_id}", engine_id.as_str()))?;
+        .find_model(runtime_id, family_id, model_id)
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown model {}:{}:{model_id}",
+                runtime_id.as_str(),
+                family_id.as_str()
+            )
+        })?;
     let primary_artifact = model.primary_artifact().ok_or_else(|| {
         anyhow!(
-            "model {}:{model_id} is missing a transcription artifact",
-            engine_id.as_str()
+            "model {}:{}:{model_id} is missing a transcription artifact",
+            runtime_id.as_str(),
+            family_id.as_str()
         )
     })?;
     let runtime_path = install_dir.join(&primary_artifact.filename);
@@ -136,10 +159,14 @@ pub fn resolve_catalog_model_runtime_path(
 
 pub fn resolve_model_install_dir(
     model_store_root: &Path,
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
     model_id: &str,
 ) -> PathBuf {
-    model_store_root.join(engine_id.as_str()).join(model_id)
+    model_store_root
+        .join(runtime_id.as_str())
+        .join(family_id.as_str())
+        .join(model_id)
 }
 
 pub fn resolve_model_store_info(model_store_path_override: Option<&str>) -> Result<ModelStoreInfo> {
@@ -176,10 +203,11 @@ pub fn resolve_model_store_info(model_store_path_override: Option<&str>) -> Resu
 
 pub fn remove_installed_model(
     model_store_root: &Path,
-    engine_id: EngineId,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
     model_id: &str,
 ) -> Result<bool> {
-    let install_dir = resolve_model_install_dir(model_store_root, engine_id, model_id);
+    let install_dir = resolve_model_install_dir(model_store_root, runtime_id, family_id, model_id);
 
     if !install_dir.exists() {
         return Ok(false);
@@ -200,58 +228,70 @@ pub fn scan_installed_models(
         return Ok(installed_models);
     }
 
-    for engine_entry in std::fs::read_dir(model_store_root)
+    for runtime_entry in std::fs::read_dir(model_store_root)
         .with_context(|| format!("failed to read {}", model_store_root.display()))?
     {
-        let engine_entry = engine_entry?;
-        let engine_path = engine_entry.path();
+        let runtime_entry = runtime_entry?;
+        let runtime_path = runtime_entry.path();
 
-        if !engine_path.is_dir() {
+        if !runtime_path.is_dir() {
             continue;
         }
 
-        for model_entry in std::fs::read_dir(&engine_path)
-            .with_context(|| format!("failed to read {}", engine_path.display()))?
+        for family_entry in std::fs::read_dir(&runtime_path)
+            .with_context(|| format!("failed to read {}", runtime_path.display()))?
         {
-            let model_entry = model_entry?;
-            let install_dir = model_entry.path();
+            let family_entry = family_entry?;
+            let family_path = family_entry.path();
 
-            if !install_dir.is_dir() {
+            if !family_path.is_dir() {
                 continue;
             }
 
-            let metadata = match read_install_metadata(&install_dir) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-
-            if metadata
-                .artifacts
-                .iter()
-                .any(|artifact| !install_dir.join(&artifact.filename).is_file())
+            for model_entry in std::fs::read_dir(&family_path)
+                .with_context(|| format!("failed to read {}", family_path.display()))?
             {
-                continue;
-            }
+                let model_entry = model_entry?;
+                let install_dir = model_entry.path();
 
-            let runtime_path = catalog
-                .find_model(metadata.engine_id, &metadata.model_id)
-                .and_then(|model| model.primary_artifact())
-                .map(|artifact| install_dir.join(&artifact.filename))
-                .filter(|path| path.is_file());
+                if !install_dir.is_dir() {
+                    continue;
+                }
 
-            installed_models.push(InstalledModelRecord {
-                catalog_version: metadata.catalog_version,
-                engine_id: metadata.engine_id,
-                install_path: install_dir.display().to_string(),
-                installed_at_unix_ms: metadata.installed_at_unix_ms,
-                model_id: metadata.model_id,
-                runtime_path: runtime_path.map(|path| path.display().to_string()),
-                total_size_bytes: metadata
+                let metadata = match read_install_metadata(&install_dir) {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+
+                if metadata
                     .artifacts
                     .iter()
-                    .map(|artifact| artifact.size_bytes)
-                    .sum(),
-            });
+                    .any(|artifact| !install_dir.join(&artifact.filename).is_file())
+                {
+                    continue;
+                }
+
+                let runtime_path = catalog
+                    .find_model(metadata.runtime_id, metadata.family_id, &metadata.model_id)
+                    .and_then(|model| model.primary_artifact())
+                    .map(|artifact| install_dir.join(&artifact.filename))
+                    .filter(|path| path.is_file());
+
+                installed_models.push(InstalledModelRecord {
+                    catalog_version: metadata.catalog_version,
+                    runtime_id: metadata.runtime_id,
+                    family_id: metadata.family_id,
+                    install_path: install_dir.display().to_string(),
+                    installed_at_unix_ms: metadata.installed_at_unix_ms,
+                    model_id: metadata.model_id,
+                    runtime_path: runtime_path.map(|path| path.display().to_string()),
+                    total_size_bytes: metadata
+                        .artifacts
+                        .iter()
+                        .map(|artifact| artifact.size_bytes)
+                        .sum(),
+                });
+            }
         }
     }
 
@@ -286,9 +326,10 @@ mod tests {
         scan_installed_models, write_install_metadata,
     };
     use crate::catalog::{
-        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection, ModelEngine,
+        ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection,
+        ModelFamilyDescriptor, ModelRuntimeDescriptor,
     };
-    use crate::protocol::EngineId;
+    use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
 
     #[test]
     fn resolve_model_store_info_uses_absolute_override() {
@@ -311,8 +352,9 @@ mod tests {
                 sha256: "abc".to_string(),
                 size_bytes: 42,
             }],
-            catalog_version: 1,
-            engine_id: EngineId::WhisperCpp,
+            catalog_version: 2,
+            runtime_id: RuntimeId::WhisperCpp,
+            family_id: ModelFamilyId::Whisper,
             installed_at_unix_ms: 99,
             model_id: "small".to_string(),
         };
@@ -326,7 +368,7 @@ mod tests {
     #[test]
     fn scan_installed_models_ignores_missing_artifacts() {
         let temp_dir = tempfile_dir("scan");
-        let install_dir = temp_dir.join("whisper_cpp").join("small");
+        let install_dir = temp_dir.join("whisper_cpp").join("whisper").join("small");
         create_dir_all(&install_dir).expect("install dir should create");
         write_install_metadata(
             &install_dir,
@@ -336,8 +378,9 @@ mod tests {
                     sha256: "abc".to_string(),
                     size_bytes: 10,
                 }],
-                catalog_version: 1,
-                engine_id: EngineId::WhisperCpp,
+                catalog_version: 2,
+                runtime_id: RuntimeId::WhisperCpp,
+                family_id: ModelFamilyId::Whisper,
                 installed_at_unix_ms: 10,
                 model_id: "small".to_string(),
             },
@@ -352,15 +395,21 @@ mod tests {
 
     fn sample_catalog() -> ModelCatalog {
         ModelCatalog {
-            catalog_version: 1,
+            catalog_version: 2,
             collections: vec![ModelCollection {
                 collection_id: "english".to_string(),
                 display_name: "English".to_string(),
                 summary: "summary".to_string(),
             }],
-            engines: vec![ModelEngine {
-                display_name: "Whisper.cpp".to_string(),
-                engine_id: EngineId::WhisperCpp,
+            runtimes: vec![ModelRuntimeDescriptor {
+                runtime_id: RuntimeId::WhisperCpp,
+                display_name: "whisper.cpp".to_string(),
+                summary: "summary".to_string(),
+            }],
+            families: vec![ModelFamilyDescriptor {
+                family_id: ModelFamilyId::Whisper,
+                runtime_id: RuntimeId::WhisperCpp,
+                display_name: "Whisper".to_string(),
                 summary: "summary".to_string(),
             }],
             models: vec![CatalogModel {
@@ -374,10 +423,10 @@ mod tests {
                         .to_string(),
                     size_bytes: 10,
                 }],
-                capability_flags: vec![],
                 collection_id: "english".to_string(),
                 display_name: "Model".to_string(),
-                engine_id: EngineId::WhisperCpp,
+                runtime_id: RuntimeId::WhisperCpp,
+                family_id: ModelFamilyId::Whisper,
                 language_tags: vec!["en".to_string()],
                 license_label: "MIT".to_string(),
                 license_url: "https://example.com/license".to_string(),
