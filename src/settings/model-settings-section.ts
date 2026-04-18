@@ -1,6 +1,11 @@
 import { Setting } from 'obsidian';
 
-import { isCancellingPhase, type ModelInstallManager } from '../models/model-install-manager';
+import { buildCapabilityView, type CapabilityView } from '../models/capability-view';
+import {
+  isCancellingPhase,
+  type ModelInstallManager,
+  type ModelManagerState,
+} from '../models/model-install-manager';
 import {
   createInstallProgressElement,
   updateInstallProgressElement,
@@ -100,6 +105,8 @@ export function renderModelSection(
       });
     }
 
+    renderCapabilitiesSubsection(container, state);
+
     // --- Install progress panel ---
     const { activeInstall } = state;
     if (activeInstall !== null) {
@@ -143,4 +150,32 @@ export function renderModelSection(
 
   render();
   return manager.subscribe(handleStateChange);
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities subsection (read-only view of SelectedModelCapabilities)
+// ---------------------------------------------------------------------------
+
+function renderCapabilitiesSubsection(container: HTMLDivElement, state: ModelManagerState): void {
+  const view: CapabilityView = buildCapabilityView(state);
+
+  if (view.status === 'none') {
+    return;
+  }
+
+  new Setting(container).setName('Capabilities').setHeading();
+
+  if (view.status === 'pending') {
+    new Setting(container).setDesc('Detecting capabilities\u2026');
+    return;
+  }
+
+  if (view.status === 'unavailable') {
+    new Setting(container).setDesc(view.message);
+    return;
+  }
+
+  for (const row of view.rows) {
+    new Setting(container).setName(row.label).setDesc(row.value);
+  }
 }

@@ -114,6 +114,78 @@ describe('sidecar protocol', () => {
     });
   });
 
+  it('parses model_probe_result event carrying merged capabilities', () => {
+    const mergedCapabilities = {
+      family: {
+        maxAudioDurationSecs: null,
+        producesPunctuation: true,
+        supportedLanguages: { kind: 'english_only' as const },
+        supportsInitialPrompt: true,
+        supportsLanguageSelection: false,
+        supportsTimedSegments: true,
+      },
+      familyId: 'whisper' as const,
+      runtime: {
+        acceleratorDetails: {
+          cpu: { available: true, unavailableReason: null },
+        },
+        availableAccelerators: ['cpu' as const],
+        supportedModelFormats: ['ggml' as const],
+      },
+      runtimeId: 'whisper_cpp' as const,
+    };
+    const payload = {
+      available: true,
+      details: null,
+      displayName: 'Whisper Small',
+      familyId: 'whisper' as const,
+      installed: true,
+      mergedCapabilities,
+      message: 'Model selection is ready.',
+      modelId: 'small',
+      resolvedPath: '/models/whisper-small.bin',
+      runtimeId: 'whisper_cpp' as const,
+      selection: {
+        familyId: 'whisper' as const,
+        kind: 'catalog_model' as const,
+        modelId: 'small',
+        runtimeId: 'whisper_cpp' as const,
+      },
+      sizeBytes: 100,
+      status: 'ready' as const,
+      type: 'model_probe_result' as const,
+    };
+    const event = parseEventFrame(JSON.stringify(payload));
+
+    expect(event).toEqual(payload);
+  });
+
+  it('parses model_probe_result event when merged capabilities are absent', () => {
+    const payload = {
+      available: false,
+      details: 'not installed',
+      displayName: null,
+      familyId: 'whisper' as const,
+      installed: false,
+      message: 'The selected managed model is not installed or is incomplete.',
+      modelId: 'small',
+      resolvedPath: null,
+      runtimeId: 'whisper_cpp' as const,
+      selection: {
+        familyId: 'whisper' as const,
+        kind: 'catalog_model' as const,
+        modelId: 'small',
+        runtimeId: 'whisper_cpp' as const,
+      },
+      sizeBytes: null,
+      status: 'missing' as const,
+      type: 'model_probe_result' as const,
+    };
+    const event = parseEventFrame(JSON.stringify(payload));
+
+    expect(event).toEqual({ ...payload, mergedCapabilities: null });
+  });
+
   it('rejects non-object JSON in parseEventFrame', () => {
     expect(() => parseEventFrame('"hello"')).toThrow('Sidecar event must be a JSON object.');
     expect(() => parseEventFrame('42')).toThrow('Sidecar event must be a JSON object.');

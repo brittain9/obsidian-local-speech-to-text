@@ -2,6 +2,7 @@ import {
   type AcceleratorAvailability,
   type AcceleratorId,
   type CatalogModelRecord,
+  type EngineCapabilitiesRecord,
   getPrimaryArtifact,
   type InstalledModelRecord,
   isModelFamilyId,
@@ -437,6 +438,10 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
         displayName: readNullableString(parsedValue.displayName, 'event.displayName'),
         familyId: readModelFamilyId(parsedValue.familyId, 'event.familyId'),
         installed: readBoolean(parsedValue.installed, 'event.installed'),
+        mergedCapabilities: readOptionalEngineCapabilities(
+          parsedValue.mergedCapabilities,
+          'event.mergedCapabilities',
+        ),
         message: readString(parsedValue.message, 'event.message'),
         modelId: readNullableString(parsedValue.modelId, 'event.modelId'),
         resolvedPath: readNullableString(parsedValue.resolvedPath, 'event.resolvedPath'),
@@ -852,6 +857,24 @@ function readModelFamilyCapabilities(
       record.supportsTimedSegments,
       `${fieldName}.supportsTimedSegments`,
     ),
+  };
+}
+
+function readOptionalEngineCapabilities(
+  value: unknown,
+  fieldName: string,
+): EngineCapabilitiesRecord | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const record = readRecord(value, fieldName);
+
+  return {
+    family: readModelFamilyCapabilities(record.family, `${fieldName}.family`),
+    familyId: readModelFamilyId(record.familyId, `${fieldName}.familyId`),
+    runtime: readRuntimeCapabilities(record.runtime, `${fieldName}.runtime`),
+    runtimeId: readRuntimeId(record.runtimeId, `${fieldName}.runtimeId`),
   };
 }
 

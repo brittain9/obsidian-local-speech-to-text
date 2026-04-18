@@ -499,20 +499,26 @@ impl AppState {
         model_store_path_override: Option<&str>,
     ) -> Event {
         match self.resolve_selected_model(&selection, model_store_path_override) {
-            Ok(resolved_model) => Event::ModelProbeResult {
-                available: true,
-                details: None,
-                display_name: Some(resolved_model.display_name),
-                runtime_id: resolved_model.runtime_id,
-                family_id: resolved_model.family_id,
-                installed: resolved_model.installed,
-                message: "Model selection is ready.".to_string(),
-                model_id: resolved_model.model_id,
-                resolved_path: Some(resolved_model.resolved_path.display().to_string()),
-                selection: resolved_model.selection,
-                size_bytes: Some(resolved_model.size_bytes),
-                status: ModelProbeStatus::Ready,
-            },
+            Ok(resolved_model) => {
+                let merged_capabilities = self
+                    .registry
+                    .merged_capabilities(resolved_model.runtime_id, resolved_model.family_id);
+                Event::ModelProbeResult {
+                    available: true,
+                    details: None,
+                    display_name: Some(resolved_model.display_name),
+                    runtime_id: resolved_model.runtime_id,
+                    family_id: resolved_model.family_id,
+                    installed: resolved_model.installed,
+                    merged_capabilities,
+                    message: "Model selection is ready.".to_string(),
+                    model_id: resolved_model.model_id,
+                    resolved_path: Some(resolved_model.resolved_path.display().to_string()),
+                    selection: resolved_model.selection,
+                    size_bytes: Some(resolved_model.size_bytes),
+                    status: ModelProbeStatus::Ready,
+                }
+            }
             Err(event) => *event,
         }
     }
@@ -819,6 +825,7 @@ impl AppState {
                 details: fields.details,
                 display_name: fields.display_name,
                 installed: fields.installed,
+                merged_capabilities: None,
                 model_id: fields.model_id,
                 resolved_path: fields.resolved_path,
             })
@@ -1312,10 +1319,82 @@ mod tests {
             ),
         });
 
-        assert!(matches!(
-            events.first(),
-            Some(Event::ModelProbeResult { status, .. }) if *status == ModelProbeStatus::Missing
-        ));
+        match events.first() {
+            Some(Event::ModelProbeResult {
+                status,
+                merged_capabilities,
+                ..
+            }) => {
+                assert_eq!(*status, ModelProbeStatus::Missing);
+                assert!(
+                    merged_capabilities.is_none(),
+                    "missing probes must not carry merged capabilities"
+                );
+            }
+            other => panic!("expected missing ModelProbeResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_model_selection_reports_ready_with_merged_capabilities() {
+        let model_file_path = create_model_file();
+        let (_, events) = test_app().handle_command(Command::ProbeModelSelection {
+            model_selection: SelectedModel::ExternalFile {
+                runtime_id: RuntimeId::WhisperCpp,
+                family_id: ModelFamilyId::Whisper,
+                file_path: model_file_path.display().to_string(),
+            },
+            model_store_path_override: None,
+        });
+
+        match events.first() {
+            Some(Event::ModelProbeResult {
+                status,
+                merged_capabilities,
+                ..
+            }) => {
+                assert_eq!(*status, ModelProbeStatus::Ready);
+                let caps = merged_capabilities
+                    .as_ref()
+                    .expect("ready probes must carry merged capabilities");
+                assert_eq!(caps.runtime_id, RuntimeId::WhisperCpp);
+                assert_eq!(caps.family_id, ModelFamilyId::Whisper);
+                assert!(caps.family.supports_initial_prompt);
+                assert!(
+                    caps.runtime
+                        .available_accelerators
+                        .contains(&AcceleratorId::Cpu)
+                );
+            }
+            other => panic!("expected ready ModelProbeResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_model_selection_reports_invalid_without_capabilities() {
+        let (_, events) = test_app().handle_command(Command::ProbeModelSelection {
+            model_selection: SelectedModel::ExternalFile {
+                runtime_id: RuntimeId::WhisperCpp,
+                family_id: ModelFamilyId::Whisper,
+                file_path: "relative/path.bin".to_string(),
+            },
+            model_store_path_override: None,
+        });
+
+        match events.first() {
+            Some(Event::ModelProbeResult {
+                status,
+                merged_capabilities,
+                ..
+            }) => {
+                assert_eq!(*status, ModelProbeStatus::Invalid);
+                assert!(
+                    merged_capabilities.is_none(),
+                    "invalid probes must not carry merged capabilities"
+                );
+            }
+            other => panic!("expected invalid ModelProbeResult, got {other:?}"),
+        }
     }
 
     #[test]

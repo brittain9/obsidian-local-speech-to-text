@@ -65,6 +65,7 @@ function buildState(overrides?: Partial<ModelManagerState>): ModelManagerState {
     loadStatus: 'ready',
     modelStore: { overridePath: null, path: '/models', usingDefaultPath: true },
     selectedModel: null,
+    selectedModelCapabilities: { status: 'none' },
     ...overrides,
   };
 }

@@ -193,7 +193,12 @@ mod tests {
     }
 }
 
-/// Merged capability view sent over the wire per installed/loaded model.
+/// Merged capability view sent over the wire per selected model.
+///
+/// Today this is `RuntimeCapabilities ⊕ ModelFamilyCapabilities` — every model
+/// in a family reports the same family caps. Per-model overrides are a planned
+/// additive extension: a new optional field on this struct (e.g.
+/// `modelOverrides`) that consumers default to merged family caps when absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineCapabilities {
     #[serde(rename = "runtimeId")]

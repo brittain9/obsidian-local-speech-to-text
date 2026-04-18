@@ -17,6 +17,8 @@ import {
   type ModelStoreRecord,
   matchesModelTriple,
   type SelectedModel,
+  type SelectedModelCapabilities,
+  selectedModelEquals,
 } from './model-management-types';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +45,7 @@ export interface ModelManagerState {
   loadStatus: LoadStatus;
   modelStore: ModelStoreRecord;
   selectedModel: SelectedModel | null;
+  selectedModelCapabilities: SelectedModelCapabilities;
 }
 
 interface ModelInstallManagerDependencies {
@@ -149,6 +152,7 @@ export class ModelInstallManager {
   private loadStatus: LoadStatus = 'loading';
   private modelStore: ModelStoreRecord = EMPTY_MODEL_STORE;
   private releaseSidecarSubscription: (() => void) | null = null;
+  private selectedModelCapabilities: SelectedModelCapabilities = { status: 'none' };
 
   constructor(private readonly deps: ModelInstallManagerDependencies) {}
 
@@ -189,6 +193,12 @@ export class ModelInstallManager {
     } catch (error) {
       this.loadStatus = 'error';
       this.loadError = error instanceof Error ? error.message : String(error);
+    }
+
+    const persistedSelection = this.deps.getSettings().selectedModel;
+    if (persistedSelection !== null) {
+      this.selectedModelCapabilities = { selection: persistedSelection, status: 'pending' };
+      void this.refreshSelectedCapabilities(persistedSelection);
     }
 
     this.notify();
@@ -234,6 +244,7 @@ export class ModelInstallManager {
       loadStatus: this.loadStatus,
       modelStore: this.modelStore,
       selectedModel: this.deps.getSettings().selectedModel,
+      selectedModelCapabilities: this.selectedModelCapabilities,
     };
   }
 
@@ -361,6 +372,7 @@ export class ModelInstallManager {
       }`,
     );
     await this.updateSettings({ selectedModel: selection });
+    this.applyProbeResultToCapabilities(selection, probeResult);
     return probeResult;
   }
 
@@ -414,6 +426,8 @@ export class ModelInstallManager {
   async clearSelection(): Promise<void> {
     this.deps.logger?.debug('model', 'cleared selected model');
     await this.updateSettings({ selectedModel: null });
+    this.selectedModelCapabilities = { status: 'none' };
+    this.notify();
   }
 
   async validateAndSelectExternalFile(filePath: string): Promise<ModelProbeResultEvent> {
@@ -429,6 +443,63 @@ export class ModelInstallManager {
   // -----------------------------------------------------------------------
   // Private
   // -----------------------------------------------------------------------
+
+  private async refreshSelectedCapabilities(selection: SelectedModel): Promise<void> {
+    try {
+      const probeResult = await this.deps.sidecarConnection.probeModelSelection({
+        modelSelection: selection,
+        ...createModelStoreOverridePayload(this.deps.getSettings().modelStorePathOverride),
+      });
+      this.applyProbeResultToCapabilities(selection, probeResult);
+    } catch (error) {
+      this.deps.logger?.warn(
+        'model',
+        `failed to probe selected model capabilities: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      const current = this.deps.getSettings().selectedModel;
+      if (current !== null && selectedModelEquals(current, selection)) {
+        this.selectedModelCapabilities = {
+          reason: 'probe_failed',
+          selection,
+          status: 'unavailable',
+        };
+        this.notify();
+      }
+    }
+  }
+
+  private applyProbeResultToCapabilities(
+    selection: SelectedModel,
+    probeResult: ModelProbeResultEvent,
+  ): void {
+    const current = this.deps.getSettings().selectedModel;
+    if (current === null || !selectedModelEquals(current, selection)) {
+      return;
+    }
+
+    if (probeResult.status === 'ready' && probeResult.mergedCapabilities !== null) {
+      this.selectedModelCapabilities = {
+        capabilities: probeResult.mergedCapabilities,
+        selection,
+        status: 'ready',
+      };
+    } else if (probeResult.status === 'missing' || probeResult.status === 'invalid') {
+      this.selectedModelCapabilities = {
+        details: createProbeFailureMessage(probeResult),
+        reason: probeResult.status,
+        selection,
+        status: 'unavailable',
+      };
+    } else {
+      this.selectedModelCapabilities = {
+        reason: 'probe_failed',
+        selection,
+        status: 'unavailable',
+      };
+    }
+
+    this.notify();
+  }
 
   private handleSidecarEvent(event: SidecarEvent): void {
     if (event.type !== 'model_install_update') {

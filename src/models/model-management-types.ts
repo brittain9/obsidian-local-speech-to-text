@@ -38,6 +38,13 @@ export interface ModelFamilyCapabilitiesRecord {
   producesPunctuation: boolean;
 }
 
+export interface EngineCapabilitiesRecord {
+  familyId: ModelFamilyId;
+  family: ModelFamilyCapabilitiesRecord;
+  runtime: RuntimeCapabilitiesRecord;
+  runtimeId: RuntimeId;
+}
+
 export interface RequestWarning {
   field: string;
   reason: string;
@@ -133,6 +140,7 @@ export interface ModelProbeResultRecord {
   displayName: string | null;
   familyId: ModelFamilyId;
   installed: boolean;
+  mergedCapabilities: EngineCapabilitiesRecord | null;
   message: string;
   modelId: string | null;
   resolvedPath: string | null;
@@ -141,6 +149,21 @@ export interface ModelProbeResultRecord {
   sizeBytes: number | null;
   status: ModelProbeStatus;
 }
+
+export type SelectedModelCapabilities =
+  | { status: 'none' }
+  | { status: 'pending'; selection: SelectedModel }
+  | {
+      status: 'unavailable';
+      selection: SelectedModel;
+      reason: 'invalid' | 'missing' | 'probe_failed';
+      details?: string;
+    }
+  | {
+      status: 'ready';
+      selection: SelectedModel;
+      capabilities: EngineCapabilitiesRecord;
+    };
 
 export type ModelInstallState =
   | 'cancelled'

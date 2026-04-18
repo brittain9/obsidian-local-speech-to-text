@@ -7,7 +7,8 @@ use crate::catalog::{
     CatalogModel, ModelCollection, ModelFamilyDescriptor, ModelRuntimeDescriptor,
 };
 use crate::engine::capabilities::{
-    ModelFamilyCapabilities, ModelFamilyId, RequestWarning, RuntimeCapabilities, RuntimeId,
+    EngineCapabilities, ModelFamilyCapabilities, ModelFamilyId, RequestWarning,
+    RuntimeCapabilities, RuntimeId,
 };
 use crate::model_store::InstalledModelRecord;
 use crate::session::SpeakingStyle;
@@ -275,6 +276,8 @@ pub enum Event {
         #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
         installed: bool,
+        #[serde(rename = "mergedCapabilities", skip_serializing_if = "Option::is_none")]
+        merged_capabilities: Option<EngineCapabilities>,
         message: String,
         #[serde(rename = "modelId", skip_serializing_if = "Option::is_none")]
         model_id: Option<String>,

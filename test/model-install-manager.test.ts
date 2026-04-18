@@ -7,6 +7,7 @@ import {
 } from '../src/models/model-install-manager';
 import type {
   CatalogModelSelection,
+  EngineCapabilitiesRecord,
   InstalledModelRecord,
   ModelInstallUpdateRecord,
   ModelStoreRecord,
@@ -161,6 +162,46 @@ function sampleSelection(modelId = 'whisper_large_v3_turbo_q8_0'): CatalogModelS
     kind: 'catalog_model',
     modelId,
     runtimeId: 'whisper_cpp',
+  };
+}
+
+function sampleMergedCapabilities(): EngineCapabilitiesRecord {
+  return {
+    family: {
+      maxAudioDurationSecs: null,
+      producesPunctuation: true,
+      supportedLanguages: { kind: 'english_only' },
+      supportsInitialPrompt: true,
+      supportsLanguageSelection: false,
+      supportsTimedSegments: true,
+    },
+    familyId: 'whisper',
+    runtime: {
+      acceleratorDetails: {
+        cpu: { available: true, unavailableReason: null },
+      },
+      availableAccelerators: ['cpu'],
+      supportedModelFormats: ['ggml'],
+    },
+    runtimeId: 'whisper_cpp',
+  };
+}
+
+function sampleReadyProbeResult(selection = sampleSelection()) {
+  return {
+    available: true,
+    details: null,
+    displayName: 'Whisper Large V3 Turbo Q8_0',
+    familyId: selection.familyId,
+    installed: true,
+    mergedCapabilities: sampleMergedCapabilities(),
+    message: 'Model selection is ready.',
+    modelId: 'modelId' in selection ? selection.modelId : null,
+    resolvedPath: '/models/whisper_cpp/whisper_large_v3_turbo_q8_0/model.bin',
+    runtimeId: selection.runtimeId,
+    selection,
+    sizeBytes: 900,
+    status: 'ready' as const,
   };
 }
 
@@ -756,20 +797,7 @@ describe('ModelInstallManager', () => {
       configureSidecarForInit(harness.sidecarConnection);
       await harness.manager.init();
 
-      harness.sidecarConnection.probeModelSelection.mockResolvedValueOnce({
-        available: true,
-        details: null,
-        displayName: 'Whisper Large V3 Turbo Q8_0',
-        familyId: 'whisper',
-        installed: true,
-        message: 'Model selection is ready.',
-        modelId: 'whisper_large_v3_turbo_q8_0',
-        resolvedPath: '/models/whisper_cpp/whisper_large_v3_turbo_q8_0/model.bin',
-        runtimeId: 'whisper_cpp',
-        selection: sampleSelection(),
-        sizeBytes: 900,
-        status: 'ready',
-      });
+      harness.sidecarConnection.probeModelSelection.mockResolvedValueOnce(sampleReadyProbeResult());
 
       await harness.manager.select(sampleSelection());
 
@@ -789,6 +817,7 @@ describe('ModelInstallManager', () => {
         displayName: 'Whisper Large V3 Turbo Q8_0',
         familyId: 'whisper',
         installed: false,
+        mergedCapabilities: null,
         message: 'Model is not installed.',
         modelId: 'whisper_large_v3_turbo_q8_0',
         resolvedPath: null,
@@ -838,20 +867,7 @@ describe('ModelInstallManager', () => {
       expect(harness.manager.getState().activeInstall).not.toBeNull();
 
       // Select a different model.
-      harness.sidecarConnection.probeModelSelection.mockResolvedValueOnce({
-        available: true,
-        details: null,
-        displayName: 'Whisper Large V3 Turbo Q8_0',
-        familyId: 'whisper',
-        installed: true,
-        message: 'Model selection is ready.',
-        modelId: 'whisper_large_v3_turbo_q8_0',
-        resolvedPath: '/models/whisper_cpp/whisper_large_v3_turbo_q8_0/model.bin',
-        runtimeId: 'whisper_cpp',
-        selection: sampleSelection(),
-        sizeBytes: 900,
-        status: 'ready',
-      });
+      harness.sidecarConnection.probeModelSelection.mockResolvedValueOnce(sampleReadyProbeResult());
       await harness.manager.select(sampleSelection());
 
       expect(harness.getSettings().selectedModel).toEqual(sampleSelection());
@@ -909,6 +925,151 @@ describe('ModelInstallManager', () => {
         state: 'cancelled',
       });
       expect(harness.getSettings().selectedModel).toEqual(sampleSelection());
+
+      harness.manager.dispose();
+    });
+  });
+
+  // -- selectedModelCapabilities -----------------------------------------
+
+  describe('selectedModelCapabilities', () => {
+    it('is none when no model is selected', async () => {
+      const harness = createManagerHarness();
+      configureSidecarForInit(harness.sidecarConnection);
+      await harness.manager.init();
+
+      expect(harness.manager.getState().selectedModelCapabilities).toEqual({ status: 'none' });
+
+      harness.manager.dispose();
+    });
+
+    it('transitions from pending to ready on restart probe success', async () => {
+      const harness = createManagerHarness({ selectedModel: sampleSelection() });
+      configureSidecarForInit(harness.sidecarConnection);
+
+      let resolveProbe!: (result: ReturnType<typeof sampleReadyProbeResult>) => void;
+      harness.sidecarConnection.probeModelSelection.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveProbe = resolve;
+        }),
+      );
+
+      await harness.manager.init();
+
+      expect(harness.manager.getState().selectedModelCapabilities).toEqual({
+        selection: sampleSelection(),
+        status: 'pending',
+      });
+
+      resolveProbe(sampleReadyProbeResult());
+
+      await vi.waitFor(() => {
+        const caps = harness.manager.getState().selectedModelCapabilities;
+        expect(caps.status).toBe('ready');
+      });
+
+      expect(harness.manager.getState().selectedModelCapabilities).toEqual({
+        capabilities: sampleMergedCapabilities(),
+        selection: sampleSelection(),
+        status: 'ready',
+      });
+
+      harness.manager.dispose();
+    });
+
+    it('maps missing probe result to unavailable with the failure message', async () => {
+      const harness = createManagerHarness({ selectedModel: sampleSelection() });
+      configureSidecarForInit(harness.sidecarConnection);
+      harness.sidecarConnection.probeModelSelection.mockResolvedValueOnce({
+        available: false,
+        details: 'file not found',
+        displayName: null,
+        familyId: 'whisper',
+        installed: false,
+        mergedCapabilities: null,
+        message: 'Model is not installed.',
+        modelId: 'whisper_large_v3_turbo_q8_0',
+        resolvedPath: null,
+        runtimeId: 'whisper_cpp',
+        selection: sampleSelection(),
+        sizeBytes: null,
+        status: 'missing',
+      });
+
+      await harness.manager.init();
+
+      await vi.waitFor(() => {
+        const caps = harness.manager.getState().selectedModelCapabilities;
+        expect(caps.status).toBe('unavailable');
+      });
+
+      expect(harness.manager.getState().selectedModelCapabilities).toEqual({
+        details: 'Model is not installed. (file not found)',
+        reason: 'missing',
+        selection: sampleSelection(),
+        status: 'unavailable',
+      });
+
+      harness.manager.dispose();
+    });
+
+    it('maps probe exceptions to unavailable probe_failed', async () => {
+      const harness = createManagerHarness({ selectedModel: sampleSelection() });
+      configureSidecarForInit(harness.sidecarConnection);
+      harness.sidecarConnection.probeModelSelection.mockRejectedValueOnce(
+        new Error('sidecar pipe closed'),
+      );
+
+      await harness.manager.init();
+
+      await vi.waitFor(() => {
+        const caps = harness.manager.getState().selectedModelCapabilities;
+        expect(caps.status).toBe('unavailable');
+      });
+
+      expect(harness.manager.getState().selectedModelCapabilities).toEqual({
+        reason: 'probe_failed',
+        selection: sampleSelection(),
+        status: 'unavailable',
+      });
+
+      harness.manager.dispose();
+    });
+
+    it('populates ready directly from the select() probe result without a second probe', async () => {
+      const harness = createManagerHarness();
+      configureSidecarForInit(harness.sidecarConnection);
+      await harness.manager.init();
+
+      harness.sidecarConnection.probeModelSelection.mockResolvedValueOnce(sampleReadyProbeResult());
+      await harness.manager.select(sampleSelection());
+
+      expect(harness.sidecarConnection.probeModelSelection).toHaveBeenCalledTimes(1);
+      expect(harness.manager.getState().selectedModelCapabilities).toEqual({
+        capabilities: sampleMergedCapabilities(),
+        selection: sampleSelection(),
+        status: 'ready',
+      });
+
+      harness.manager.dispose();
+    });
+
+    it('clearSelection resets capabilities to none and notifies', async () => {
+      const harness = createManagerHarness({ selectedModel: sampleSelection() });
+      configureSidecarForInit(harness.sidecarConnection);
+      harness.sidecarConnection.probeModelSelection.mockResolvedValueOnce(sampleReadyProbeResult());
+      await harness.manager.init();
+      await vi.waitFor(() => {
+        expect(harness.manager.getState().selectedModelCapabilities.status).toBe('ready');
+      });
+
+      const listener = vi.fn();
+      harness.manager.subscribe(listener);
+
+      await harness.manager.clearSelection();
+
+      expect(harness.manager.getState().selectedModelCapabilities).toEqual({ status: 'none' });
+      expect(listener).toHaveBeenCalled();
 
       harness.manager.dispose();
     });
