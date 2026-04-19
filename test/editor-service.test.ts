@@ -103,13 +103,24 @@ describe('EditorService', () => {
     expect(view.state.field(dictationAnchorStateField)).toEqual({ pos: 6, mode: 'hidden' });
   });
 
-  it('beginAnchor pins end_of_note at doc end', () => {
+  it('beginAnchor pins end_of_note at doc end and inserts eager newline when needed', () => {
     const view = new FakeEditorView('hello world', 0);
     const { service } = createEditorService(view);
 
     service.beginAnchor('end_of_note');
 
+    expect(view.state.doc.toString()).toBe('hello world\n');
     expect(view.state.field(dictationAnchorStateField).pos).toBe(view.state.doc.length);
+  });
+
+  it('beginAnchor skips the eager newline when the doc already ends with one', () => {
+    const view = new FakeEditorView('hello\n', 0);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('end_of_note');
+
+    expect(view.state.doc.toString()).toBe('hello\n');
+    expect(view.state.field(dictationAnchorStateField).pos).toBe(6);
   });
 
   it('inserts three phrases with the space separator at_cursor', () => {
@@ -120,6 +131,7 @@ describe('EditorService', () => {
     service.insertPhrase('first', 'space');
     service.insertPhrase('second', 'space');
     service.insertPhrase('third', 'space');
+    service.endAnchor();
 
     expect(view.state.doc.toString()).toBe('start first second third');
   });
@@ -132,11 +144,12 @@ describe('EditorService', () => {
     service.insertPhrase('first', 'new_line');
     service.insertPhrase('second', 'new_line');
     service.insertPhrase('third', 'new_line');
+    service.endAnchor();
 
     expect(view.state.doc.toString()).toBe('first\nsecond\nthird');
   });
 
-  it('inserts three phrases with the new_paragraph separator at_cursor and dedups adjacent newlines', () => {
+  it('inserts three phrases with the new_paragraph separator at_cursor', () => {
     const view = new FakeEditorView('', 0);
     const { service } = createEditorService(view);
 
@@ -144,8 +157,41 @@ describe('EditorService', () => {
     service.insertPhrase('first', 'new_paragraph');
     service.insertPhrase('second', 'new_paragraph');
     service.insertPhrase('third', 'new_paragraph');
+    service.endAnchor();
 
     expect(view.state.doc.toString()).toBe('first\n\nsecond\n\nthird');
+  });
+
+  it('keeps the anchor on the new line between phrases for new_line separator', () => {
+    const view = new FakeEditorView('', 0);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('at_cursor');
+    service.insertPhrase('first', 'new_line');
+
+    expect(view.state.doc.toString()).toBe('first\n');
+    expect(view.state.field(dictationAnchorStateField).pos).toBe(6);
+  });
+
+  it('keeps the anchor on the new paragraph between phrases for new_paragraph separator', () => {
+    const view = new FakeEditorView('', 0);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('at_cursor');
+    service.insertPhrase('first', 'new_paragraph');
+
+    expect(view.state.doc.toString()).toBe('first\n\n');
+    expect(view.state.field(dictationAnchorStateField).pos).toBe(7);
+  });
+
+  it('end_of_note with a mid-line doc places the anchor on the new line before any phrase arrives', () => {
+    const view = new FakeEditorView('alpha', 0);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('end_of_note');
+
+    expect(view.state.doc.toString()).toBe('alpha\n');
+    expect(view.state.field(dictationAnchorStateField).pos).toBe(6);
   });
 
   it('prefixes the first end_of_note insertion with a newline when doc ends mid-line', () => {
@@ -155,6 +201,7 @@ describe('EditorService', () => {
     service.beginAnchor('end_of_note');
     service.insertPhrase('beta', 'space');
     service.insertPhrase('gamma', 'space');
+    service.endAnchor();
 
     expect(view.state.doc.toString()).toBe('alpha\nbeta gamma');
   });
@@ -166,8 +213,54 @@ describe('EditorService', () => {
     service.beginAnchor('end_of_note');
     service.insertPhrase('first', 'space');
     service.insertPhrase('second', 'space');
+    service.endAnchor();
 
     expect(view.state.doc.toString()).toBe('first second');
+  });
+
+  it('trims the eager first-phrase newline on endAnchor when no phrase was inserted', () => {
+    const view = new FakeEditorView('alpha', 0);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('end_of_note');
+    expect(view.state.doc.toString()).toBe('alpha\n');
+
+    service.endAnchor();
+
+    expect(view.state.doc.toString()).toBe('alpha');
+    expect(view.state.field(dictationAnchorStateField)).toEqual({ pos: null, mode: 'hidden' });
+  });
+
+  it('trims the trailing eager separator on endAnchor after the last phrase', () => {
+    const view = new FakeEditorView('', 0);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('at_cursor');
+    service.insertPhrase('only', 'new_paragraph');
+    expect(view.state.doc.toString()).toBe('only\n\n');
+
+    service.endAnchor();
+
+    expect(view.state.doc.toString()).toBe('only');
+  });
+
+  it('leaves the trailing region alone if the user modified it before endAnchor', () => {
+    const view = new FakeEditorView('', 0);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('at_cursor');
+    service.insertPhrase('done', 'new_line');
+    expect(view.state.doc.toString()).toBe('done\n');
+
+    const anchorPos = view.state.field(dictationAnchorStateField).pos;
+    if (anchorPos === null) {
+      throw new Error('anchor position unexpectedly cleared');
+    }
+    view.dispatch({ changes: { from: anchorPos, insert: 'more' } });
+
+    service.endAnchor();
+
+    expect(view.state.doc.toString()).toBe('done\nmore');
   });
 
   it('keeps insertions aligned when the user inserts text above the anchor mid-session', () => {
@@ -178,6 +271,7 @@ describe('EditorService', () => {
     service.insertPhrase('first', 'space');
     view.dispatch({ changes: { from: 0, insert: '!!!' } });
     service.insertPhrase('second', 'space');
+    service.endAnchor();
 
     expect(view.state.doc.toString()).toBe('!!!header\nfirst second');
   });
@@ -251,6 +345,35 @@ describe('EditorService', () => {
     expect(other.state.field(dictationAnchorStateField)).toEqual({ pos: 3, mode: 'hidden' });
 
     service.insertPhrase('first', 'space');
+    service.endAnchor();
     expect(other.state.doc.toString()).toBe('newfirst note');
+  });
+
+  it('trims pending chars on the previous view when the user switches notes mid-session', () => {
+    const view = new FakeEditorView('', 0);
+    const { service, setActiveEditor, triggerLeafChange } = createEditorService(view, 'old');
+
+    service.beginAnchor('at_cursor');
+    service.insertPhrase('stranded', 'new_paragraph');
+    expect(view.state.doc.toString()).toBe('stranded\n\n');
+
+    const other = new FakeEditorView('other', 0);
+    setActiveEditor(other, 'new');
+    triggerLeafChange();
+
+    expect(view.state.doc.toString()).toBe('stranded');
+  });
+
+  it('applies the eager first-phrase newline on the new view when switching mid-session', () => {
+    const view = new FakeEditorView('', 0);
+    const { service, setActiveEditor, triggerLeafChange } = createEditorService(view);
+
+    service.beginAnchor('end_of_note');
+    const other = new FakeEditorView('second note', 0);
+    setActiveEditor(other, 'other');
+    triggerLeafChange();
+
+    expect(other.state.doc.toString()).toBe('second note\n');
+    expect(other.state.field(dictationAnchorStateField).pos).toBe(12);
   });
 });

@@ -1,32 +1,43 @@
 import type { DictationAnchor, PhraseSeparator } from '../settings/plugin-settings';
 
-export function computePhrasePrefix({
+export function computeFirstPhrasePrefix({
   anchor,
-  separator,
-  isFirstPhrase,
   charBeforeAnchor,
 }: {
   anchor: DictationAnchor;
-  separator: PhraseSeparator;
-  isFirstPhrase: boolean;
   charBeforeAnchor: string | null;
 }): string {
-  if (isFirstPhrase) {
-    if (anchor === 'end_of_note' && charBeforeAnchor !== null && charBeforeAnchor !== '\n') {
-      return '\n';
-    }
-
-    return '';
+  if (anchor === 'end_of_note' && charBeforeAnchor !== null && charBeforeAnchor !== '\n') {
+    return '\n';
   }
+  return '';
+}
 
+export interface PhraseInsertSeparators {
+  prefix: string;
+  trailing: string;
+}
+
+export function computePhraseSeparators({
+  separator,
+  isFirstPhrase,
+}: {
+  separator: PhraseSeparator;
+  isFirstPhrase: boolean;
+}): PhraseInsertSeparators {
+  return {
+    prefix: !isFirstPhrase && separator === 'space' ? ' ' : '',
+    trailing: eagerTrailingSeparator(separator),
+  };
+}
+
+function eagerTrailingSeparator(separator: PhraseSeparator): string {
   switch (separator) {
     case 'space':
-      return ' ';
-
+      return '';
     case 'new_line':
       return '\n';
-
     case 'new_paragraph':
-      return charBeforeAnchor === '\n' ? '\n' : '\n\n';
+      return '\n\n';
   }
 }

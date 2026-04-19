@@ -10,7 +10,7 @@ import {
   setAnchorEffect,
   setAnchorModeEffect,
 } from './dictation-anchor-extension';
-import { computePhrasePrefix } from './transcript-placement';
+import { computeFirstPhrasePrefix, computePhraseSeparators } from './transcript-placement';
 
 interface EditorWithCm extends Editor {
   cm?: EditorView;
@@ -20,6 +20,7 @@ export class EditorService {
   private activeAnchor = false;
   private anchorPreference: DictationAnchor = 'at_cursor';
   private firstPhrase = true;
+  private pendingTrailingContent = '';
   private storedView: EditorView | null = null;
 
   constructor(
@@ -44,9 +45,7 @@ export class EditorService {
 
     const view = this.getActiveEditorView();
     this.storedView = view;
-    const pinPos = this.computePinPosition(view, anchor);
-
-    view.dispatch({ effects: setAnchorEffect.of(pinPos) });
+    this.pinAnchorOn(view);
   }
 
   setAnchorMode(mode: DictationAnchorMode): void {
@@ -76,15 +75,11 @@ export class EditorService {
     }
 
     const oldPos = anchorState.pos;
-    const doc = view.state.doc;
-    const charBeforeAnchor = oldPos > 0 ? doc.sliceString(oldPos - 1, oldPos) : null;
-    const prefix = computePhrasePrefix({
-      anchor: this.anchorPreference,
+    const { prefix, trailing } = computePhraseSeparators({
       separator,
       isFirstPhrase: this.firstPhrase,
-      charBeforeAnchor,
     });
-    const insertedText = `${prefix}${text}`;
+    const insertedText = `${prefix}${text}${trailing}`;
     const newPos = oldPos + insertedText.length;
 
     view.dispatch({
@@ -96,6 +91,7 @@ export class EditorService {
       ],
     });
 
+    this.pendingTrailingContent = trailing;
     this.firstPhrase = false;
   }
 
@@ -106,8 +102,9 @@ export class EditorService {
     this.storedView = null;
 
     if (view !== null && this.isViewAlive(view)) {
-      view.dispatch({ effects: clearAnchorEffect.of(null) });
+      this.trimPendingAndClear(view);
     }
+    this.pendingTrailingContent = '';
   }
 
   private handleActiveLeafChange(): void {
@@ -122,11 +119,12 @@ export class EditorService {
 
     const previousView = this.storedView;
     if (previousView !== null && this.isViewAlive(previousView)) {
-      previousView.dispatch({ effects: clearAnchorEffect.of(null) });
+      this.trimPendingAndClear(previousView);
     }
 
     if (newView === null) {
       this.storedView = null;
+      this.pendingTrailingContent = '';
       return;
     }
 
@@ -135,8 +133,47 @@ export class EditorService {
 
     this.storedView = newView;
     this.firstPhrase = true;
-    const pinPos = this.computePinPosition(newView, this.anchorPreference);
-    newView.dispatch({ effects: setAnchorEffect.of(pinPos) });
+    this.pinAnchorOn(newView);
+  }
+
+  private pinAnchorOn(view: EditorView): void {
+    const originalPos = this.computePinPosition(view, this.anchorPreference);
+    const charBeforeAnchor =
+      originalPos > 0 ? view.state.doc.sliceString(originalPos - 1, originalPos) : null;
+    const prefix = computeFirstPhrasePrefix({
+      anchor: this.anchorPreference,
+      charBeforeAnchor,
+    });
+    const pinPos = originalPos + prefix.length;
+
+    if (prefix.length > 0) {
+      view.dispatch({
+        changes: { from: originalPos, insert: prefix },
+        effects: setAnchorEffect.of(pinPos),
+      });
+    } else {
+      view.dispatch({ effects: setAnchorEffect.of(pinPos) });
+    }
+
+    this.pendingTrailingContent = prefix;
+  }
+
+  private trimPendingAndClear(view: EditorView): void {
+    const pending = this.pendingTrailingContent;
+    if (pending.length > 0) {
+      const anchorPos = view.state.field(dictationAnchorStateField).pos;
+      if (anchorPos !== null && anchorPos === view.state.doc.length) {
+        const start = anchorPos - pending.length;
+        if (start >= 0 && view.state.doc.sliceString(start, anchorPos) === pending) {
+          view.dispatch({
+            changes: { from: start, to: anchorPos, insert: '' },
+            effects: clearAnchorEffect.of(null),
+          });
+          return;
+        }
+      }
+    }
+    view.dispatch({ effects: clearAnchorEffect.of(null) });
   }
 
   private isStoredViewActive(): boolean {

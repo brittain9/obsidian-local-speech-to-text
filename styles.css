@@ -443,15 +443,14 @@
     opacity: 1;
   }
 
-  .local-stt-dictation-anchor--speaking,
   .local-stt-dictation-anchor--processing {
     animation: none;
-    opacity: 0.9;
+    opacity: 0.55;
   }
 
   .local-stt-dictation-anchor--speaking::before {
     animation: none;
-    opacity: 0.9;
+    opacity: 0.55;
   }
 }
 
@@ -462,9 +461,8 @@
   align-items: center;
   justify-content: center;
   width: 1em;
-  height: 1em;
-  line-height: 1;
-  vertical-align: 0.1em;
+  height: 1.2em;
+  vertical-align: middle;
   overflow: hidden;
   pointer-events: none;
   user-select: none;
@@ -477,18 +475,18 @@
 .local-stt-dictation-anchor--speaking::before {
   content: "";
   display: block;
-  width: 0.4em;
-  height: 0.4em;
-  border-radius: 50%;
+  width: 2px;
+  height: 1em;
+  border-radius: 1px;
   background: currentColor;
   animation:
     local-stt-fade-in 0.35s ease-out both,
-    local-stt-pulse 1.4s ease-in-out 0.35s infinite;
+    local-stt-caret-pulse 1.4s ease-in-out 0.35s infinite;
 }
 
 .local-stt-dictation-anchor--processing {
   color: var(--interactive-accent);
-  opacity: 0.7;
+  opacity: 0.55;
   animation: local-stt-spin 0.9s linear infinite;
 }
 
@@ -497,17 +495,17 @@
     opacity: 0;
   }
   to {
-    opacity: 0.9;
+    opacity: 0.55;
   }
 }
 
-@keyframes local-stt-pulse {
+@keyframes local-stt-caret-pulse {
   0%,
   100% {
-    opacity: 0.9;
+    opacity: 0.55;
   }
   50% {
-    opacity: 0.4;
+    opacity: 0.15;
   }
 }
 
