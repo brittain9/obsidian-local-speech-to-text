@@ -57,9 +57,10 @@ Durable workflow, product, and architecture decisions. Update in the same change
 
 ### D-007: Transcript Pipeline Architecture
 
-- Status: active
+- Status: superseded by D-009
 - Decision: Insert a TranscriptFormatter and TextProcessor pipeline between engine output and editor insertion. Formatter selects output format (plain text, inline timestamps). Processor applies composable text transforms (filtering, user rules). Each layer ships in its own PR.
-- Why: The current pipeline goes directly from engine output to insertion with no formatting or processing step. See `docs/architecture/pipeline-architecture.md`.
+- Why: The current pipeline goes directly from engine output to insertion with no formatting or processing step.
+- Superseded because: the plugin/sidecar boundary is cleaner when the sidecar returns finished text rather than raw segments, and capability-gated fallbacks (e.g. VAD-derived timestamps when the model lacks word-level output) need access to data that only the sidecar has. See D-009.
 
 ### D-008: Engine Abstraction Is A Three-Layer Registry
 
@@ -69,3 +70,10 @@ Durable workflow, product, and architecture decisions. Update in the same change
   - **Selected-model capabilities** (`model_probe_result.mergedCapabilities`) — the merged `RuntimeCapabilities ⊕ ModelFamilyCapabilities` for the current selection, present iff the probe returned `ready`. The plugin exposes this as `ModelManagerState.selectedModelCapabilities`, a discriminated union of `{none | pending | unavailable | ready}`. UI gating (initial-prompt field, language picker, segment formatter) reads from this union; there is no TypeScript mirror of which engine supports what. For unknown-family external files, the merge falls back to `ModelFamilyCapabilities::unknown()` so the struct shape is stable.
 - Why: Removes scattered `match EngineId` dispatch, unblocks capability-gated features (initial-prompt conditioning, per-engine GPU UI, per-adapter post-processing), and gives future adapters an `OCP`-friendly registration path behind a single Cargo feature flag without touching dispatch sites. Selections use the triple `(runtimeId, familyId, modelId)` — so one runtime can host multiple families and one family can be delivered by multiple runtimes.
 - Implication: Unsupported request fields are warn+dropped at the worker, surfaced as `RequestWarning[]` on `TranscriptReadyEvent` (dev console only). Cargo features renamed: `engine-cohere-transcribe`, `engine-whisper`, `gpu-ort-cuda`. Per-model capability overrides are a planned additive extension: a new optional field on `EngineCapabilities` (e.g. `modelOverrides`) that consumers default to merged family caps when absent — no breaking change required.
+
+### D-009: Post-Transcript Enrichment Runs In The Rust Sidecar
+
+- Status: active
+- Decision: Post-transcript processing — hallucination filter, punctuation, user rules, diarization, optional LLM, and final render — runs in the Rust sidecar, not the plugin. The sidecar produces a canonical transcript struct after inference and applies text-domain stages against it; the plugin receives the final rendered text plus a `stageResults[]` report via `transcript_ready`. Diarization runs in the audio pipeline alongside VAD. LLM post-processing is an experimental side branch outside the text pipeline because it may restructure text freely and destroy segment alignment.
+- Why: Keeps the plugin/sidecar boundary clean — audio in, final text out. The canonical transcript is the architectural seam between audio-domain and text-domain processing. Text stages are segment-preserving so they are composable and individually skippable. Capability-gated features degrade gracefully (e.g. word-level timestamps when the model supports them, VAD-derived segment timestamps otherwise) without requiring engine-specific branches in the plugin.
+- Implication: Three protocol seams — *inventory* (`compiledProcessors[]` alongside the existing `compiledRuntimes[]` / `compiledAdapters[]` on `system_info`), *request* (feature toggles on `start_session`), *report* (`stageResults[]` on `transcript_ready`). Diarization's registration site (standalone adapter vs processor module) and the canonical transcript struct shape are open questions to be resolved in the design spec. Supersedes D-007. Full design in `docs/architecture/system-architecture.md`.

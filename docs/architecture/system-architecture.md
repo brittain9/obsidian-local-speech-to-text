@@ -2,33 +2,79 @@
 
 ## System Overview
 
-Local Speech-to-Text is an Obsidian plugin that transcribes speech to text entirely on-device. Audio flows from the microphone through a browser-based capture layer, across a binary protocol into a native Rust sidecar process, through a three-layer engine registry (runtime → family adapter → loaded model), and back as text that is inserted into the active editor.
+Local Speech-to-Text is an Obsidian plugin that transcribes speech to text entirely on-device. Audio flows from the microphone through a browser-based capture layer, across a binary protocol into a native Rust sidecar, and back as text that is inserted into the active editor. The sidecar owns inference and all post-transcript work; the plugin owns capture, orchestration, and editor insertion.
+
+### Current
+
+Today the sidecar runs VAD and inference and nothing else — audio in, text out. Commands and audio share one framed stdin stream; transcripts come back on stdout.
 
 ```mermaid
----
-config:
-  flowchart:
-    nodeSpacing: 20
-    rankSpacing: 25
-    diagramPadding: 8
-    wrappingWidth: 120
----
 flowchart LR
-    subgraph Obsidian ["Obsidian - Electron"]
-        MIC["Microphone"] --> CAPTURE["Audio Capture + PCM Framing"]
+    subgraph Plugin ["Obsidian plugin (TypeScript)"]
+        MIC["Mic + PCM capture"]
+        CFG["Session config + commands"]
+        EDIT["Editor insertion"]
     end
 
-    CAPTURE --> PROTO_TS["Protocol Encoder"]
-    PROTO_TS -->|"stdin"| PROTO_RS["Protocol Decoder"]
-
-    subgraph Sidecar ["Rust Sidecar"]
-        PROTO_RS --> SESSION["Session + VAD"] --> WORKER["Worker -> EngineRegistry (Runtime / Adapter / LoadedModel)"]
+    subgraph Sidecar ["Native sidecar (Rust)"]
+        VAD["VAD · speech boundaries"]
+        INF["Inference · engine registry<br/>(runtime / adapter / model)"]
+        VAD --> INF
     end
 
-    WORKER -->|"stdout"| CTRL["Session Controller"] --> EDITOR["Editor Insert"]
+    MIC -->|"stdin: audio frames (binary protocol)"| VAD
+    CFG -->|"stdin: JSON commands (binary protocol)"| VAD
+    INF -->|"stdout: transcript_ready (binary protocol)"| EDIT
 ```
 
-**Total codebase:** ~8,500 LOC TypeScript + ~6,600 LOC Rust = ~15,100 LOC
+### Proposed
+
+Post-transcript enrichment adds two pipelines separated by a canonical transcript struct. The **audio pipeline** (VAD → diarization → inference → normalize) runs in the audio domain. The **text pipeline** (hallucination filter → punctuation → user rules) runs on the normalized transcript and preserves segment boundaries. An **LLM post-processor** sits outside the text pipeline as an experimental side branch because it may restructure text freely and destroy alignment. A final **render** stage applies the user's timestamp and format choices.
+
+```mermaid
+flowchart TB
+    subgraph Plugin ["Obsidian plugin (TypeScript)"]
+        MIC["Mic + PCM capture"]
+        CFG["Session config + feature toggles"]
+        EDIT["Editor insertion"]
+    end
+
+    subgraph Sidecar ["Native sidecar (Rust)"]
+        direction TB
+
+        subgraph Audio ["Audio pipeline"]
+            direction LR
+            VAD["VAD"] --> DIA["Diarization<br/>(optional, capability-gated)"] --> INF["Inference<br/>(engine registry)"] --> NORM["Normalize →<br/>canonical transcript"]
+        end
+
+        subgraph Text ["Text pipeline · segment-preserving"]
+            direction LR
+            FILT["Hallucination<br/>filter"] --> PUNCT["Punctuation"] --> RULES["User rules"]
+        end
+
+        LLM["LLM post-processor<br/>(experimental · structure-destroying)"]
+        RENDER["Render<br/>(apply timestamp mode + format)"]
+
+        NORM --> FILT
+        RULES --> RENDER
+        RULES -.-> LLM -.-> RENDER
+    end
+
+    MIC -->|"stdin: audio frames (binary protocol)"| VAD
+    CFG -->|"stdin: start_session w/ features (binary protocol)"| VAD
+    RENDER -->|"stdout: transcript_ready w/ stageResults (binary protocol)"| EDIT
+```
+
+What this architecture makes explicit:
+
+- **Two pipelines, one seam.** The canonical transcript at `Normalize` is the boundary — everything before is audio-signal work, everything after is struct manipulation. No stage crosses the seam.
+- **Diarization lives in the audio pipeline**, not the text pipeline. It's a capability-gated model that labels segments by speaker; the label rides along as a field on the canonical transcript. Whether it registers under `pipeline/` or alongside engine adapters is an open question tracked in the design spec.
+- **Text stages are segment-preserving.** The contract is that they may rewrite text *within* a segment but never change boundaries or timestamps. That is what makes them composable in any order and individually skippable.
+- **LLM is a dashed side branch**, deliberately outside the text pipeline. It is allowed to rewrite freely, which destroys segment alignment — so nothing else in the architecture depends on its behaviour. Two future modes (per-segment rolling vs whole-transcript batch) both slot into this same branch.
+- **Render is the single endpoint.** "Timestamps off" strips them here; format choice (plain text, timestamped list, speaker-prefixed) is applied here. No earlier stage renders.
+- **stdin still carries both audio and commands.** `start_session` now includes feature toggles (the *request* seam); `transcript_ready` now includes `stageResults[]` reporting which stages ran, were skipped, or failed (the *report* seam). The *inventory* seam — `compiledProcessors[]` alongside the existing `compiledRuntimes[]` and `compiledAdapters[]` — rides on the `system_info` event.
+
+**Total codebase (current):** ~8,500 LOC TypeScript + ~6,600 LOC Rust = ~15,100 LOC
 
 ---
 
@@ -37,24 +83,10 @@ flowchart LR
 ### Stage 1: Audio Capture
 
 ```mermaid
----
-config:
-  flowchart:
-    nodeSpacing: 20
-    rankSpacing: 25
-    diagramPadding: 8
-    wrappingWidth: 120
----
 flowchart LR
-    subgraph capture ["Audio Thread"]
-        MIC["getUserMedia (mono)"] --> SRC["MediaStreamSource"] --> WORKLET["AudioWorklet: resample + quantize"]
-    end
-
-    WORKLET -->|"postMessage (640 B)"| MAIN
-
-    subgraph transport ["Main Thread"]
-        MAIN["Frame Listener"] --> ENCODE["Encode Binary Frame"] --> STDIN["stdin.write()"]
-    end
+    MIC["Microphone"] --> RT["Real-time audio thread<br/>(resample + quantize)"]
+    RT --> MAIN["Main thread<br/>(frame + encode)"]
+    MAIN -->|"stdin (binary protocol)"| SIDECAR["Sidecar"]
 ```
 
 **What it does:** Captures raw microphone audio, resamples to 16 kHz, quantizes to 16-bit PCM, and packages into fixed 640-byte frames at 50 fps.
@@ -86,35 +118,20 @@ flowchart LR
 ### Stage 2: Binary Protocol Transport
 
 ```mermaid
----
-config:
-  flowchart:
-    nodeSpacing: 20
-    rankSpacing: 25
-    diagramPadding: 8
-    wrappingWidth: 120
----
-flowchart LR
-    subgraph frame ["Frame Format"]
-        KIND["kind: u8"] --- LEN["payload_len: u32 LE"] --- PAYLOAD["payload: bytes"]
-    end
-```
-
-```mermaid
 sequenceDiagram
-    participant TS as TypeScript Plugin
-    participant RS as Rust Sidecar
+    participant P as Plugin
+    participant S as Sidecar
 
-    Note over TS,RS: stdin (TS → Rust): Audio frames + JSON commands
-    Note over TS,RS: stdout (Rust → TS): JSON event frames only
+    Note over P,S: stdin — audio frames + JSON commands
+    Note over P,S: stdout — JSON events only
 
-    TS->>RS: [0x02] Audio frame (640 bytes)
-    TS->>RS: [0x02] Audio frame (640 bytes)
-    TS->>RS: [0x01] JSON: start_session
-    RS->>TS: [0x01] JSON: session_started
-    RS->>TS: [0x01] JSON: session_state_changed
-    TS->>RS: [0x02] Audio frame (640 bytes)
-    RS->>TS: [0x01] JSON: transcript_ready
+    P->>S: audio frame
+    P->>S: audio frame
+    P->>S: start_session
+    S->>P: session_started
+    S->>P: session_state_changed
+    P->>S: audio frame
+    S->>P: transcript_ready
 ```
 
 **What it does:** Multiplexes JSON commands/events and raw audio on a single bidirectional byte stream (stdin/stdout) using a 5-byte header framing protocol.
@@ -178,11 +195,11 @@ stateDiagram-v2
     direction LR
 
     [*] --> Listening : start
-    Listening --> SpeechDetected : min_speech frames above threshold
-    SpeechDetected --> SpeechPaused : probability drops, silence accumulates
-    SpeechPaused --> SpeechDetected : probability recovers
-    SpeechPaused --> Listening : silence_end reached, utterance finalized
-    SpeechDetected --> Listening : max length (boundary-aware split)
+    Listening --> SpeechDetected : sustained speech
+    SpeechDetected --> SpeechPaused : speech probability drops
+    SpeechPaused --> SpeechDetected : speech resumes
+    SpeechPaused --> Listening : silence window reached · utterance finalized
+    SpeechDetected --> Listening : max utterance length · boundary-aware split
     Listening --> [*] : stop
     SpeechDetected --> [*] : stop + flush
     Listening --> Timeout : one_sentence timeout
@@ -229,20 +246,17 @@ The silence-window values are calibrated against industry streaming-dictation no
 
 ```mermaid
 flowchart LR
-    subgraph Main Thread
-        ENQUEUE["enqueue_utterance (i16 samples)"]
+    UTT["Completed utterance<br/>(PCM)"] --> WORKER
+
+    subgraph WORKER ["Worker thread"]
+        direction TB
+        LOOKUP["Engine registry lookup<br/>(runtime / family adapter)"]
+        GATE["Capability gate<br/>(warn + drop unsupported fields)"]
+        INF["Loaded model · transcribe"]
+        LOOKUP --> GATE --> INF
     end
 
-    subgraph Worker Thread
-        CMD["command_rx.recv()"] --> LOOKUP["EngineRegistry.adapter(runtimeId, familyId)"]
-        LOOKUP --> GATE["apply_capability_gates -> warnings[]"]
-        GATE --> NORM["Normalize: i16 -> f32"]
-        NORM --> INF["LoadedModel.transcribe(request)"]
-        INF --> EVT["WorkerEvent::TranscriptReady"]
-    end
-
-    ENQUEUE -->|"mpsc channel"| CMD
-    EVT -->|"mpsc channel"| DRAIN["drain_worker_events()"]
+    WORKER --> OUT["Transcript segments"]
 ```
 
 **What it does:** Looks up the family adapter for the session's `(runtimeId, familyId)`, soft-drops request fields the adapter doesn't declare support for (emitting `RequestWarning[]`), runs the model on the completed utterance, and produces timestamped text segments.
@@ -314,11 +328,9 @@ During inference, the preset's silence window (400–2000 ms) is fully overlappe
 
 ```mermaid
 flowchart LR
-    TR["transcript_ready event"] --> NORM["normalizeTranscriptText()"]
-    NORM --> MODE{"insertionMode?"}
-    MODE -->|insert_at_cursor| REPL["editor.replaceSelection()"]
-    MODE -->|append_on_new_line| APPEND["append at EOF + newline"]
-    MODE -->|append_as_new_paragraph| PARA["append at EOF + blank line"]
+    TR["transcript_ready event"] --> NORM["Normalize whitespace"]
+    NORM --> PLACE["Placement strategy<br/>(cursor · new line · new paragraph)"]
+    PLACE --> ED["Obsidian editor"]
 ```
 
 **What it does:** Takes the transcribed text string and inserts it into the active Obsidian editor according to the user's insertion mode preference.
@@ -390,63 +402,3 @@ flowchart LR
 | **Node.js child_process** | Process spawning in Node.js/Electron | Launches and manages the Rust sidecar as a subprocess |
 | **reqwest** | Async HTTP client for Rust | Downloads model files from HuggingFace |
 | **sha2** | SHA-256 implementation in Rust | Verifies downloaded model file integrity |
-
----
-
-## Time Budget: End-to-End Pipeline
-
-```mermaid
-gantt
-    title Typical utterance timeline (~3 s speech, Whisper Small, CPU)
-    dateFormat X
-    axisFormat %s s
-
-    section Speaking
-    User speaks           :a1, 0, 3000
-
-    section Audio Capture
-    Frame accumulation    :a2, 0, 3000
-
-    section Transport
-    Frames to sidecar     :a3, 20, 3000
-
-    section VAD
-    Per-frame VAD         :a4, 20, 3000
-
-    section Silence Wait
-    1000 ms silence detect (Balanced) :a5, 3000, 1000
-
-    section Inference
-    Whisper Small CPU     :crit, a6, 4000, 2000
-
-    section Insert
-    Text insertion        :a7, after a6, 10
-```
-
-**Where time is spent:**
-
-| Stage | Wall-clock cost | % of total | Notes |
-|-------|----------------|------------|-------|
-| Audio capture + framing | ~20 ms latency | < 1% | Real-time, pipelined with speech |
-| Protocol transport | < 1 ms per frame | < 1% | Trivial encoding/decoding |
-| VAD + boundary detection | < 1 ms per inference | < 1% | Silero ONNX inference on buffered frames |
-| **Silence detection wait** | **400–2000 ms (preset-dependent)** | **~15–40%** | User-perceptible; gap between speech ending and transcription starting. Balanced is 1000 ms, Responsive 400 ms, Patient 2000 ms |
-| **Model inference** | **200 ms - 5 s** | **~85-90%** | The dominant cost; scales with model size and hardware |
-| Text insertion | < 1 ms | < 1% | DOM operation |
-
----
-
-## Code Weight by Area
-
-| Area | TS LOC | Rust LOC | Total | % |
-|------|--------|----------|-------|---|
-| Audio capture | 410 | -- | 410 | 3% |
-| Protocol + transport | 1,700 | 655 | 2,355 | 16% |
-| Session + VAD + boundary | 468 | 865 | 1,333 | 9% |
-| Engine registry + adapters + runtimes | -- | 1,830 | 1,830 | 12% |
-| Model management | 1,630 | 1,170 | 2,800 | 19% |
-| Plugin orchestration + UI | 1,270 | -- | 1,270 | 8% |
-| Settings + commands | 800 | -- | 800 | 5% |
-| App state + glue | 290 | 1,475 | 1,765 | 12% |
-| Tests | ~1,500 | -- | 1,500 | 10% |
-| Build/config | ~900 | ~200 | 1,100 | 7% |

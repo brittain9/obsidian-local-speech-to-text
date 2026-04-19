@@ -4,6 +4,19 @@
 
 See the [README](README.md) for toolchain versions and development setup.
 
+## Architecture Overview
+
+The repository has two runtime boundaries:
+
+- **TypeScript plugin** (`src/`) — Obsidian UX, settings, microphone capture, editor insertion, orchestration.
+- **Rust sidecar** (`native/`) — inference (via a three-layer engine registry: runtime / model family adapter / loaded model), audio-domain processing (VAD, diarization), and all post-transcript enrichment (hallucination filter, punctuation, user rules, render).
+
+Audio crosses the boundary as 16 kHz mono PCM over stdin in a framed binary protocol; transcripts come back on stdout as JSON events. The sidecar owns everything between "audio in" and "finished text out".
+
+For the full picture — current architecture, planned post-transcript enrichment pipeline, and per-stage detail — see [docs/architecture/system-architecture.md](docs/architecture/system-architecture.md).
+
+For repo-wide principles and the session workflow (how to use decisions, lessons, and plans), see [AGENTS.md](AGENTS.md).
+
 ## Workflow
 
 We use **trunk-based development**. `main` stays releasable at all times.
@@ -25,7 +38,7 @@ Use a prefix that describes the type of change:
 | `docs/` | Documentation only |
 | `chore/` | Build, CI, tooling, or repo maintenance |
 
-Examples: `feat/transcript-formatter`, `fix/cohere-segments`, `chore/ci-caching`.
+Examples: `feat/punctuation-stage`, `fix/cohere-segments`, `chore/ci-caching`.
 
 ### Pull Requests
 
@@ -36,13 +49,6 @@ Examples: `feat/transcript-formatter`, `fix/cohere-segments`, `chore/ci-caching`
 
 Keep PRs small and focused. One concern per PR.
 
-### Commits
-
-- Imperative mood: "add formatter" not "added formatter".
-- First line under 72 characters.
-- Body explains *why*, not *what* (the diff shows what).
-- Reference issues with `#N` when applicable.
-
 ## Quality Gates
 
 `npm run check` is the single quality gate. It runs:
@@ -52,20 +58,9 @@ Keep PRs small and focused. One concern per PR.
 
 Do not merge with failing CI.
 
-## Feature Flags
-
-Incomplete work that touches `main` must be behind a gate — a settings flag, a code-level conditional, or an unexposed command. Never ship half-built user-facing behavior ungated.
-
 ## Documentation
 
 - **User-facing behavior changes** — update [README.md](README.md).
-- **Durable decisions** — record in [docs/decisions.md](docs/decisions.md) in the same PR that changes behavior.
-
-## Architecture Overview
-
-The plugin has two runtime boundaries:
-
-- **TypeScript plugin** (`src/`) — Obsidian UX, settings, editor insertion, audio capture
-- **Rust sidecar** (`native/`) — inference, audio processing, model loading
-
-See [docs/pipeline-architecture.md](docs/pipeline-architecture.md) for the transcript pipeline design.
+- **Durable decisions** — record in [docs/decisions.md](docs/decisions.md) in the same PR that changes behavior. Mark superseded decisions explicitly rather than deleting them.
+- **Execution mistakes / corrections** — add a concise preventive rule to [docs/lessons.md](docs/lessons.md). Deduplicate against existing entries.
+- 
