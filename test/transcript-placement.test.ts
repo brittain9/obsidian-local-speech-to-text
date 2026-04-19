@@ -1,116 +1,71 @@
-import type { EditorPosition } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 
 import {
-  createDocumentEndPosition,
-  resolveAppendTranscriptPlacement,
+  computeFirstPhrasePrefix,
+  computePhraseSeparators,
 } from '../src/editor/transcript-placement';
 
-describe('resolveAppendTranscriptPlacement', () => {
-  it('treats an empty note as direct insertion for append-on-new-line mode', () => {
-    expect(resolvePlacement('', 'append_on_new_line')).toEqual({
-      cursor: { ch: 5, line: 0 },
-      range: {
-        from: { ch: 0, line: 0 },
-        to: { ch: 0, line: 0 },
-      },
-      text: 'hello',
-    });
+describe('computeFirstPhrasePrefix', () => {
+  it('returns empty for at_cursor', () => {
+    expect(computeFirstPhrasePrefix({ anchor: 'at_cursor', charBeforeAnchor: 'o' })).toBe('');
   });
 
-  it('does not add an extra separator when append-on-new-line already ends at a newline', () => {
-    expect(resolvePlacement('alpha\n', 'append_on_new_line')).toEqual({
-      cursor: { ch: 5, line: 1 },
-      range: {
-        from: { ch: 0, line: 1 },
-        to: { ch: 0, line: 1 },
-      },
-      text: 'hello',
-    });
+  it('returns empty for end_of_note when doc is empty', () => {
+    expect(computeFirstPhrasePrefix({ anchor: 'end_of_note', charBeforeAnchor: null })).toBe('');
   });
 
-  it('adds exactly one newline when append-on-new-line follows inline text', () => {
-    expect(resolvePlacement('alpha', 'append_on_new_line')).toEqual({
-      cursor: { ch: 5, line: 1 },
-      range: {
-        from: { ch: 5, line: 0 },
-        to: { ch: 5, line: 0 },
-      },
-      text: '\nhello',
-    });
+  it('returns empty for end_of_note when doc already ends in a newline', () => {
+    expect(computeFirstPhrasePrefix({ anchor: 'end_of_note', charBeforeAnchor: '\n' })).toBe('');
   });
 
-  it('treats an empty note as direct insertion for append-as-new-paragraph mode', () => {
-    expect(resolvePlacement('', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 0 },
-      range: {
-        from: { ch: 0, line: 0 },
-        to: { ch: 0, line: 0 },
-      },
-      text: 'hello',
-    });
-  });
-
-  it('does not add an extra blank line when the note already ends with one', () => {
-    expect(resolvePlacement('alpha\n\n', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 2 },
-      range: {
-        from: { ch: 0, line: 2 },
-        to: { ch: 0, line: 2 },
-      },
-      text: 'hello',
-    });
-  });
-
-  it('adds one newline when append-as-new-paragraph follows a trailing newline', () => {
-    expect(resolvePlacement('alpha\n', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 2 },
-      range: {
-        from: { ch: 0, line: 1 },
-        to: { ch: 0, line: 1 },
-      },
-      text: '\nhello',
-    });
-  });
-
-  it('adds a blank line when append-as-new-paragraph follows inline text', () => {
-    expect(resolvePlacement('alpha', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 2 },
-      range: {
-        from: { ch: 5, line: 0 },
-        to: { ch: 5, line: 0 },
-      },
-      text: '\n\nhello',
-    });
-  });
-
-  it('treats whitespace-only notes as empty and replaces the full document', () => {
-    expect(resolvePlacement(' \n\t', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 0 },
-      range: {
-        from: { ch: 0, line: 0 },
-        to: { ch: 1, line: 1 },
-      },
-      text: 'hello',
-    });
+  it('returns a newline for end_of_note when doc ends mid-line', () => {
+    expect(computeFirstPhrasePrefix({ anchor: 'end_of_note', charBeforeAnchor: 'a' })).toBe('\n');
   });
 });
 
-function resolvePlacement(
-  documentText: string,
-  mode: 'append_on_new_line' | 'append_as_new_paragraph',
-) {
-  return resolveAppendTranscriptPlacement({
-    documentEnd: getDocumentEnd(documentText),
-    documentText,
-    mode,
-    transcript: 'hello',
+describe('computePhraseSeparators', () => {
+  describe('first phrase', () => {
+    it('no prefix, no trailing for space', () => {
+      expect(computePhraseSeparators({ separator: 'space', isFirstPhrase: true })).toEqual({
+        prefix: '',
+        trailing: '',
+      });
+    });
+
+    it('no prefix, single newline trailing for new_line', () => {
+      expect(computePhraseSeparators({ separator: 'new_line', isFirstPhrase: true })).toEqual({
+        prefix: '',
+        trailing: '\n',
+      });
+    });
+
+    it('no prefix, double newline trailing for new_paragraph', () => {
+      expect(computePhraseSeparators({ separator: 'new_paragraph', isFirstPhrase: true })).toEqual({
+        prefix: '',
+        trailing: '\n\n',
+      });
+    });
   });
-}
 
-function getDocumentEnd(text: string): EditorPosition {
-  const lines = text.split('\n');
-  const lastLineIndex = lines.length - 1;
+  describe('subsequent phrase', () => {
+    it('space prefix, no trailing for space', () => {
+      expect(computePhraseSeparators({ separator: 'space', isFirstPhrase: false })).toEqual({
+        prefix: ' ',
+        trailing: '',
+      });
+    });
 
-  return createDocumentEndPosition(lastLineIndex, lines[lastLineIndex] ?? '');
-}
+    it('no prefix, single newline trailing for new_line', () => {
+      expect(computePhraseSeparators({ separator: 'new_line', isFirstPhrase: false })).toEqual({
+        prefix: '',
+        trailing: '\n',
+      });
+    });
+
+    it('no prefix, double newline trailing for new_paragraph', () => {
+      expect(computePhraseSeparators({ separator: 'new_paragraph', isFirstPhrase: false })).toEqual(
+        { prefix: '', trailing: '\n\n' },
+      );
+    });
+  });
+});

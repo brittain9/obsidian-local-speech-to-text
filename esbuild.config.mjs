@@ -7,6 +7,8 @@ const isWatch = args.has('watch');
 const isProduction = args.has('production');
 
 const externalModules = [
+  '@codemirror/state',
+  '@codemirror/view',
   'electron',
   'obsidian',
   ...builtinModules,

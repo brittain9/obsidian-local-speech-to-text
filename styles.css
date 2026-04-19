@@ -348,58 +348,60 @@
 }
 
 /* 8 spokes, each offset by 0.15s = 1.2s full cycle */
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path,
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path,
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path {
+.side-dock-ribbon-action:is(
+    [data-local-stt-state="starting"],
+    [data-local-stt-state="working"]
+  ) > svg
+  > path {
   animation: local-stt-chase 1.2s ease-in-out infinite;
   opacity: 0.2;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(1),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(1),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(1) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(1) {
   animation-delay: 0s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(2),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(2),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(2) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(2) {
   animation-delay: 0.15s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(3),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(3),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(3) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(3) {
   animation-delay: 0.3s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(4),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(4),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(4) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(4) {
   animation-delay: 0.45s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(5),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(5),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(5) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(5) {
   animation-delay: 0.6s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(6),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(6),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(6) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(6) {
   animation-delay: 0.75s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(7),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(7),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(7) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(7) {
   animation-delay: 0.9s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(8),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(8),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(8) {
+.side-dock-ribbon-action:is([data-local-stt-state="starting"], [data-local-stt-state="working"])
+  > svg
+  > path:nth-child(8) {
   animation-delay: 1.05s;
 }
 
@@ -441,5 +443,61 @@
   .side-dock-ribbon-action[data-local-stt-state] > svg > path {
     animation: none;
     opacity: 1;
+  }
+
+  .local-stt-dictation-anchor--visible::before {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
+/* --- Dictation anchor widget -------------------------------------- */
+
+.local-stt-dictation-anchor {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 1.2em;
+  vertical-align: middle;
+  overflow: visible;
+  pointer-events: none;
+  user-select: none;
+}
+
+.local-stt-dictation-anchor--visible {
+  color: var(--interactive-accent);
+}
+
+.local-stt-dictation-anchor--visible::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 1em;
+  border-radius: 1px;
+  background: currentColor;
+  animation:
+    local-stt-fade-in 0.35s ease-out both,
+    local-stt-caret-pulse 1.4s ease-in-out 0.35s infinite;
+}
+
+@keyframes local-stt-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.55;
+  }
+}
+
+@keyframes local-stt-caret-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.15;
   }
 }

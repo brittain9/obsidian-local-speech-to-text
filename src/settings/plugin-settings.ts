@@ -6,13 +6,13 @@ import {
 import { isRecord } from '../shared/type-guards';
 import type { AccelerationPreference, ListeningMode, SpeakingStyle } from '../sidecar/protocol';
 
-export const INSERTION_MODES = [
-  'insert_at_cursor',
-  'append_on_new_line',
-  'append_as_new_paragraph',
-] as const;
+export const DICTATION_ANCHORS = ['at_cursor', 'end_of_note'] as const;
 
-export type InsertionMode = (typeof INSERTION_MODES)[number];
+export type DictationAnchor = (typeof DICTATION_ANCHORS)[number];
+
+export const PHRASE_SEPARATORS = ['space', 'new_line', 'new_paragraph'] as const;
+
+export type PhraseSeparator = (typeof PHRASE_SEPARATORS)[number];
 
 export const SPEAKING_STYLES = [
   'responsive',
@@ -24,10 +24,11 @@ export interface PluginSettings {
   accelerationPreference: AccelerationPreference;
   cudaLibraryPath: string;
   developerMode: boolean;
-  insertionMode: InsertionMode;
+  dictationAnchor: DictationAnchor;
   listeningMode: ListeningMode;
   modelStorePathOverride: string;
   pauseWhileProcessing: boolean;
+  phraseSeparator: PhraseSeparator;
   selectedModel: SelectedModel | null;
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
@@ -39,10 +40,11 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   accelerationPreference: 'auto',
   cudaLibraryPath: '',
   developerMode: false,
-  insertionMode: 'insert_at_cursor',
+  dictationAnchor: 'at_cursor',
   listeningMode: 'one_sentence',
   modelStorePathOverride: '',
   pauseWhileProcessing: true,
+  phraseSeparator: 'space',
   selectedModel: null,
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
@@ -57,7 +59,9 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
     accelerationPreference: readAccelerationPreference(raw.accelerationPreference),
     cudaLibraryPath: readString(raw.cudaLibraryPath, DEFAULT_PLUGIN_SETTINGS.cudaLibraryPath),
     developerMode: readBoolean(raw.developerMode, DEFAULT_PLUGIN_SETTINGS.developerMode),
-    insertionMode: readInsertionMode(raw.insertionMode),
+    dictationAnchor: isDictationAnchor(raw.dictationAnchor)
+      ? raw.dictationAnchor
+      : DEFAULT_PLUGIN_SETTINGS.dictationAnchor,
     listeningMode: readListeningMode(raw.listeningMode),
     modelStorePathOverride: readString(
       raw.modelStorePathOverride,
@@ -67,6 +71,9 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.pauseWhileProcessing,
       DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing,
     ),
+    phraseSeparator: isPhraseSeparator(raw.phraseSeparator)
+      ? raw.phraseSeparator
+      : DEFAULT_PLUGIN_SETTINGS.phraseSeparator,
     selectedModel: readSelectedModel(raw.selectedModel),
     sidecarPathOverride: readString(
       raw.sidecarPathOverride,
@@ -106,12 +113,16 @@ function readPositiveInteger(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function readInsertionMode(value: unknown): InsertionMode {
-  return isInsertionMode(value) ? value : DEFAULT_PLUGIN_SETTINGS.insertionMode;
-}
-
 export function isSpeakingStyle(value: unknown): value is SpeakingStyle {
   return typeof value === 'string' && (SPEAKING_STYLES as readonly string[]).includes(value);
+}
+
+export function isDictationAnchor(value: unknown): value is DictationAnchor {
+  return typeof value === 'string' && (DICTATION_ANCHORS as readonly string[]).includes(value);
+}
+
+export function isPhraseSeparator(value: unknown): value is PhraseSeparator {
+  return typeof value === 'string' && (PHRASE_SEPARATORS as readonly string[]).includes(value);
 }
 
 function readSelectedModel(selectedModel: unknown): SelectedModel | null {
@@ -120,10 +131,6 @@ function readSelectedModel(selectedModel: unknown): SelectedModel | null {
   }
 
   return DEFAULT_PLUGIN_SETTINGS.selectedModel;
-}
-
-export function isInsertionMode(value: unknown): value is InsertionMode {
-  return typeof value === 'string' && (INSERTION_MODES as readonly string[]).includes(value);
 }
 
 function readListeningMode(value: unknown): ListeningMode {

@@ -1,19 +1,35 @@
 import { describe, expect, it, vi } from 'vitest';
-
 import { DictationSessionController } from '../src/dictation/dictation-session-controller';
+import type { DictationAnchorMode } from '../src/editor/dictation-anchor-extension';
 import {
   DEFAULT_PLUGIN_SETTINGS,
-  type InsertionMode,
+  type DictationAnchor,
+  type PhraseSeparator,
   type PluginSettings,
 } from '../src/settings/plugin-settings';
-import type { SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
+import type { SessionState, SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
 
 class FakeEditorService {
-  public insertedTranscripts: Array<{ mode: InsertionMode; text: string }> = [];
+  public readonly beginCalls: Array<DictationAnchor> = [];
+  public readonly modeCalls: Array<DictationAnchorMode> = [];
+  public readonly phraseCalls: Array<{ text: string; separator: PhraseSeparator }> = [];
+  public endCalls = 0;
   public assertActiveEditorAvailable = vi.fn(() => {});
 
-  insertTranscript(text: string, mode: InsertionMode): void {
-    this.insertedTranscripts.push({ mode, text });
+  beginAnchor(anchor: DictationAnchor): void {
+    this.beginCalls.push(anchor);
+  }
+
+  setAnchorMode(mode: DictationAnchorMode): void {
+    this.modeCalls.push(mode);
+  }
+
+  insertPhrase(text: string, separator: PhraseSeparator): void {
+    this.phraseCalls.push({ text, separator });
+  }
+
+  endAnchor(): void {
+    this.endCalls += 1;
   }
 }
 
@@ -208,7 +224,262 @@ describe('DictationSessionController', () => {
     expect(notice.mock.calls[0]?.[0]).toContain('Failed to start the dictation session');
   });
 
-  it('inserts transcript text from async sidecar events using the current placement mode', async () => {
+  it('begins the editor anchor on session_started and passes the configured preference', async () => {
+    const editorService = new FakeEditorService();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      editorService,
+      getSettings: () =>
+        createSettings({
+          dictationAnchor: 'end_of_note',
+          selectedModel: createExternalModelSelection(),
+        }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(editorService.beginCalls).toEqual(['end_of_note']);
+  });
+
+  it('keeps the anchor hidden during short utterances', async () => {
+    const editorService = new FakeEditorService();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      editorService,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    const states: SessionState[] = [
+      'speech_detected',
+      'speech_ending',
+      'transcribing',
+      'listening',
+      'paused',
+      'idle',
+      'error',
+    ];
+    for (const state of states) {
+      sidecarConnection.emit({ sessionId, state, type: 'session_state_changed' });
+    }
+
+    expect(editorService.modeCalls).toEqual(['hidden', 'hidden', 'hidden', 'hidden']);
+    expect(editorService.modeCalls).not.toContain('visible');
+
+    void controller;
+  });
+
+  it('keeps the anchor timer armed across the full utterance family', async () => {
+    vi.useFakeTimers();
+    try {
+      const editorService = new FakeEditorService();
+      const sidecarConnection = new FakeSidecarConnection();
+      const controller = createController({
+        editorService,
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+        sidecarConnection,
+      });
+
+      await controller.startDictation();
+      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+      sidecarConnection.emit({
+        sessionId,
+        state: 'speech_detected',
+        type: 'session_state_changed',
+      });
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
+
+      vi.advanceTimersByTime(1499);
+      expect(editorService.modeCalls).not.toContain('visible');
+
+      vi.advanceTimersByTime(1);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
+
+      void controller;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps transcript_ready from cancelling a pending visible anchor', async () => {
+    vi.useFakeTimers();
+    try {
+      const editorService = new FakeEditorService();
+      const sidecarConnection = new FakeSidecarConnection();
+      const controller = createController({
+        editorService,
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+        sidecarConnection,
+      });
+
+      await controller.startDictation();
+      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+      sidecarConnection.emit({
+        sessionId,
+        state: 'speech_detected',
+        type: 'session_state_changed',
+      });
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({
+        processingDurationMs: 200,
+        segments: [],
+        sessionId,
+        text: 'hello',
+        type: 'transcript_ready',
+        utteranceDurationMs: 500,
+        warnings: [],
+      });
+      vi.advanceTimersByTime(499);
+
+      expect(editorService.modeCalls).not.toContain('visible');
+
+      vi.advanceTimersByTime(1);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
+
+      void controller;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats paused as part of the visible-anchor family', async () => {
+    vi.useFakeTimers();
+    try {
+      const editorService = new FakeEditorService();
+      const sidecarConnection = new FakeSidecarConnection();
+      const controller = createController({
+        editorService,
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+        sidecarConnection,
+      });
+
+      await controller.startDictation();
+      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+      sidecarConnection.emit({ sessionId, state: 'paused', type: 'session_state_changed' });
+      vi.advanceTimersByTime(2499);
+      expect(editorService.modeCalls).not.toContain('visible');
+
+      vi.advanceTimersByTime(1);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
+
+      void controller;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the visible-anchor timer when the session settles before the threshold', async () => {
+    vi.useFakeTimers();
+    try {
+      const editorService = new FakeEditorService();
+      const sidecarConnection = new FakeSidecarConnection();
+      const controller = createController({
+        editorService,
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+        sidecarConnection,
+      });
+
+      await controller.startDictation();
+      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+      sidecarConnection.emit({
+        sessionId,
+        state: 'speech_detected',
+        type: 'session_state_changed',
+      });
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({ sessionId, state: 'listening', type: 'session_state_changed' });
+      vi.advanceTimersByTime(5000);
+
+      expect(editorService.modeCalls).not.toContain('visible');
+      expect(editorService.modeCalls.at(-1)).toBe('hidden');
+
+      void controller;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces the visible anchor after the threshold of sustained speech', async () => {
+    vi.useFakeTimers();
+    try {
+      const editorService = new FakeEditorService();
+      const sidecarConnection = new FakeSidecarConnection();
+      const controller = createController({
+        editorService,
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+        sidecarConnection,
+      });
+
+      await controller.startDictation();
+      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+      sidecarConnection.emit({
+        sessionId,
+        state: 'speech_detected',
+        type: 'session_state_changed',
+      });
+      expect(editorService.modeCalls.at(-1)).toBe('hidden');
+
+      vi.advanceTimersByTime(2499);
+      expect(editorService.modeCalls).not.toContain('visible');
+
+      vi.advanceTimersByTime(1);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
+
+      void controller;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hides the anchor when the session leaves the utterance family after becoming visible', async () => {
+    vi.useFakeTimers();
+    try {
+      const editorService = new FakeEditorService();
+      const sidecarConnection = new FakeSidecarConnection();
+      const controller = createController({
+        editorService,
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+        sidecarConnection,
+      });
+
+      await controller.startDictation();
+      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+      sidecarConnection.emit({
+        sessionId,
+        state: 'speech_detected',
+        type: 'session_state_changed',
+      });
+      vi.advanceTimersByTime(2500);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
+
+      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
+
+      sidecarConnection.emit({ sessionId, state: 'listening', type: 'session_state_changed' });
+      expect(editorService.modeCalls.at(-1)).toBe('hidden');
+
+      void controller;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('inserts transcript phrases using the current phrase separator', async () => {
     const editorService = new FakeEditorService();
     const sidecarConnection = new FakeSidecarConnection();
     let settings = createSettings({ selectedModel: createExternalModelSelection() });
@@ -221,7 +492,7 @@ describe('DictationSessionController', () => {
     await controller.startDictation();
     settings = {
       ...settings,
-      insertionMode: 'append_as_new_paragraph',
+      phraseSeparator: 'new_paragraph',
     };
 
     sidecarConnection.emit({
@@ -234,11 +505,8 @@ describe('DictationSessionController', () => {
       warnings: [],
     });
 
-    expect(editorService.insertedTranscripts).toEqual([
-      {
-        mode: 'append_as_new_paragraph',
-        text: 'hello obsidian',
-      },
+    expect(editorService.phraseCalls).toEqual([
+      { text: 'hello obsidian', separator: 'new_paragraph' },
     ]);
   });
 
@@ -268,6 +536,27 @@ describe('DictationSessionController', () => {
       expect(sidecarConnection.cancelSession).not.toHaveBeenCalled();
       expect(controller.getState()).not.toBe('error');
     });
+  });
+
+  it('ends the editor anchor when the session stops regardless of reason', async () => {
+    const editorService = new FakeEditorService();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      editorService,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      reason: 'timeout',
+      sessionId,
+      type: 'session_stopped',
+    });
+
+    expect(editorService.endCalls).toBe(1);
   });
 
   it('stops local capture even when stopSession fails', async () => {

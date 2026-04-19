@@ -3,7 +3,7 @@ import type { EditorService } from '../editor/editor-service';
 import type { PluginSettings } from '../settings/plugin-settings';
 import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
-import type { SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
+import type { SessionState, SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 
 export type DictationControllerState =
@@ -11,14 +11,17 @@ export type DictationControllerState =
   | 'starting'
   | 'listening'
   | 'speech_detected'
-  | 'speech_paused'
+  | 'speech_ending'
   | 'transcribing'
   | 'paused'
   | 'error';
 
 interface DictationSessionControllerDependencies {
   captureStream: Pick<AudioCaptureStream, 'isCapturing' | 'start' | 'stop'>;
-  editorService: Pick<EditorService, 'assertActiveEditorAvailable' | 'insertTranscript'>;
+  editorService: Pick<
+    EditorService,
+    'assertActiveEditorAvailable' | 'beginAnchor' | 'endAnchor' | 'insertPhrase' | 'setAnchorMode'
+  >;
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
   notice: (message: string) => void;
@@ -29,8 +32,11 @@ interface DictationSessionControllerDependencies {
   >;
 }
 
+const ANCHOR_VISIBLE_DELAY_MS = 2500;
+
 export class DictationSessionController {
   private abortingSessionId: string | null = null;
+  private anchorTimerId: ReturnType<typeof setTimeout> | null = null;
   private pendingStartSessionId: string | null = null;
   private readonly releaseSidecarSubscription: () => void;
   private sessionId: string | null = null;
@@ -67,6 +73,7 @@ export class DictationSessionController {
 
   async dispose(): Promise<void> {
     this.releaseSidecarSubscription();
+    this.dependencies.editorService.endAnchor();
     await this.cleanupLocalSession();
     this.applyUiState('idle');
   }
@@ -170,9 +177,39 @@ export class DictationSessionController {
     this.abortingSessionId = null;
     this.pendingStartSessionId = null;
     this.sessionId = null;
+    this.clearAnchorTimer();
 
     if (this.dependencies.captureStream.isCapturing()) {
       await this.dependencies.captureStream.stop();
+    }
+  }
+
+  private applySessionStateToAnchor(state: SessionState): void {
+    if (!isAnchorVisibleSessionState(state)) {
+      this.clearAnchorTimer();
+      this.dependencies.editorService.setAnchorMode('hidden');
+      return;
+    }
+
+    if (this.anchorTimerId !== null) {
+      return;
+    }
+
+    const timerId = setTimeout(() => {
+      if (this.anchorTimerId !== timerId) {
+        return;
+      }
+
+      this.dependencies.editorService.setAnchorMode('visible');
+    }, ANCHOR_VISIBLE_DELAY_MS);
+
+    this.anchorTimerId = timerId;
+  }
+
+  private clearAnchorTimer(): void {
+    if (this.anchorTimerId !== null) {
+      clearTimeout(this.anchorTimerId);
+      this.anchorTimerId = null;
     }
   }
 
@@ -212,6 +249,7 @@ export class DictationSessionController {
       'session',
       `session ${event.sessionId} stopped (reason: ${event.reason})`,
     );
+    this.dependencies.editorService.endAnchor();
     await this.cleanupLocalSession();
     this.applyUiState('idle');
 
@@ -223,13 +261,25 @@ export class DictationSessionController {
   private async handleSidecarEvent(event: SidecarEvent): Promise<void> {
     switch (event.type) {
       case 'health_ok':
-      case 'session_started':
       case 'system_info':
+        return;
+
+      case 'session_started':
+        if (event.sessionId === this.sessionId) {
+          try {
+            this.dependencies.editorService.beginAnchor(
+              this.dependencies.getSettings().dictationAnchor,
+            );
+          } catch (error) {
+            this.dependencies.logger?.warn('session', 'failed to begin dictation anchor', error);
+          }
+        }
         return;
 
       case 'session_state_changed':
         if (event.sessionId === this.sessionId) {
           this.applyUiState(event.state);
+          this.applySessionStateToAnchor(event.state);
         }
         return;
 
@@ -282,9 +332,9 @@ export class DictationSessionController {
     }
 
     try {
-      this.dependencies.editorService.insertTranscript(
+      this.dependencies.editorService.insertPhrase(
         text,
-        this.dependencies.getSettings().insertionMode,
+        this.dependencies.getSettings().phraseSeparator,
       );
     } catch (error) {
       this.handleError('Failed to insert the local transcript', error);
@@ -337,6 +387,15 @@ export class DictationSessionController {
 
 function createSessionId(): string {
   return `session-${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
+}
+
+function isAnchorVisibleSessionState(state: SessionState): boolean {
+  return (
+    state === 'speech_detected' ||
+    state === 'speech_ending' ||
+    state === 'transcribing' ||
+    state === 'paused'
+  );
 }
 
 function normalizeTranscriptText(event: TranscriptReadyEvent): string | null {

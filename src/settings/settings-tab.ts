@@ -10,10 +10,11 @@ import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import { buildAccelerationSummary, buildEffectiveBackendLines } from './acceleration-info';
 import { renderModelSection } from './model-settings-section';
 import {
-  INSERTION_MODES,
-  type InsertionMode,
-  isInsertionMode,
+  type DictationAnchor,
+  isDictationAnchor,
+  isPhraseSeparator,
   isSpeakingStyle,
+  type PhraseSeparator,
   type PluginSettings,
 } from './plugin-settings';
 
@@ -24,10 +25,15 @@ interface SettingsTabDependencies {
   sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
 }
 
-const INSERTION_MODE_OPTIONS: Array<{ label: string; value: InsertionMode }> = [
-  { label: 'Insert at cursor', value: 'insert_at_cursor' },
-  { label: 'Append on a new line', value: 'append_on_new_line' },
-  { label: 'Append as a new paragraph', value: 'append_as_new_paragraph' },
+const DICTATION_ANCHOR_OPTIONS: Array<{ label: string; value: DictationAnchor }> = [
+  { label: 'At cursor', value: 'at_cursor' },
+  { label: 'End of note', value: 'end_of_note' },
+];
+
+const PHRASE_SEPARATOR_OPTIONS: Array<{ label: string; value: PhraseSeparator }> = [
+  { label: 'Space', value: 'space' },
+  { label: 'New line', value: 'new_line' },
+  { label: 'New paragraph (use this if you pause between thoughts)', value: 'new_paragraph' },
 ];
 
 const SPEAKING_STYLE_OPTIONS: Array<{ label: string; value: SpeakingStyle }> = [
@@ -145,20 +151,45 @@ export class LocalSttSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Transcript placement')
+      .setName('Dictation anchor')
       .setDesc(
-        'Choose whether each transcript lands at the cursor or is appended to the end of the note with optional line separation.',
+        'Where each dictation session anchors. The first phrase lands here and stays pinned for the rest of the session, even if you click elsewhere in the note.',
       )
       .addDropdown((dropdown) => {
-        for (const option of INSERTION_MODE_OPTIONS) {
+        for (const option of DICTATION_ANCHOR_OPTIONS) {
           dropdown.addOption(option.value, option.label);
         }
 
-        dropdown.setValue(settings.insertionMode);
+        dropdown.setValue(settings.dictationAnchor);
         dropdown.onChange(async (value) => {
+          if (!isDictationAnchor(value)) {
+            return;
+          }
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            insertionMode: isInsertionMode(value) ? value : INSERTION_MODES[0],
+            dictationAnchor: value,
+          });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Phrase separator')
+      .setDesc(
+        'How consecutive phrases are joined within one session. Does not affect the first phrase.',
+      )
+      .addDropdown((dropdown) => {
+        for (const option of PHRASE_SEPARATOR_OPTIONS) {
+          dropdown.addOption(option.value, option.label);
+        }
+
+        dropdown.setValue(settings.phraseSeparator);
+        dropdown.onChange(async (value) => {
+          if (!isPhraseSeparator(value)) {
+            return;
+          }
+          await this.persistSettings({
+            ...this.dependencies.getSettings(),
+            phraseSeparator: value,
           });
         });
       });
