@@ -442,4 +442,77 @@
     animation: none;
     opacity: 1;
   }
+
+  .local-stt-dictation-anchor--speaking,
+  .local-stt-dictation-anchor--processing {
+    animation: none;
+    opacity: 0.9;
+  }
+
+  .local-stt-dictation-anchor--speaking::before {
+    animation: none;
+    opacity: 0.9;
+  }
+}
+
+/* --- Dictation anchor widget -------------------------------------- */
+
+.local-stt-dictation-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  line-height: 1;
+  vertical-align: 0.1em;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.local-stt-dictation-anchor--speaking {
+  color: var(--interactive-accent);
+}
+
+.local-stt-dictation-anchor--speaking::before {
+  content: "";
+  display: block;
+  width: 0.4em;
+  height: 0.4em;
+  border-radius: 50%;
+  background: currentColor;
+  animation:
+    local-stt-fade-in 0.35s ease-out both,
+    local-stt-pulse 1.4s ease-in-out 0.35s infinite;
+}
+
+.local-stt-dictation-anchor--processing {
+  color: var(--interactive-accent);
+  opacity: 0.7;
+  animation: local-stt-spin 0.9s linear infinite;
+}
+
+@keyframes local-stt-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.9;
+  }
+}
+
+@keyframes local-stt-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes local-stt-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

@@ -1,116 +1,97 @@
-import type { EditorPosition } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 
-import {
-  createDocumentEndPosition,
-  resolveAppendTranscriptPlacement,
-} from '../src/editor/transcript-placement';
+import { computePhrasePrefix } from '../src/editor/transcript-placement';
 
-describe('resolveAppendTranscriptPlacement', () => {
-  it('treats an empty note as direct insertion for append-on-new-line mode', () => {
-    expect(resolvePlacement('', 'append_on_new_line')).toEqual({
-      cursor: { ch: 5, line: 0 },
-      range: {
-        from: { ch: 0, line: 0 },
-        to: { ch: 0, line: 0 },
-      },
-      text: 'hello',
+describe('computePhrasePrefix', () => {
+  describe('first phrase', () => {
+    it('adds no prefix for at_cursor', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'at_cursor',
+          separator: 'space',
+          isFirstPhrase: true,
+          charBeforeAnchor: 'o',
+        }),
+      ).toBe('');
+    });
+
+    it('adds no prefix for end_of_note when doc is empty', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'end_of_note',
+          separator: 'space',
+          isFirstPhrase: true,
+          charBeforeAnchor: null,
+        }),
+      ).toBe('');
+    });
+
+    it('adds no prefix for end_of_note when doc already ends in a newline', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'end_of_note',
+          separator: 'new_paragraph',
+          isFirstPhrase: true,
+          charBeforeAnchor: '\n',
+        }),
+      ).toBe('');
+    });
+
+    it('adds a newline prefix for end_of_note when doc ends mid-line', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'end_of_note',
+          separator: 'space',
+          isFirstPhrase: true,
+          charBeforeAnchor: 'a',
+        }),
+      ).toBe('\n');
     });
   });
 
-  it('does not add an extra separator when append-on-new-line already ends at a newline', () => {
-    expect(resolvePlacement('alpha\n', 'append_on_new_line')).toEqual({
-      cursor: { ch: 5, line: 1 },
-      range: {
-        from: { ch: 0, line: 1 },
-        to: { ch: 0, line: 1 },
-      },
-      text: 'hello',
+  describe('subsequent phrases', () => {
+    it('uses a single space for the space separator', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'at_cursor',
+          separator: 'space',
+          isFirstPhrase: false,
+          charBeforeAnchor: 'x',
+        }),
+      ).toBe(' ');
     });
-  });
 
-  it('adds exactly one newline when append-on-new-line follows inline text', () => {
-    expect(resolvePlacement('alpha', 'append_on_new_line')).toEqual({
-      cursor: { ch: 5, line: 1 },
-      range: {
-        from: { ch: 5, line: 0 },
-        to: { ch: 5, line: 0 },
-      },
-      text: '\nhello',
+    it('uses a single newline for the new_line separator', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'at_cursor',
+          separator: 'new_line',
+          isFirstPhrase: false,
+          charBeforeAnchor: 'x',
+        }),
+      ).toBe('\n');
     });
-  });
 
-  it('treats an empty note as direct insertion for append-as-new-paragraph mode', () => {
-    expect(resolvePlacement('', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 0 },
-      range: {
-        from: { ch: 0, line: 0 },
-        to: { ch: 0, line: 0 },
-      },
-      text: 'hello',
+    it('uses a blank line for the new_paragraph separator', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'at_cursor',
+          separator: 'new_paragraph',
+          isFirstPhrase: false,
+          charBeforeAnchor: 'x',
+        }),
+      ).toBe('\n\n');
     });
-  });
 
-  it('does not add an extra blank line when the note already ends with one', () => {
-    expect(resolvePlacement('alpha\n\n', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 2 },
-      range: {
-        from: { ch: 0, line: 2 },
-        to: { ch: 0, line: 2 },
-      },
-      text: 'hello',
-    });
-  });
-
-  it('adds one newline when append-as-new-paragraph follows a trailing newline', () => {
-    expect(resolvePlacement('alpha\n', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 2 },
-      range: {
-        from: { ch: 0, line: 1 },
-        to: { ch: 0, line: 1 },
-      },
-      text: '\nhello',
-    });
-  });
-
-  it('adds a blank line when append-as-new-paragraph follows inline text', () => {
-    expect(resolvePlacement('alpha', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 2 },
-      range: {
-        from: { ch: 5, line: 0 },
-        to: { ch: 5, line: 0 },
-      },
-      text: '\n\nhello',
-    });
-  });
-
-  it('treats whitespace-only notes as empty and replaces the full document', () => {
-    expect(resolvePlacement(' \n\t', 'append_as_new_paragraph')).toEqual({
-      cursor: { ch: 5, line: 0 },
-      range: {
-        from: { ch: 0, line: 0 },
-        to: { ch: 1, line: 1 },
-      },
-      text: 'hello',
+    it('dedups the new_paragraph separator when the char before the anchor is already a newline', () => {
+      expect(
+        computePhrasePrefix({
+          anchor: 'at_cursor',
+          separator: 'new_paragraph',
+          isFirstPhrase: false,
+          charBeforeAnchor: '\n',
+        }),
+      ).toBe('\n');
     });
   });
 });
-
-function resolvePlacement(
-  documentText: string,
-  mode: 'append_on_new_line' | 'append_as_new_paragraph',
-) {
-  return resolveAppendTranscriptPlacement({
-    documentEnd: getDocumentEnd(documentText),
-    documentText,
-    mode,
-    transcript: 'hello',
-  });
-}
-
-function getDocumentEnd(text: string): EditorPosition {
-  const lines = text.split('\n');
-  const lastLineIndex = lines.length - 1;
-
-  return createDocumentEndPosition(lastLineIndex, lines[lastLineIndex] ?? '');
-}

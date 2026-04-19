@@ -12,10 +12,11 @@ describe('resolvePluginSettings', () => {
       resolvePluginSettings({
         accelerationPreference: 'cpu_only',
         cudaLibraryPath: ' /run/host/usr/lib64 ',
-        insertionMode: 'append_as_new_paragraph',
+        dictationAnchor: 'end_of_note',
         listeningMode: 'always_on',
         modelStorePathOverride: ' /tmp/models ',
         pauseWhileProcessing: false,
+        phraseSeparator: 'new_paragraph',
         selectedModel: {
           familyId: 'whisper',
           kind: 'catalog_model',
@@ -31,10 +32,11 @@ describe('resolvePluginSettings', () => {
       accelerationPreference: 'cpu_only',
       cudaLibraryPath: '/run/host/usr/lib64',
       developerMode: false,
-      insertionMode: 'append_as_new_paragraph',
+      dictationAnchor: 'end_of_note',
       listeningMode: 'always_on',
       modelStorePathOverride: '/tmp/models',
       pauseWhileProcessing: false,
+      phraseSeparator: 'new_paragraph',
       selectedModel: {
         familyId: 'whisper',
         kind: 'catalog_model',
@@ -49,20 +51,36 @@ describe('resolvePluginSettings', () => {
   });
 
   it.each([
-    'insert_at_cursor',
-    'append_on_new_line',
-    'append_as_new_paragraph',
-  ] as const)('accepts the supported insertion mode %s', (insertionMode) => {
-    expect(resolvePluginSettings({ insertionMode }).insertionMode).toBe(insertionMode);
+    'at_cursor',
+    'end_of_note',
+  ] as const)('accepts the supported dictation anchor %s', (dictationAnchor) => {
+    expect(resolvePluginSettings({ dictationAnchor }).dictationAnchor).toBe(dictationAnchor);
+  });
+
+  it.each([
+    'space',
+    'new_line',
+    'new_paragraph',
+  ] as const)('accepts the supported phrase separator %s', (phraseSeparator) => {
+    expect(resolvePluginSettings({ phraseSeparator }).phraseSeparator).toBe(phraseSeparator);
+  });
+
+  it('silently drops the legacy insertionMode field without migrating it', () => {
+    const resolved = resolvePluginSettings({ insertionMode: 'append_as_new_paragraph' });
+
+    expect(resolved.dictationAnchor).toBe(DEFAULT_PLUGIN_SETTINGS.dictationAnchor);
+    expect(resolved.phraseSeparator).toBe(DEFAULT_PLUGIN_SETTINGS.phraseSeparator);
+    expect(resolved).not.toHaveProperty('insertionMode');
   });
 
   it('falls back when persisted values are invalid', () => {
     expect(
       resolvePluginSettings({
-        insertionMode: 'append_to_end',
+        dictationAnchor: 'at_end',
         listeningMode: 'unsupported',
         modelStorePathOverride: 42,
         pauseWhileProcessing: 'sometimes',
+        phraseSeparator: 'tab',
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,
         sidecarStartupTimeoutMs: 'fast',

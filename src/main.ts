@@ -6,6 +6,7 @@ import { AudioCaptureStream } from './audio/audio-capture-stream';
 import { PCM_RECORDER_WORKLET_OUTPUT_PATH } from './audio/pcm-recorder-worklet-shared';
 import { registerCommands } from './commands/register-commands';
 import { DictationSessionController } from './dictation/dictation-session-controller';
+import { dictationAnchorExtension } from './editor/dictation-anchor-extension';
 import { EditorService } from './editor/editor-service';
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
 import { ModelInstallManager } from './models/model-install-manager';
@@ -37,7 +38,8 @@ export default class LocalSttPlugin extends Plugin {
   override async onload(): Promise<void> {
     this.settings = resolvePluginSettings(await this.loadData());
 
-    this.editorService = new EditorService(this.app);
+    this.registerEditorExtension(dictationAnchorExtension());
+    this.editorService = new EditorService(this.app, this);
     this.sidecarConnection = new SidecarConnection({
       getRequestTimeoutMs: () => this.settings.sidecarRequestTimeoutMs,
       logger: this.logger,
