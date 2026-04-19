@@ -33,8 +33,8 @@ describe('DictationRibbonController', () => {
     { state: 'listening', icon: 'audio-lines', visual: 'listening' },
     { state: 'speech_detected', icon: 'audio-lines', visual: 'speech_detected' },
     { state: 'speech_ending', icon: 'audio-lines', visual: 'speech_detected' },
-    { state: 'transcribing', icon: 'audio-lines', visual: 'listening' },
-    { state: 'paused', icon: 'audio-lines', visual: 'listening' },
+    { state: 'transcribing', icon: 'loader', visual: 'working' },
+    { state: 'paused', icon: 'loader', visual: 'working' },
     { state: 'error', icon: 'mic-off', visual: 'error' },
   ] as const)('maps $state → icon=$icon, dataset=$visual', async ({ state, icon, visual }) => {
     const { setIcon } = await import('obsidian');
@@ -48,28 +48,31 @@ describe('DictationRibbonController', () => {
     expect(dataset.localSttState).toBe(visual);
   });
 
-  it('never writes transcribing or paused to the ribbon dataset', () => {
+  it('maps transcribing and paused to the working ribbon dataset', () => {
     const { element, dataset } = createFakeElement();
     const controller = new DictationRibbonController(element);
 
     controller.setState('transcribing');
-    expect(dataset.localSttState).toBe('listening');
+    expect(dataset.localSttState).toBe('working');
 
     controller.setState('paused');
-    expect(dataset.localSttState).toBe('listening');
+    expect(dataset.localSttState).toBe('working');
   });
 
-  it('preserves per-state tooltip copy via aria-label', () => {
+  it('preserves per-state tooltip copy via aria-label and title', () => {
     const { element, setAttribute } = createFakeElement();
     const controller = new DictationRibbonController(element);
 
     controller.setState('transcribing');
     expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local STT: Transcribing...');
+    expect(element.title).toBe('Local STT: Transcribing...');
 
     controller.setState('paused');
-    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local STT: Processing...');
+    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local STT: Transcribing...');
+    expect(element.title).toBe('Local STT: Transcribing...');
 
     controller.setState('speech_ending');
     expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local STT: Hearing speech');
+    expect(element.title).toBe('Local STT: Hearing speech');
   });
 });

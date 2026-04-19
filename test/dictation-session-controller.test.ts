@@ -242,7 +242,7 @@ describe('DictationSessionController', () => {
     expect(editorService.beginCalls).toEqual(['end_of_note']);
   });
 
-  it('keeps both indicators hidden during short utterances', async () => {
+  it('keeps the anchor hidden during short utterances', async () => {
     const editorService = new FakeEditorService();
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
@@ -267,24 +267,13 @@ describe('DictationSessionController', () => {
       sidecarConnection.emit({ sessionId, state, type: 'session_state_changed' });
     }
 
-    // Every transition resolves synchronously to 'hidden' because neither the
-    // speaking timer (2500ms) nor the processing timer (350ms) ever fires.
-    expect(editorService.modeCalls).toEqual([
-      'hidden',
-      'hidden',
-      'hidden',
-      'hidden',
-      'hidden',
-      'hidden',
-      'hidden',
-    ]);
-    expect(editorService.modeCalls).not.toContain('speaking');
-    expect(editorService.modeCalls).not.toContain('processing');
+    expect(editorService.modeCalls).toEqual(['hidden', 'hidden', 'hidden', 'hidden']);
+    expect(editorService.modeCalls).not.toContain('visible');
 
     void controller;
   });
 
-  it('surfaces the processing indicator after the debounce window', async () => {
+  it('keeps the anchor timer armed across the full utterance family', async () => {
     vi.useFakeTimers();
     try {
       const editorService = new FakeEditorService();
@@ -298,45 +287,19 @@ describe('DictationSessionController', () => {
       await controller.startDictation();
       const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
 
-      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
-      expect(editorService.modeCalls.at(-1)).toBe('hidden');
-
-      vi.advanceTimersByTime(349);
-      expect(editorService.modeCalls).not.toContain('processing');
-
-      vi.advanceTimersByTime(1);
-      expect(editorService.modeCalls.at(-1)).toBe('processing');
-
-      void controller;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('cancels the processing indicator when speech resumes mid-debounce', async () => {
-    vi.useFakeTimers();
-    try {
-      const editorService = new FakeEditorService();
-      const sidecarConnection = new FakeSidecarConnection();
-      const controller = createController({
-        editorService,
-        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
-        sidecarConnection,
-      });
-
-      await controller.startDictation();
-      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
-
-      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
-      vi.advanceTimersByTime(200);
       sidecarConnection.emit({
         sessionId,
         state: 'speech_detected',
         type: 'session_state_changed',
       });
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
 
-      expect(editorService.modeCalls).not.toContain('processing');
+      vi.advanceTimersByTime(1499);
+      expect(editorService.modeCalls).not.toContain('visible');
+
+      vi.advanceTimersByTime(1);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
 
       void controller;
     } finally {
@@ -344,7 +307,7 @@ describe('DictationSessionController', () => {
     }
   });
 
-  it('cancels a pending processing spinner when transcript_ready arrives first', async () => {
+  it('keeps transcript_ready from cancelling a pending visible anchor', async () => {
     vi.useFakeTimers();
     try {
       const editorService = new FakeEditorService();
@@ -358,8 +321,14 @@ describe('DictationSessionController', () => {
       await controller.startDictation();
       const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
 
+      sidecarConnection.emit({
+        sessionId,
+        state: 'speech_detected',
+        type: 'session_state_changed',
+      });
+      vi.advanceTimersByTime(1000);
       sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
-      vi.advanceTimersByTime(200);
+      vi.advanceTimersByTime(1000);
       sidecarConnection.emit({
         processingDurationMs: 200,
         segments: [],
@@ -369,9 +338,12 @@ describe('DictationSessionController', () => {
         utteranceDurationMs: 500,
         warnings: [],
       });
-      vi.advanceTimersByTime(500);
+      vi.advanceTimersByTime(499);
 
-      expect(editorService.modeCalls).not.toContain('processing');
+      expect(editorService.modeCalls).not.toContain('visible');
+
+      vi.advanceTimersByTime(1);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
 
       void controller;
     } finally {
@@ -379,18 +351,14 @@ describe('DictationSessionController', () => {
     }
   });
 
-  it('maps paused to processing for pauseWhileProcessing sessions', async () => {
+  it('treats paused as part of the visible-anchor family', async () => {
     vi.useFakeTimers();
     try {
       const editorService = new FakeEditorService();
       const sidecarConnection = new FakeSidecarConnection();
       const controller = createController({
         editorService,
-        getSettings: () =>
-          createSettings({
-            pauseWhileProcessing: true,
-            selectedModel: createExternalModelSelection(),
-          }),
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
         sidecarConnection,
       });
 
@@ -398,9 +366,11 @@ describe('DictationSessionController', () => {
       const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
 
       sidecarConnection.emit({ sessionId, state: 'paused', type: 'session_state_changed' });
-      vi.advanceTimersByTime(350);
+      vi.advanceTimersByTime(2499);
+      expect(editorService.modeCalls).not.toContain('visible');
 
-      expect(editorService.modeCalls.at(-1)).toBe('processing');
+      vi.advanceTimersByTime(1);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
 
       void controller;
     } finally {
@@ -408,7 +378,41 @@ describe('DictationSessionController', () => {
     }
   });
 
-  it('surfaces the speaking indicator after the threshold of sustained speech', async () => {
+  it('cancels the visible-anchor timer when the session settles before the threshold', async () => {
+    vi.useFakeTimers();
+    try {
+      const editorService = new FakeEditorService();
+      const sidecarConnection = new FakeSidecarConnection();
+      const controller = createController({
+        editorService,
+        getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+        sidecarConnection,
+      });
+
+      await controller.startDictation();
+      const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+      sidecarConnection.emit({
+        sessionId,
+        state: 'speech_detected',
+        type: 'session_state_changed',
+      });
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
+      vi.advanceTimersByTime(1000);
+      sidecarConnection.emit({ sessionId, state: 'listening', type: 'session_state_changed' });
+      vi.advanceTimersByTime(5000);
+
+      expect(editorService.modeCalls).not.toContain('visible');
+      expect(editorService.modeCalls.at(-1)).toBe('hidden');
+
+      void controller;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces the visible anchor after the threshold of sustained speech', async () => {
     vi.useFakeTimers();
     try {
       const editorService = new FakeEditorService();
@@ -430,10 +434,10 @@ describe('DictationSessionController', () => {
       expect(editorService.modeCalls.at(-1)).toBe('hidden');
 
       vi.advanceTimersByTime(2499);
-      expect(editorService.modeCalls).not.toContain('speaking');
+      expect(editorService.modeCalls).not.toContain('visible');
 
       vi.advanceTimersByTime(1);
-      expect(editorService.modeCalls.at(-1)).toBe('speaking');
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
 
       void controller;
     } finally {
@@ -441,7 +445,7 @@ describe('DictationSessionController', () => {
     }
   });
 
-  it('cancels the speaking timer when the session leaves speech before the threshold', async () => {
+  it('hides the anchor when the session leaves the utterance family after becoming visible', async () => {
     vi.useFakeTimers();
     try {
       const editorService = new FakeEditorService();
@@ -460,11 +464,14 @@ describe('DictationSessionController', () => {
         state: 'speech_detected',
         type: 'session_state_changed',
       });
-      vi.advanceTimersByTime(1000);
-      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(2500);
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
 
-      expect(editorService.modeCalls).not.toContain('speaking');
+      sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
+      expect(editorService.modeCalls.at(-1)).toBe('visible');
+
+      sidecarConnection.emit({ sessionId, state: 'listening', type: 'session_state_changed' });
+      expect(editorService.modeCalls.at(-1)).toBe('hidden');
 
       void controller;
     } finally {

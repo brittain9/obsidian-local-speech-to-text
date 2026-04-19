@@ -8,7 +8,6 @@ import {
   type DictationAnchorMode,
   dictationAnchorStateField,
   setAnchorEffect,
-  setAnchorHideWhenCursorOverlapsEffect,
   setAnchorModeEffect,
 } from './dictation-anchor-extension';
 import { computeFirstPhrasePrefix, computePhraseSeparators } from './transcript-placement';
@@ -57,6 +56,9 @@ export class EditorService {
     if (view === null || !this.isStoredViewActive()) {
       return;
     }
+    if (view.state.field(dictationAnchorStateField).mode === mode) {
+      return;
+    }
     view.dispatch({ effects: setAnchorModeEffect.of(mode) });
   }
 
@@ -85,11 +87,7 @@ export class EditorService {
 
     view.dispatch({
       changes: { from: oldPos, insert: insertedText },
-      effects: [
-        setAnchorModeEffect.of('hidden'),
-        setAnchorEffect.of(newPos),
-        EditorView.scrollIntoView(newPos, { y: 'nearest' }),
-      ],
+      effects: [setAnchorEffect.of(newPos), EditorView.scrollIntoView(newPos, { y: 'nearest' })],
     });
 
     this.pendingTrailingContent = trailing;
@@ -147,22 +145,10 @@ export class EditorService {
     });
     const pinPos = originalPos + prefix.length;
 
-    if (prefix.length > 0) {
-      view.dispatch({
-        changes: { from: originalPos, insert: prefix },
-        effects: [
-          setAnchorEffect.of(pinPos),
-          setAnchorHideWhenCursorOverlapsEffect.of(this.anchorPreference === 'at_cursor'),
-        ],
-      });
-    } else {
-      view.dispatch({
-        effects: [
-          setAnchorEffect.of(pinPos),
-          setAnchorHideWhenCursorOverlapsEffect.of(this.anchorPreference === 'at_cursor'),
-        ],
-      });
-    }
+    view.dispatch({
+      ...(prefix.length > 0 ? { changes: { from: originalPos, insert: prefix } } : {}),
+      effects: [setAnchorEffect.of(pinPos)],
+    });
 
     this.pendingTrailingContent = prefix;
   }

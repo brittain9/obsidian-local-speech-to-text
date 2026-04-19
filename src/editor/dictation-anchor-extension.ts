@@ -1,17 +1,14 @@
 import { type EditorState, type Extension, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, WidgetType } from '@codemirror/view';
-import { setIcon } from 'obsidian';
 
-export type DictationAnchorMode = 'hidden' | 'speaking' | 'processing';
+export type DictationAnchorMode = 'hidden' | 'visible';
 
 export interface DictationAnchorState {
-  hideWhenCursorOverlaps: boolean;
   pos: number | null;
   mode: DictationAnchorMode;
 }
 
 const INITIAL_STATE: DictationAnchorState = {
-  hideWhenCursorOverlaps: false,
   pos: null,
   mode: 'hidden',
 };
@@ -19,16 +16,21 @@ const INITIAL_STATE: DictationAnchorState = {
 export const setAnchorEffect = StateEffect.define<number>();
 export const clearAnchorEffect = StateEffect.define<null>();
 export const setAnchorModeEffect = StateEffect.define<DictationAnchorMode>();
-export const setAnchorHideWhenCursorOverlapsEffect = StateEffect.define<boolean>();
 
 export const dictationAnchorStateField = StateField.define<DictationAnchorState>({
   create: () => INITIAL_STATE,
   update(value, tr) {
-    let next: DictationAnchorState = {
-      hideWhenCursorOverlaps: value.hideWhenCursorOverlaps,
-      pos: value.pos === null ? null : tr.changes.mapPos(value.pos, -1),
-      mode: value.mode,
-    };
+    if (tr.effects.length === 0 && tr.changes.empty) {
+      return value;
+    }
+
+    let next: DictationAnchorState = value;
+    if (value.pos !== null && !tr.changes.empty) {
+      const mapped = tr.changes.mapPos(value.pos, -1);
+      if (mapped !== value.pos) {
+        next = { ...next, pos: mapped };
+      }
+    }
 
     for (const effect of tr.effects) {
       if (effect.is(setAnchorEffect)) {
@@ -37,8 +39,6 @@ export const dictationAnchorStateField = StateField.define<DictationAnchorState>
         next = INITIAL_STATE;
       } else if (effect.is(setAnchorModeEffect)) {
         next = { ...next, mode: effect.value };
-      } else if (effect.is(setAnchorHideWhenCursorOverlapsEffect)) {
-        next = { ...next, hideWhenCursorOverlaps: effect.value };
       }
     }
 
@@ -47,12 +47,8 @@ export const dictationAnchorStateField = StateField.define<DictationAnchorState>
 });
 
 class DictationAnchorWidget extends WidgetType {
-  constructor(private readonly mode: Exclude<DictationAnchorMode, 'hidden'>) {
-    super();
-  }
-
   override eq(other: WidgetType): boolean {
-    return other instanceof DictationAnchorWidget && other.mode === this.mode;
+    return other instanceof DictationAnchorWidget;
   }
 
   override ignoreEvent(): boolean {
@@ -61,23 +57,29 @@ class DictationAnchorWidget extends WidgetType {
 
   toDOM(): HTMLElement {
     const span = document.createElement('span');
-    span.className = `local-stt-dictation-anchor local-stt-dictation-anchor--${this.mode}`;
+    span.className = 'local-stt-dictation-anchor local-stt-dictation-anchor--visible';
     span.setAttribute('aria-hidden', 'true');
-    if (this.mode === 'processing') {
-      setIcon(span, 'loader-2');
-    }
     return span;
   }
 }
 
 const EMPTY_DECORATIONS: DecorationSet = Decoration.none;
 
+const VISIBLE_DECORATION = Decoration.widget({
+  widget: new DictationAnchorWidget(),
+  side: -1,
+});
+
 export const dictationAnchorDecorationsField = StateField.define<DecorationSet>({
   create(state) {
     return decorationsFor(state);
   },
   update(value, tr) {
-    void value;
+    if (
+      tr.startState.field(dictationAnchorStateField) === tr.state.field(dictationAnchorStateField)
+    ) {
+      return value;
+    }
     return decorationsFor(tr.state);
   },
   provide: (field) => EditorView.decorations.from(field),
@@ -90,20 +92,7 @@ function decorationsFor(state: EditorState): DecorationSet {
     return EMPTY_DECORATIONS;
   }
 
-  if (
-    anchor.mode === 'speaking' &&
-    anchor.hideWhenCursorOverlaps &&
-    state.selection.main.empty &&
-    state.selection.main.head === anchor.pos
-  ) {
-    return EMPTY_DECORATIONS;
-  }
-
-  const widget = Decoration.widget({
-    widget: new DictationAnchorWidget(anchor.mode),
-    side: -1,
-  });
-  return Decoration.set([widget.range(anchor.pos)]);
+  return Decoration.set([VISIBLE_DECORATION.range(anchor.pos)]);
 }
 
 export function dictationAnchorExtension(): Extension {

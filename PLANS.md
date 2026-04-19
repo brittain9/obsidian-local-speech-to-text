@@ -1,186 +1,101 @@
-# Dictation UX v2 — flush caret, stable in-note processing, VAD rename
+# Dictation Anchor UX Simplification
 
 ## Objective
 
-Fix two live-repro bugs and one cross-boundary rename surfaced during real use of the newly-landed dictation anchor, while keeping one canonical UX model:
-
-1. **Phantom spinner mid-phrase.** Mid-sentence pauses can produce a real processing phase, but the resulting transcript may arrive empty or so quickly that the spinner is more confusing than helpful. The user sees a loader at the insertion point and then no text lands.
-2. **Caret not flush with insertion point.** The anchor widget sits in a 1em-wide inline-flex box, so the 2px caret renders ~0.5em from where text will actually land.
-3. **Naming: `speech_paused` is a misleading label for the Silero hysteresis state.** Rename to `speech_ending` across the wire protocol (Rust) + plugin types + tests + docs.
-
-Canonical UX target:
-
-- **Ribbon = global session status only.** Idle / starting / listening-active / hearing-speech / error. No processing spinner once a session is running.
-- **In-note anchor = insertion and progress.** Delayed purple caret while speaking or in the speech-ending hysteresis window; spinner at the insertion point only when processing lasts long enough to be useful.
-- **No feature flags or alternate UX paths.** We are not supporting both ribbon-processing and in-note-processing modes.
+Remove the in-note "processing" spinner. Collapse the anchor widget to a single live affordance: a pulsing cursor that appears after 2.5s of speech and stays until the session settles. The in-note indicator owns one meaning — "session is actively working on an utterance." Transcription status stops being broadcast across two surfaces.
 
 ## Current State
 
-**VAD finalization (`native/src/session.rs`)** — frames are 20ms. Style → `silence_end_frames`:
+Three-mode anchor: `hidden | speaking | processing`.
 
-- `Responsive` → 20 frames = 400ms (`session.rs:70`)
-- `Balanced` (default) → 50 frames = 1000ms (`session.rs:71`)
-- `Patient` → 100 frames = 2000ms (`session.rs:72`)
+- `speaking` arms on `speech_detected`/`speech_ending` after `SPEAKING_INDICATOR_DELAY_MS` (2500ms).
+- `processing` arms on `transcribing`/`paused` after `PROCESSING_INDICATOR_DELAY_MS` (350ms) and renders the `loader-2` spinner.
+- `insertPhrase` unconditionally emits `setAnchorModeEffect.of('hidden')` after every transcript.
+- Controller carries two flags (`inSpeechState`, `processingPending`) to guard re-entry and two timer handles.
 
-`pending_end_start` latches when `probability < negative_threshold` (`session.rs:248-251`); finalization fires when `silence_end_frames` additional frames have elapsed since that latch (`session.rs:258-261`). `negative_threshold = speech_threshold − 0.15` (`session.rs:13,17-24`).
+Observed failures (confirmed by audit):
+- 350ms threshold is crossed by virtually every real transcript — spinner reads as "processing" rather than "slow."
+- Mid-session `insertPhrase` rips the cursor away even when utterance 2 is already in flight; forces a fresh 2.5s wait.
+- Empty / VAD-rejected / filtered-out utterances leave the spinner with no text to deliver. Feels broken.
 
-**State derivation (`native/src/app.rs:980-1013`)** — once an utterance is enqueued, `transcription_active = true` (`app.rs:759`), which maps to `Transcribing` or `Paused` in `derive_session_state`. The base state (`SpeechDetected` / `SpeechPaused`) wins over transcription only while still inside the same utterance (`app.rs:988-994`). In other words: the sidecar already only emits processing states after a real utterance handoff; those states do **not** guarantee user-visible text.
+Ribbon already renders `transcribing`/`paused` as the `listening` visual with 0.7 opacity, but still surfaces the labels "Transcribing…" / "Processing…" — the only place ribbon duplicates the anchor's job.
 
-**Plugin anchor mapping (`src/dictation/dictation-session-controller.ts`)** — per-state:
-
-- `speech_detected` / `speech_paused` → `'speaking'` (after 2500ms delay, `:189-211`)
-- `transcribing` / `paused` → `'processing'` (spinner), after last commit
-- other → `'hidden'`
-
-**Empty-transcript handling** — `normalizeTranscriptText` returns `null` for blank text, and the controller drops the insert (`dictation-session-controller.ts:330-337`). The spinner was still shown for the dropped attempt because the plugin surfaces processing immediately on `transcribing` / `paused`.
-
-**UX history — why this surfaced now.** `derive_session_state` (`app.rs:988-994`) returns `SpeechDetected` / `SpeechPaused` *before* falling through to `Transcribing` / `Paused`, so while any speech is active the sidecar does not emit a processing state. In the ribbon-only UX this priority hid the churn: a short mid-phrase finalization was only visible during the narrow gap between `Listening` and the next speech frame, and even then it competed with speech animations for attention. Moving processing into the note removed that cover — the flicker we see now is the same sidecar behavior that was always there, just newly visible. The fix must preserve in-note progress value without reintroducing the churn.
-
-**Widget layout (`styles.css:459-491`)**:
-
-```css
-.local-stt-dictation-anchor {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1em;
-  height: 1.2em;
-  vertical-align: middle;
-  /* … */
-}
-```
-
-The 1em width + `justify-content: center` puts the 2px caret ~0.5em off the insertion offset. `side: -1` on the widget decoration (`src/editor/dictation-anchor-extension.ts:88`) renders it immediately before `pos`.
-
-**Rename scope for `speech_paused → speech_ending`**:
-
-- Rust: `native/src/protocol.rs:94`, `native/src/session.rs:100,166,572,575,586`, `native/src/app.rs:992,993,1010`
-- TS: `src/sidecar/protocol.ts:44,656`, `src/dictation/dictation-session-controller.ts:15,190,397`, `src/ui/dictation-ribbon.ts:49,74`
-- Tests: `test/dictation-session-controller.test.ts`, `test/dictation-ribbon.test.ts`, native session tests
-- Docs: `docs/architecture/system-architecture.md:199-201,365,370`
-
-Serde `rename_all = "snake_case"` (`protocol.rs:89`) turns the Rust variant name into the wire string — renaming the variant to `SpeechEnding` emits `"speech_ending"` automatically.
+Uncommitted on branch `feat/dictation-anchor-ux` from a prior `/simplify` pass: +38/−30 across `dictation-anchor-extension.ts`, `editor-service.ts`, `dictation-session-controller.ts`, and the test file. Verified (`tsc` clean, 200/200 tests). Lands as its own commit; this UX change is a separate commit on top.
 
 ## Constraints
 
-- **Root-cause-first for the spinner bug.** Repro and instrument before deciding whether the problem is solved by plugin-side spinner debounce/cancellation or whether Balanced-mode VAD tuning is also required.
-- **One UX model only.** No feature flags, no hidden toggles, no fallback path that restores ribbon-based processing feedback.
-- **Wire protocol rename is atomic.** Rust variant + TS parser + type union + all branches must land in one commit. Session state is transient (no persisted string), so no migration is needed.
-- **Preserve everything from the last round**: delayed pulse (2500ms), ribbon/anchor split, reduced-motion fallbacks.
-- **No speculative VAD constant changes.** If we adjust `silence_end_frames` or `negative_threshold`, a new Rust test must demonstrate a scenario that fails before and passes after.
-- **Zero-width widget must still be keyboard/screen-reader inert.** `aria-hidden="true"`, `pointer-events: none`, `user-select: none` stay.
-- **Do not expose hysteresis detail in the UI.** `speech_ending` is an internal/protocol rename; ribbon and anchor behavior should stay grouped with the speaking phase.
+- Preserve the 2.5s speech-onset delay (it's what filters out background noise / brief hallucinations and is the behavior the user explicitly wants).
+- Preserve `hideWhenCursorOverlaps` semantics for `at_cursor` anchor (unrelated to mode narrowing).
+- No protocol-version bump — this is purely a plugin-side change. Sidecar event surface is unchanged.
+- No backwards-compat shims for the renamed mode (greenfield project; see lessons.md 2026-04-18).
+- Keep the commit for the prior `/simplify` cleanup separate from this UX change (different intents, easier to review, easier to revert).
+- Ribbon change is limited to label text. Visual treatment (0.7 opacity dim on `listening` class) stays as-is.
 
 ## Approach
 
-### 1. Rename `speech_paused` → `speech_ending`
+**Narrow `DictationAnchorMode` to `'hidden' | 'visible'`.** Rename `speaking` → `visible`; delete the `processing` branch. The widget's "speaking" pulse visual becomes the single live affordance; remove the spinner DOM path entirely.
 
-One atomic commit:
+**Controller collapses to one timer.** Mode becomes a function of session-state family membership with a single 2.5s arming rule:
 
-- Rust: rename `SessionBaseState::SpeechPaused` and `SessionState::SpeechPaused` to `SpeechEnding`. All match arms, test names, and comments that reference the old name move with it. The serde tag becomes `"speech_ending"` via existing `rename_all`.
-- TS: update the `SessionState` union (`src/sidecar/protocol.ts:44`), parser (`:656`), `DictationControllerState` (`dictation-session-controller.ts:15`), and all match arms in `applySessionStateToAnchor` and `buildRibbonState` / `toVisualState`.
-- UX mapping stays intentionally grouped with speech: `speech_ending` keeps the same delayed purple-caret behavior as `speech_detected`, and the ribbon keeps the same speaking-phase visual treatment rather than surfacing a new user-facing mode.
-- Tests: rename the case in the ribbon parametrised table, update the short-utterance test narrative, rename the Rust session test `speech_paused_state_during_brief_silence`.
-- Docs: update `system-architecture.md` state diagram (lines 199-201), the ribbon mapping table (line 365), and the explanatory paragraph (line 370).
+```
+speech-family = { speech_detected, speech_ending, transcribing, paused }
 
-### 2. Flush the widget to the insertion offset (CSS)
-
-Replace the 1em inline-flex box with a zero-width, absolutely-positioned overlay. The caret and the spinner become positioned children; text layout is not displaced.
-
-```css
-.local-stt-dictation-anchor {
-  display: inline-block;
-  position: relative;
-  width: 0;
-  height: 1.2em;
-  vertical-align: middle;
-  overflow: visible;
-  pointer-events: none;
-  user-select: none;
-}
-
-.local-stt-dictation-anchor--speaking::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 1em;
-  /* existing border-radius / background / animations */
-}
-
-.local-stt-dictation-anchor--processing {
-  /* spinner icon sits in a child <span>; pin it with absolute positioning */
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  /* existing color / opacity / animation */
-}
+on session_state_changed(next):
+  if next ∈ speech-family:
+    if anchorTimer is null and anchor.mode == 'hidden':
+      arm 2.5s timer → on fire: setAnchorMode('visible')
+  else:   # listening | idle | starting | error
+    cancel anchorTimer
+    setAnchorMode('hidden')
 ```
 
-Because `setIcon` writes to the span itself (not a child — `dictation-anchor-extension.ts:58`), the `--processing` rules target the same element. We either (a) keep the SVG inside the span and let the SVG inherit positioning, or (b) wrap the icon in a child and position the child. (a) is simpler — the SVG from `setIcon` is a direct child and natural flow keeps it at `left: 0`. Verify under Obsidian's lucide SVG sizing.
+No per-utterance re-arming. No second timer. `inSpeechState` and `processingPending` deleted. Timer guard is simply "is the timer handle non-null?"
 
-This change is only about making the purple dictation caret/spinner flush with the insertion point. Native/white-caret overlap remains out of scope for this plan.
+**`insertPhrase` stops touching mode.** Text insertion and anchor-position updates continue; the mode is owned solely by the controller's state-family rule. This fixes the mid-utterance cursor-rip.
 
-### 3. Root-cause and stabilize the phantom spinner
+**Ribbon labels.** `transcribing` → "Listening". `paused` → "Listening". Visual class and opacity stay. Anchor owns the transcription signal; ribbon owns capture state only.
 
-Instrument first, decide second. No constant changes before we see the emitted event sequence for a real repro. The sidecar already only surfaces processing after queueing a real utterance, so the first fix path is about **when the plugin chooses to show the in-note spinner**, not about restoring ribbon loading or adding toggles.
-
-- **3a. Instrument.** Add temporary debug logging for the emitted event sequence we actually have access to:
-  - plugin side: every `session_state_changed` with timestamp and state, plus every `transcript_ready` with normalized-text length
-  - only if that is insufficient, add Rust-side debug around `emit_state_if_changed`
-  - do **not** try to log a plugin-side `transcription_active` snapshot; that value only exists inside the Rust sidecar
-- **3b. Classify.** With the log, answer:
-  - Is this primarily a **fast/empty processing window** where no useful spinner should be shown?
-  - Or is this a **real utterance split** where a short but substantive transcript lands and the VAD boundary itself is wrong?
-  - How long is the gap between the first processing state and `transcript_ready` / resumed speech?
-- **3c. Fix, ordered by preference.** (i) and (ii) are complementary and should land together if the repro supports both.
-  - **(i) Plugin: debounce the in-note processing indicator.** Delay `setAnchorMode('processing')` by ~300-350ms. If the state flips back to `speech_detected` / `speech_ending`, `listening`, `idle`, or `error` before that window expires, cancel the pending spinner. Also clear the pending timer on `transcript_ready` so a fast result cannot surface a late spinner after text insertion or an empty drop. Matches the UX problem directly: show processing only when the user benefits from seeing it.
-  - **(ii) Sidecar: suppress micro-utterance handoff.** When `FinalizeUtterance` fires with committed audio shorter than a threshold (~150ms, i.e. under `silence_end_frames` worth of real speech frames), drop it in `enqueue_utterance` without setting `transcription_active`. These rounds almost always produce blank or hallucinated transcripts and the processing state they trigger is pure noise. Add a Rust test that drives the session to a sub-threshold utterance and asserts no `Transcribing`/`Paused` emission.
-  - **(iii) Sidecar: VAD tightening, only if logs show a real utterance-boundary bug.** Bump `silence_end_frames` for Balanced (e.g., 50 → 60 frames = 1200ms) and/or widen `NEGATIVE_THRESHOLD_DELTA` (0.15 → 0.20). Add a Rust test with a mid-phrase pause that finalized before and no longer finalizes after.
-  - **(iv) Do not add feature flags or alternate indicator surfaces.** Ribbon processing is not coming back as a fallback path.
-
-### 4. Deferred / out of scope
-
-- Native/white-caret overlap: out of scope for this change.
-- Any broader VAD redesign or SpeakingStyle UX copy changes.
-- Engine-level hallucination post-filter (e.g., whisper's known filler-token outputs). Complementary to §3c-ii but whisper-specific and larger in scope; track separately if the micro-utterance suppression doesn't cover enough of the real cases.
+**Trade-off accepted.** Slow-inference case (>5s transcription) shows no distinct indicator — the cursor keeps pulsing, same as during active speech. If dogfooding surfaces this as a problem, add a ribbon pulse/badge later (separate change). The pain points we have today outweigh a hypothetical slow-path signal.
 
 ## Execution Steps
 
-- [ ] Reproduce the spinner bug on the current build; capture the event sequence for the phantom-spinner repro (needs the debug instrumentation from §3a).
-- [ ] Rename `speech_paused → speech_ending`: Rust (protocol.rs, session.rs, app.rs, session tests) + TS (protocol.ts, session controller, ribbon, tests) + docs. Gate on `npm run test && cargo test --manifest-path native/Cargo.toml`.
-- [ ] Rework `.local-stt-dictation-anchor` CSS to zero-width / absolute-positioned overlay. Live-verify caret flush at 14px / 16px / 18px editor font, light and dark theme.
-- [ ] Implement §3c(i) plugin debounce with controller tests locking it down.
-- [ ] Implement §3c(ii) sidecar micro-utterance suppression with a Rust test, unless §3b classifies every observed flicker as already-covered by the debounce.
-- [ ] Only touch Rust VAD thresholds (§3c-iii) if §3b proves a real utterance-splitting bug in Balanced mode.
-- [ ] Remove the debug instrumentation added in the first step, or gate it behind the existing plugin logger level if it has ongoing value.
-- [ ] `npm run check` clean — typecheck, biome, vitest, esbuild, cargo fmt, clippy, cargo test.
+- [ ] **Commit prior `/simplify` cleanup.** `git add` only the four files already modified; commit as `chore: simplify dictation anchor hot path` (or similar). Verify: `npm run check` clean, `git status` clean after commit.
+- [ ] **Narrow `DictationAnchorMode` and delete processing branch.** In `src/editor/dictation-anchor-extension.ts`:
+  - `export type DictationAnchorMode = 'hidden' | 'visible'`
+  - Replace `WIDGETS` record with a single `Decoration.widget` for `visible`
+  - Delete the `processing` branch of `DictationAnchorWidget` (remove `setIcon` import if no longer used elsewhere in file)
+  - Update decorationsFor to handle only two modes
+  - Verify: `tsc --noEmit` passes; existing `dictation-anchor-extension.test.ts` fails only in the predictable places (processing-mode assertions, speaking→visible renames).
+- [ ] **Update controller state-family rule.** In `src/dictation/dictation-session-controller.ts`:
+  - Delete `PROCESSING_INDICATOR_DELAY_MS`, `processingTimerId`, `processingPending`, `inSpeechState`, `clearProcessingTimer`, `clearSpeakingTimer` (fold into one `clearAnchorTimer`)
+  - Replace `applySessionStateToAnchor` with the single-timer rule above
+  - `handleTranscriptReady` no longer needs to clear a processing timer (does `clearAnchorTimer` only if state isn't already in a speech family — though since `transcript_ready` itself doesn't change session state, this is a no-op; confirm before touching)
+  - Rename `SPEAKING_INDICATOR_DELAY_MS` → `ANCHOR_VISIBLE_DELAY_MS` (names match the new single-mode machine)
+  - Verify: `tsc --noEmit` passes; unit tests that exercise controller still green.
+- [ ] **Remove mode-touching from `insertPhrase`.** In `src/editor/editor-service.ts`:
+  - Drop `setAnchorModeEffect.of('hidden')` from the `effects` array in `insertPhrase`. Keep the `setAnchorEffect.of(newPos)` and scroll effect.
+  - Verify no callers relied on the mode change — `setAnchorMode` is the only public mode mutator now.
+- [ ] **Rename ribbon labels.** In `src/ui/dictation-ribbon.ts`, change `transcribing` and `paused` branches in `buildRibbonState` from "Transcribing…" / "Processing…" to "Listening". Leave `toVisualState` alone.
+- [ ] **Update tests.** In `test/dictation-anchor-extension.test.ts`:
+  - Rename `setAnchorModeEffect.of('speaking')` → `setAnchorModeEffect.of('visible')` throughout
+  - Delete the "does not hide the processing spinner when the cursor overlaps the anchor" test (processing mode is gone; the behavior it asserts no longer exists)
+  - Update the initial-state assertion (`mode: 'hidden'` stays correct)
+  - Add one new test: controller integration — entering a speech-family state arms the timer; returning to `listening` cancels it and resets mode to hidden. (If controller tests exist, put it there; otherwise skip — the unit tests on the extension cover the widget contract, and the controller behavior is small enough to verify manually.)
+- [ ] **Record the decision.** Append a new active decision to `docs/decisions.md` (D-010, or next free ID) titled "Dictation anchor has a single live mode." Include the state-family rule, why the processing spinner was removed (empty/filtered/continuous-speech broken-promise cases), and the explicit trade-off (no slow-path signal). No supersede required — no prior decisions.md entry on this topic.
+- [ ] **Manual dictation session.** Build the plugin, reload Obsidian, run three scenarios with dev console open: (a) long continuous sentence, (b) short utterance that VAD rejects, (c) rapid consecutive utterances with <1s gap. Confirm: no spinner appears; cursor shows after 2.5s of sustained speech; cursor clears cleanly; no flicker on utterance boundaries.
+- [ ] **Ship.** Single atomic commit for the UX narrow (covering all files except the `/simplify` chore), + a separate commit for the decisions doc if preferred. PR body links to agent-audit findings by summary.
 
 ## Verification
 
-**Automated:**
-
-- `npm run typecheck && npm run test` — covers controller mapping, ribbon visual state, protocol parser, session-controller state sequences with the new `speech_ending` label.
-- `cargo test --manifest-path native/Cargo.toml --features engine-cohere-transcribe,engine-whisper` — covers the VAD state machine and the serialized wire name.
-- `npm run check` before PR.
-
-**Live (requires user):**
-
-- Mid-sentence pause in **Balanced** mode that used to produce a phantom spinner → no visible spinner flicker if processing resolves quickly or resumes into speech.
-- Longer deliberate stop → spinner appears once, transcript lands, single contiguous phrase.
-- Caret is flush with the start of a new line / next-word boundary at all three editor font sizes.
-- Ribbon shows active/listening or hearing-speech only; processing feedback is in-note only.
-- Reduced-motion still collapses animations on ribbon and anchor.
+- `npm run check` green after each code step.
+- Full test suite passes with updated assertions (expect small net reduction in test count — one test deleted).
+- Manual golden-path dictation session on a real note shows: (1) no spinner ever appears, (2) cursor appears only after ~2.5s of sustained speech, (3) cursor persists through processing and clears at session-idle, (4) rapid consecutive utterances don't rip the cursor away, (5) a short "mm" or cough produces nothing in the note and no cursor artifact.
+- Ribbon tooltip reads "Listening" (not "Transcribing…") when the backend is mid-inference — confirmed via hover during manual test.
 
 ## Risks and Open Questions
 
-- **SpeakingStyle setting.** If the user is on `Responsive` (`silence_end_frames = 400ms`), mid-phrase pauses split utterances by design and no sidecar fix short of a VAD redesign helps. Confirm the current setting during §3a repro.
-- **Rename breakage across boundary.** Plugin and sidecar ship together; rename is safe. Flag in the commit message that an older sidecar binary in someone's sandbox would break — this is intrinsic to changing the wire enum.
-- **Zero-width widget vs. IME / composition.** Obsidian Markdown editor uses CM6; CM handles widgets with `side: -1` cleanly. Watch for any composition-input weirdness during the live check.
-- **Debounce delays real spinner.** This is intentional UX trade-off: sub-350ms processing should usually complete without a spinner. Cap at ~350ms so longer processing still gets feedback.
-- **Real utterance splits may remain after the UX fix.** If the repro still produces short, substantive split transcripts in Balanced mode, the follow-up is a Rust VAD tuning change with a targeted regression test.
-- **Micro-utterance threshold tuning.** Too low (~100ms) and hallucination-prone rounds still slip through; too high (~300ms) and genuine short words ("yes", "no") get dropped. Pick the threshold off §3b log data, not off intuition; include the threshold constant in the Rust test so regressions are obvious.
-- **Spinner CSS — SVG sizing.** Obsidian's lucide icons render at `currentColor` with intrinsic `width: 16px; height: 16px`. Confirm they still display correctly inside an absolutely-positioned, zero-width parent; if not, wrap the icon in a positioned child.
+- **Slow-inference feels dead.** Risk: a >5s transcription shows the same pulsing cursor as active speech; user might assume it's hung. Mitigation: dogfood first. If confirmed painful, add ribbon pulse after N seconds in `transcribing` — separate change, easier to tune once we have evidence.
+- **VAD flapping during long speech.** The machine never sees `listening` during continuous dictation, so the cursor stays visible — correct behavior by design. If the sidecar ever emits a spurious `listening` mid-speech, the cursor would flicker. No current evidence of this, but add a note to the manual-test checklist.
+- **`handleTranscriptReady` timer interactions.** Need to confirm during the controller edit that `transcript_ready` never arrives while the session is in a non-speech state in the current protocol. Agent audit suggests it doesn't, but verify while touching the code.
+- **Test-controller coverage gap.** There are no existing controller-level unit tests for the anchor machine (assertions today live on the extension). Consider whether to add one lightweight test for the "state-family → mode" rule, or defer and rely on manual. Prefer to defer unless the code under test branches non-obviously.
+- **Audio-reactive cursor (deferred).** Separate follow-up. Feasibility confirmed in discussion; file as its own issue with feature-request tone (what + why), matching #37 / #38. Not in scope for this plan.

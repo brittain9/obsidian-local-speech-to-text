@@ -101,7 +101,6 @@ describe('EditorService', () => {
     service.beginAnchor('at_cursor');
 
     expect(view.state.field(dictationAnchorStateField)).toEqual({
-      hideWhenCursorOverlaps: true,
       pos: 6,
       mode: 'hidden',
     });
@@ -115,7 +114,6 @@ describe('EditorService', () => {
 
     expect(view.state.doc.toString()).toBe('hello world\n');
     expect(view.state.field(dictationAnchorStateField).pos).toBe(view.state.doc.length);
-    expect(view.state.field(dictationAnchorStateField).hideWhenCursorOverlaps).toBe(false);
   });
 
   it('beginAnchor skips the eager newline when the doc already ends with one', () => {
@@ -234,7 +232,6 @@ describe('EditorService', () => {
 
     expect(view.state.doc.toString()).toBe('alpha');
     expect(view.state.field(dictationAnchorStateField)).toEqual({
-      hideWhenCursorOverlaps: false,
       pos: null,
       mode: 'hidden',
     });
@@ -301,9 +298,9 @@ describe('EditorService', () => {
     const { service } = createEditorService(view);
 
     service.beginAnchor('at_cursor');
-    service.setAnchorMode('speaking');
+    service.setAnchorMode('visible');
 
-    expect(view.state.field(dictationAnchorStateField).mode).toBe('speaking');
+    expect(view.state.field(dictationAnchorStateField).mode).toBe('visible');
   });
 
   it('setAnchorMode is a no-op when the active editor differs from the stored view', () => {
@@ -313,9 +310,20 @@ describe('EditorService', () => {
     service.beginAnchor('at_cursor');
     const other = new FakeEditorView('other', 0);
     setActiveEditor(other);
-    service.setAnchorMode('speaking');
+    service.setAnchorMode('visible');
 
     expect(view.state.field(dictationAnchorStateField).mode).toBe('hidden');
+  });
+
+  it('insertPhrase keeps the current anchor mode while moving the pin', () => {
+    const view = new FakeEditorView('hello', 5);
+    const { service } = createEditorService(view);
+
+    service.beginAnchor('at_cursor');
+    service.setAnchorMode('visible');
+    service.insertPhrase(' world', 'space');
+
+    expect(view.state.field(dictationAnchorStateField).mode).toBe('visible');
   });
 
   it('insertPhrase is a no-op when the active editor differs from the stored view', () => {
@@ -339,7 +347,6 @@ describe('EditorService', () => {
     service.endAnchor();
 
     expect(view.state.field(dictationAnchorStateField)).toEqual({
-      hideWhenCursorOverlaps: false,
       pos: null,
       mode: 'hidden',
     });
@@ -355,12 +362,10 @@ describe('EditorService', () => {
     triggerLeafChange();
 
     expect(view.state.field(dictationAnchorStateField)).toEqual({
-      hideWhenCursorOverlaps: false,
       pos: null,
       mode: 'hidden',
     });
     expect(other.state.field(dictationAnchorStateField)).toEqual({
-      hideWhenCursorOverlaps: true,
       pos: 3,
       mode: 'hidden',
     });
