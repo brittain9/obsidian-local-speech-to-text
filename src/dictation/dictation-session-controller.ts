@@ -1,5 +1,4 @@
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
-import type { DictationAnchorMode } from '../editor/dictation-anchor-extension';
 import type { EditorService } from '../editor/editor-service';
 import type { PluginSettings } from '../settings/plugin-settings';
 import { formatErrorMessage } from '../shared/format-utils';
@@ -12,7 +11,7 @@ export type DictationControllerState =
   | 'starting'
   | 'listening'
   | 'speech_detected'
-  | 'speech_paused'
+  | 'speech_ending'
   | 'transcribing'
   | 'paused'
   | 'error';
@@ -34,11 +33,14 @@ interface DictationSessionControllerDependencies {
 }
 
 const SPEAKING_INDICATOR_DELAY_MS = 2500;
+const PROCESSING_INDICATOR_DELAY_MS = 350;
 
 export class DictationSessionController {
   private abortingSessionId: string | null = null;
   private inSpeechState = false;
   private pendingStartSessionId: string | null = null;
+  private processingPending = false;
+  private processingTimerId: ReturnType<typeof setTimeout> | null = null;
   private readonly releaseSidecarSubscription: () => void;
   private sessionId: string | null = null;
   private speakingTimerId: ReturnType<typeof setTimeout> | null = null;
@@ -179,6 +181,7 @@ export class DictationSessionController {
     this.pendingStartSessionId = null;
     this.sessionId = null;
     this.clearSpeakingTimer();
+    this.clearProcessingTimer();
     this.inSpeechState = false;
 
     if (this.dependencies.captureStream.isCapturing()) {
@@ -187,27 +190,47 @@ export class DictationSessionController {
   }
 
   private applySessionStateToAnchor(state: SessionState): void {
-    const isSpeech = state === 'speech_detected' || state === 'speech_paused';
+    const isSpeech = state === 'speech_detected' || state === 'speech_ending';
 
-    if (!isSpeech) {
-      this.clearSpeakingTimer();
-      this.inSpeechState = false;
-      this.dependencies.editorService.setAnchorMode(nonSpeechStateToAnchorMode(state));
-      return;
-    }
+    if (isSpeech) {
+      this.clearProcessingTimer();
 
-    if (this.inSpeechState) {
-      return;
-    }
-
-    this.inSpeechState = true;
-    this.dependencies.editorService.setAnchorMode('hidden');
-    this.speakingTimerId = setTimeout(() => {
-      this.speakingTimerId = null;
       if (this.inSpeechState) {
-        this.dependencies.editorService.setAnchorMode('speaking');
+        return;
       }
-    }, SPEAKING_INDICATOR_DELAY_MS);
+
+      this.inSpeechState = true;
+      this.dependencies.editorService.setAnchorMode('hidden');
+      this.speakingTimerId = setTimeout(() => {
+        this.speakingTimerId = null;
+        if (this.inSpeechState) {
+          this.dependencies.editorService.setAnchorMode('speaking');
+        }
+      }, SPEAKING_INDICATOR_DELAY_MS);
+      return;
+    }
+
+    this.clearSpeakingTimer();
+    this.inSpeechState = false;
+
+    if (state === 'transcribing' || state === 'paused') {
+      if (this.processingPending) {
+        return;
+      }
+
+      this.processingPending = true;
+      this.dependencies.editorService.setAnchorMode('hidden');
+      this.processingTimerId = setTimeout(() => {
+        this.processingTimerId = null;
+        if (this.processingPending) {
+          this.dependencies.editorService.setAnchorMode('processing');
+        }
+      }, PROCESSING_INDICATOR_DELAY_MS);
+      return;
+    }
+
+    this.clearProcessingTimer();
+    this.dependencies.editorService.setAnchorMode('hidden');
   }
 
   private clearSpeakingTimer(): void {
@@ -215,6 +238,14 @@ export class DictationSessionController {
       clearTimeout(this.speakingTimerId);
       this.speakingTimerId = null;
     }
+  }
+
+  private clearProcessingTimer(): void {
+    if (this.processingTimerId !== null) {
+      clearTimeout(this.processingTimerId);
+      this.processingTimerId = null;
+    }
+    this.processingPending = false;
   }
 
   private async handleErrorEvent(event: Extract<SidecarEvent, { type: 'error' }>): Promise<void> {
@@ -313,6 +344,8 @@ export class DictationSessionController {
       return;
     }
 
+    this.clearProcessingTimer();
+
     this.dependencies.logger?.debug(
       'session',
       `transcript received (${event.text.length} chars, ${event.processingDurationMs}ms processing)`,
@@ -391,20 +424,6 @@ export class DictationSessionController {
 
 function createSessionId(): string {
   return `session-${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
-}
-
-function nonSpeechStateToAnchorMode(
-  state: Exclude<SessionState, 'speech_detected' | 'speech_paused'>,
-): DictationAnchorMode {
-  switch (state) {
-    case 'transcribing':
-      return 'processing';
-    case 'listening':
-    case 'idle':
-    case 'paused':
-    case 'error':
-      return 'hidden';
-  }
 }
 
 function normalizeTranscriptText(event: TranscriptReadyEvent): string | null {

@@ -348,58 +348,40 @@
 }
 
 /* 8 spokes, each offset by 0.15s = 1.2s full cycle */
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path,
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path,
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path {
   animation: local-stt-chase 1.2s ease-in-out infinite;
   opacity: 0.2;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(1),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(1),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(1) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(1) {
   animation-delay: 0s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(2),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(2),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(2) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(2) {
   animation-delay: 0.15s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(3),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(3),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(3) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(3) {
   animation-delay: 0.3s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(4),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(4),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(4) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(4) {
   animation-delay: 0.45s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(5),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(5),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(5) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(5) {
   animation-delay: 0.6s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(6),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(6),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(6) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(6) {
   animation-delay: 0.75s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(7),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(7),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(7) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(7) {
   animation-delay: 0.9s;
 }
 
-.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(8),
-.side-dock-ribbon-action[data-local-stt-state="transcribing"] > svg > path:nth-child(8),
-.side-dock-ribbon-action[data-local-stt-state="paused"] > svg > path:nth-child(8) {
+.side-dock-ribbon-action[data-local-stt-state="starting"] > svg > path:nth-child(8) {
   animation-delay: 1.05s;
 }
 
@@ -443,8 +425,11 @@
     opacity: 1;
   }
 
-  .local-stt-dictation-anchor--processing {
+  .local-stt-dictation-anchor.local-stt-dictation-anchor--processing > svg {
     animation: none;
+  }
+
+  .local-stt-dictation-anchor--processing {
     opacity: 0.55;
   }
 
@@ -457,13 +442,12 @@
 /* --- Dictation anchor widget -------------------------------------- */
 
 .local-stt-dictation-anchor {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1em;
+  display: inline-block;
+  position: relative;
+  width: 0;
   height: 1.2em;
   vertical-align: middle;
-  overflow: hidden;
+  overflow: visible;
   pointer-events: none;
   user-select: none;
 }
@@ -474,7 +458,10 @@
 
 .local-stt-dictation-anchor--speaking::before {
   content: "";
-  display: block;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
   width: 2px;
   height: 1em;
   border-radius: 1px;
@@ -487,6 +474,13 @@
 .local-stt-dictation-anchor--processing {
   color: var(--interactive-accent);
   opacity: 0.55;
+}
+
+.local-stt-dictation-anchor.local-stt-dictation-anchor--processing > svg {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
   animation: local-stt-spin 0.9s linear infinite;
 }
 
@@ -510,7 +504,10 @@
 }
 
 @keyframes local-stt-spin {
+  from {
+    transform: translateY(-50%) rotate(0deg);
+  }
   to {
-    transform: rotate(360deg);
+    transform: translateY(-50%) rotate(360deg);
   }
 }

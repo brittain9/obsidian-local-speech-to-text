@@ -8,6 +8,7 @@ import {
   type DictationAnchorMode,
   dictationAnchorStateField,
   setAnchorEffect,
+  setAnchorHideWhenCursorOverlapsEffect,
   setAnchorModeEffect,
 } from './dictation-anchor-extension';
 import { computeFirstPhrasePrefix, computePhraseSeparators } from './transcript-placement';
@@ -149,10 +150,18 @@ export class EditorService {
     if (prefix.length > 0) {
       view.dispatch({
         changes: { from: originalPos, insert: prefix },
-        effects: setAnchorEffect.of(pinPos),
+        effects: [
+          setAnchorEffect.of(pinPos),
+          setAnchorHideWhenCursorOverlapsEffect.of(this.anchorPreference === 'at_cursor'),
+        ],
       });
     } else {
-      view.dispatch({ effects: setAnchorEffect.of(pinPos) });
+      view.dispatch({
+        effects: [
+          setAnchorEffect.of(pinPos),
+          setAnchorHideWhenCursorOverlapsEffect.of(this.anchorPreference === 'at_cursor'),
+        ],
+      });
     }
 
     this.pendingTrailingContent = prefix;

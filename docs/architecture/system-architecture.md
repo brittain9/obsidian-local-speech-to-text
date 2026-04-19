@@ -196,9 +196,9 @@ stateDiagram-v2
 
     [*] --> Listening : start
     Listening --> SpeechDetected : sustained speech
-    SpeechDetected --> SpeechPaused : speech probability drops
-    SpeechPaused --> SpeechDetected : speech resumes
-    SpeechPaused --> Listening : silence window reached · utterance finalized
+    SpeechDetected --> SpeechEnding : speech probability drops
+    SpeechEnding --> SpeechDetected : speech resumes
+    SpeechEnding --> Listening : silence window reached · utterance finalized
     SpeechDetected --> Listening : max utterance length · boundary-aware split
     Listening --> [*] : stop
     SpeechDetected --> [*] : stop + flush
@@ -362,12 +362,12 @@ flowchart LR
 | `starting` | loader | Starting... |
 | `listening` | audio-lines | Listening |
 | `speech_detected` | audio-lines | Hearing speech |
-| `speech_paused` | audio-lines | Hearing speech (paused) |
-| `transcribing` | loader | Transcribing... |
-| `paused` | loader | Processing... |
+| `speech_ending` | audio-lines | Hearing speech |
+| `transcribing` | audio-lines | Transcribing... |
+| `paused` | audio-lines | Processing... |
 | `error` | mic-off | Error |
 
-`speech_paused` fires when `frames_since_confident_speech >= silence_end_frames` *before* finalization runs on the same frame, so in today's flow it is only externally observable when the probability sits in the intermediate range (between the end and start thresholds) rather than true silence. See architectural seams below.
+`speech_ending` fires when `frames_since_confident_speech >= silence_end_frames` *before* finalization runs on the same frame, so in today's flow it is only externally observable when the probability sits in the intermediate range (between the end and start thresholds) rather than true silence. The ribbon and in-note anchor intentionally treat it as part of the speaking phase — the hysteresis detail is internal to the state machine. See architectural seams below.
 
 ### Settings
 

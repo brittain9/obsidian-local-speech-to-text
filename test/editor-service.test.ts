@@ -100,7 +100,11 @@ describe('EditorService', () => {
 
     service.beginAnchor('at_cursor');
 
-    expect(view.state.field(dictationAnchorStateField)).toEqual({ pos: 6, mode: 'hidden' });
+    expect(view.state.field(dictationAnchorStateField)).toEqual({
+      hideWhenCursorOverlaps: true,
+      pos: 6,
+      mode: 'hidden',
+    });
   });
 
   it('beginAnchor pins end_of_note at doc end and inserts eager newline when needed', () => {
@@ -111,6 +115,7 @@ describe('EditorService', () => {
 
     expect(view.state.doc.toString()).toBe('hello world\n');
     expect(view.state.field(dictationAnchorStateField).pos).toBe(view.state.doc.length);
+    expect(view.state.field(dictationAnchorStateField).hideWhenCursorOverlaps).toBe(false);
   });
 
   it('beginAnchor skips the eager newline when the doc already ends with one', () => {
@@ -228,7 +233,11 @@ describe('EditorService', () => {
     service.endAnchor();
 
     expect(view.state.doc.toString()).toBe('alpha');
-    expect(view.state.field(dictationAnchorStateField)).toEqual({ pos: null, mode: 'hidden' });
+    expect(view.state.field(dictationAnchorStateField)).toEqual({
+      hideWhenCursorOverlaps: false,
+      pos: null,
+      mode: 'hidden',
+    });
   });
 
   it('trims the trailing eager separator on endAnchor after the last phrase', () => {
@@ -329,7 +338,11 @@ describe('EditorService', () => {
     service.beginAnchor('at_cursor');
     service.endAnchor();
 
-    expect(view.state.field(dictationAnchorStateField)).toEqual({ pos: null, mode: 'hidden' });
+    expect(view.state.field(dictationAnchorStateField)).toEqual({
+      hideWhenCursorOverlaps: false,
+      pos: null,
+      mode: 'hidden',
+    });
   });
 
   it('re-anchors to the new active editor when the user switches notes mid-session', () => {
@@ -341,8 +354,16 @@ describe('EditorService', () => {
     setActiveEditor(other, 'new');
     triggerLeafChange();
 
-    expect(view.state.field(dictationAnchorStateField)).toEqual({ pos: null, mode: 'hidden' });
-    expect(other.state.field(dictationAnchorStateField)).toEqual({ pos: 3, mode: 'hidden' });
+    expect(view.state.field(dictationAnchorStateField)).toEqual({
+      hideWhenCursorOverlaps: false,
+      pos: null,
+      mode: 'hidden',
+    });
+    expect(other.state.field(dictationAnchorStateField)).toEqual({
+      hideWhenCursorOverlaps: true,
+      pos: 3,
+      mode: 'hidden',
+    });
 
     service.insertPhrase('first', 'space');
     service.endAnchor();

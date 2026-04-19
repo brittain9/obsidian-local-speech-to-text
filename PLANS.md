@@ -1,114 +1,42 @@
-# Refine Transcript Insertion UX
+# Dictation UX v2 — flush caret, stable in-note processing, VAD rename
 
 ## Objective
 
-Replace the conflated `insertionMode` setting with two orthogonal settings (`dictationAnchor` × `phraseSeparator`), pin the anchor at session start, and render an inline CodeMirror 6 widget at the anchor for the lifetime of the session so the user always sees where the next phrase will land. Out of scope: post-transcript pipeline (D-009), session-locked-to-note (issue #5), VAD-pause-derived "smart" separator.
+Fix two live-repro bugs and one cross-boundary rename surfaced during real use of the newly-landed dictation anchor, while keeping one canonical UX model:
+
+1. **Phantom spinner mid-phrase.** Mid-sentence pauses can produce a real processing phase, but the resulting transcript may arrive empty or so quickly that the spinner is more confusing than helpful. The user sees a loader at the insertion point and then no text lands.
+2. **Caret not flush with insertion point.** The anchor widget sits in a 1em-wide inline-flex box, so the 2px caret renders ~0.5em from where text will actually land.
+3. **Naming: `speech_paused` is a misleading label for the Silero hysteresis state.** Rename to `speech_ending` across the wire protocol (Rust) + plugin types + tests + docs.
+
+Canonical UX target:
+
+- **Ribbon = global session status only.** Idle / starting / listening-active / hearing-speech / error. No processing spinner once a session is running.
+- **In-note anchor = insertion and progress.** Delayed purple caret while speaking or in the speech-ending hysteresis window; spinner at the insertion point only when processing lasts long enough to be useful.
+- **No feature flags or alternate UX paths.** We are not supporting both ribbon-processing and in-note-processing modes.
 
 ## Current State
 
-- `src/settings/plugin-settings.ts` exposes `insertionMode ∈ { insert_at_cursor | append_on_new_line | append_as_new_paragraph }`. The three values mash together *where* the session writes and *how* phrases separate.
-- `src/editor/editor-service.ts::insertTranscript(text, mode)` reads the active editor on every `transcript_ready` and writes via Obsidian's `Editor` abstraction.
-- `src/editor/transcript-placement.ts::resolveAppendTranscriptPlacement` computes append placement; not separator-aware.
-- `src/dictation/dictation-session-controller.ts::handleSidecarEvent` (~line 223) calls `insertTranscript` on `transcript_ready`. There is no anchor concept and no in-document indicator of where the next phrase lands.
-- Concrete defects today: `always_on` + `insert_at_cursor` concatenates with no separator (`foxjumped`); append modes teleport the cursor to end-of-doc with no auto-scroll, transcripts land off-screen in long notes; during the 200 ms–5 s inference window there is no visible anchor.
-- `esbuild.config.mjs::externalModules` lists `['electron', 'obsidian', ...builtinModules]`. `@codemirror/*` is **not** externalized. `package.json` has no `@codemirror/*` devDependencies. `vitest` runs in Node (no jsdom).
-- `styles.css` already defines `var(--interactive-accent)` usage and a `@media (prefers-reduced-motion: reduce)` block (~line 439). The existing `local-stt-chase` keyframe is per-spoke opacity targeting — unworkable for an inline 1 em widget.
+**VAD finalization (`native/src/session.rs`)** — frames are 20ms. Style → `silence_end_frames`:
 
-## Constraints
+- `Responsive` → 20 frames = 400ms (`session.rs:70`)
+- `Balanced` (default) → 50 frames = 1000ms (`session.rs:71`)
+- `Patient` → 100 frames = 2000ms (`session.rs:72`)
 
-- AGENTS.md: surgical changes, no speculative abstractions, match existing style.
-- Memory rule: greenfield project, **no settings versioning** — old `insertionMode` field is silently dropped, no migration shim.
-- D-005: UI uses Obsidian primitives (`Setting`, `Notice`, `setIcon`).
-- The plugin/sidecar boundary stays clean: this PR is plugin-only, no sidecar changes.
-- CM6 identity: `@codemirror/state` and `@codemirror/view` MUST be esbuild externals — bundling a second copy makes our `StateField`/`StateEffect` instances `!==` the host's and dispatches silently no-op.
-- Holding a raw `EditorView` across async boundaries is unsafe — Obsidian destroys the view when the leaf closes; need an `active-leaf-change` guard.
+`pending_end_start` latches when `probability < negative_threshold` (`session.rs:248-251`); finalization fires when `silence_end_frames` additional frames have elapsed since that latch (`session.rs:258-261`). `negative_threshold = speech_threshold − 0.15` (`session.rs:13,17-24`).
 
-## Approach
+**State derivation (`native/src/app.rs:980-1013`)** — once an utterance is enqueued, `transcription_active = true` (`app.rs:759`), which maps to `Transcribing` or `Paused` in `derive_session_state`. The base state (`SpeechDetected` / `SpeechPaused`) wins over transcription only while still inside the same utterance (`app.rs:988-994`). In other words: the sidecar already only emits processing states after a real utterance handoff; those states do **not** guarantee user-visible text.
 
-### Settings model
+**Plugin anchor mapping (`src/dictation/dictation-session-controller.ts`)** — per-state:
 
-```ts
-// src/settings/plugin-settings.ts
-export type DictationAnchor = 'at_cursor' | 'end_of_note';
-export type PhraseSeparator = 'space' | 'new_line' | 'new_paragraph';
-```
+- `speech_detected` / `speech_paused` → `'speaking'` (after 2500ms delay, `:189-211`)
+- `transcribing` / `paused` → `'processing'` (spinner), after last commit
+- other → `'hidden'`
 
-Defaults: `dictationAnchor: 'at_cursor'`, `phraseSeparator: 'space'` (reproduces today's default behavior). Remove `insertionMode`, `INSERTION_MODES`, `isInsertionMode`, `readInsertionMode`. Old field silently dropped in `resolvePluginSettings`.
+**Empty-transcript handling** — `normalizeTranscriptText` returns `null` for blank text, and the controller drops the insert (`dictation-session-controller.ts:330-337`). The spinner was still shown for the dropped attempt because the plugin surfaces processing immediately on `transcribing` / `paused`.
 
-### Insertion semantics
+**UX history — why this surfaced now.** `derive_session_state` (`app.rs:988-994`) returns `SpeechDetected` / `SpeechPaused` *before* falling through to `Transcribing` / `Paused`, so while any speech is active the sidecar does not emit a processing state. In the ribbon-only UX this priority hid the churn: a short mid-phrase finalization was only visible during the narrow gap between `Listening` and the next speech frame, and even then it competed with speech animations for attention. Moving processing into the note removed that cover — the flicker we see now is the same sidecar behavior that was always there, just newly visible. The fix must preserve in-note progress value without reintroducing the churn.
 
-- **Anchor** = a live document position pinned at `session_started`. `at_cursor` pins at the caret (or selection end if a selection is active — selection is **not** replaced; this differs from macOS Voice Control/Dragon, deliberate). `end_of_note` pins at doc end.
-- **First phrase**: `at_cursor` → no prefix; `end_of_note` → `\n` prefix iff doc non-empty and doesn't end in `\n`.
-- **Subsequent phrases**: prefix by `phraseSeparator` (`" "`, `"\n"`, `"\n\n"`). Paragraph separator dedups: if the char immediately preceding the anchor is already `\n`, use `"\n"` instead so consecutive `new_paragraph` inserts don't accumulate `\n\n\n\n`.
-- After every insertion the anchor advances via `tr.changes.mapPos(newPos, -1)` against the same transaction's change set — never `oldPos + text.length`. The user's cursor is **not** moved.
-- The anchor auto-maps through unrelated edits via `ChangeSet.mapPos(pos, -1)`. The `-1` (bias left) is required so text inserted *at* the anchor stays to the right of it, letting the next phrase concatenate cleanly.
-- **Cursor mid-word at session start** is a documented carry-over: anchor pins at the caret offset and the first phrase doesn't auto-prefix a space. User responsibility.
-
-### Anchor widget
-
-New file: `src/editor/dictation-anchor-extension.ts`. CM6 extension with:
-
-- `StateField<{ pos: number | null; mode: 'hidden' | 'dot' | 'pulse' }>` — remaps `pos` via `tr.changes.mapPos(pos, -1)` on every transaction. `StateField` (not `ViewPlugin`) so state survives view re-creation (theme switches).
-- `StateField<DecorationSet>` derived from the above: zero or one widget decoration at `pos` when `mode !== 'hidden'`. CSS class `local-stt-dictation-anchor local-stt-dictation-anchor--{mode}` — visual states are pure CSS.
-- `StateEffect`s: `setAnchor(pos)`, `clearAnchor()`, `setMode(mode)`. Insertion uses a normal `ChangeSpec` in the same transaction as the anchor-advance effect (no separate `insertAt` effect).
-- Widget `toDOM()` builds `<span role="status" aria-label="Dictation anchor" class="local-stt-dictation-anchor local-stt-dictation-anchor--{mode}">` and calls `setIcon(span, 'audio-lines')`. `WidgetType.ignoreEvent` returns `true`.
-- Registered globally via `this.registerEditorExtension(...)` in `src/main.ts`. Per-editor cost is negligible (one null-pos `StateField`).
-
-**Mode mapping** (sidecar state → widget mode):
-
-| Sidecar state | Mode |
-|---|---|
-| `starting`, `listening` | `dot` |
-| `speech_detected`, `speech_paused`, `transcribing` | `pulse` |
-| `idle`, `paused`, `error` | `hidden` |
-
-On `transcript_ready`, mode drops to `dot` *inside the same transaction* that inserts the text — no flicker. Next `speech_detected` returns it to `pulse`.
-
-### EditorService
-
-Replace `insertTranscript(text, mode)` with:
-
-```ts
-class EditorService {
-  beginAnchor(anchor: DictationAnchor): void;             // capture EditorView, pin pos, subscribe to active-leaf-change
-  insertPhrase(text: string, sep: PhraseSeparator): void; // single transaction: insert + advance anchor + scrollIntoView
-  setAnchorMode(mode: 'dot' | 'pulse' | 'hidden'): void;
-  endAnchor(): void;                                      // clear pos + widget + listener
-}
-```
-
-- Stores `EditorView` once on `beginAnchor` plus a `firstPhrase` flag.
-- Registers `workspace.on('active-leaf-change')` via `plugin.registerEvent`. On any change where the new active `editor?.cm !== storedView`, calls `endAnchor()` and emits a `Notice("Dictation anchor moved to {note name}")`. Re-anchor happens on the next `session_state_changed`/`transcript_ready` via the controller.
-- Defensive guard: every `setAnchorMode` / `insertPhrase` checks `storedView === app.workspace.activeEditor?.editor?.cm` before dispatch; silent no-op on mismatch.
-- `insertPhrase` builds one transaction with `ChangeSpec` (`separator + text` at anchor) + `setMode('dot')` + `setAnchor(newPos)` where `newPos = tr.changes.mapPos(oldPos + separator.length + text.length, -1)`. Followed by `EditorView.scrollIntoView(EditorSelection.cursor(newPos), { y: 'nearest' })` so scroll only fires when the anchor leaves the viewport.
-- First-vs-subsequent prefix logic moves to `src/editor/transcript-placement.ts` as a pure `computePhrasePrefix({ anchor, separator, isFirstPhrase, charBeforeAnchor }): string`. EditorService prepends, then builds the `ChangeSpec`.
-- Direct `editor.cm.dispatch` is safe — Obsidian's `Editor.replaceRange` wraps the same call, history extension captures the transaction, `vault.on('modify')` debouncing unchanged.
-
-### Session wiring (`src/dictation/dictation-session-controller.ts`)
-
-In `handleSidecarEvent`:
-- `session_started` → `editorService.beginAnchor(settings.dictationAnchor)` then `setAnchorMode('dot')`.
-- `session_state_changed` → `setAnchorMode(...)` per the table above.
-- `transcript_ready` → `editorService.insertPhrase(event.text, settings.phraseSeparator)`.
-- `session_stopped` (any reason) → `editorService.endAnchor()`.
-
-The existing `assertActiveEditorAvailable()` pre-flight at session start (line 88) stays — no active editor means we never reach `beginAnchor`.
-
-### Settings UI (`src/settings/settings-tab.ts`)
-
-Replace the single "Transcript placement" `Setting` (lines 147–164) with two dropdowns under the existing "Transcription" heading:
-
-- **Dictation anchor**: "At cursor" / "End of note". Desc: *"Where each dictation session anchors. The first phrase lands here and stays pinned for the rest of the session, even if you click elsewhere in the note."*
-- **Phrase separator**: "Space" / "New line" / "New paragraph (use this if you pause between thoughts)". Desc: *"How consecutive phrases are joined within one session. Does not affect the first phrase."*
-
-### Build config
-
-- `package.json` → add `@codemirror/state`, `@codemirror/view` to `devDependencies` (types only).
-- `esbuild.config.mjs` → add `'@codemirror/state'`, `'@codemirror/view'` to `externalModules`.
-
-### CSS (`styles.css`)
-
-Add `.local-stt-dictation-anchor` plus `--dot`/`--pulse` modifiers and a new `local-stt-pulse` keyframe. Do **not** reuse `local-stt-chase` (per-spoke `nth-child` rules unworkable at 1 em). Extend the existing `@media (prefers-reduced-motion: reduce)` block (~line 439).
+**Widget layout (`styles.css:459-491`)**:
 
 ```css
 .local-stt-dictation-anchor {
@@ -116,73 +44,143 @@ Add `.local-stt-dictation-anchor` plus `--dot`/`--pulse` modifiers and a new `lo
   align-items: center;
   justify-content: center;
   width: 1em;
-  height: 1em;
-  line-height: 1;
-  vertical-align: 0.1em;
-  overflow: hidden;
-  color: var(--interactive-accent);
-  pointer-events: none;
-  user-select: none;
-}
-.local-stt-dictation-anchor--dot   { opacity: 0.55; }
-.local-stt-dictation-anchor--pulse { animation: local-stt-pulse 1.4s ease-in-out infinite; }
-
-@keyframes local-stt-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.35; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .local-stt-dictation-anchor--pulse { animation: none; opacity: 0.85; }
+  height: 1.2em;
+  vertical-align: middle;
+  /* … */
 }
 ```
 
+The 1em width + `justify-content: center` puts the 2px caret ~0.5em off the insertion offset. `side: -1` on the widget decoration (`src/editor/dictation-anchor-extension.ts:88`) renders it immediately before `pos`.
+
+**Rename scope for `speech_paused → speech_ending`**:
+
+- Rust: `native/src/protocol.rs:94`, `native/src/session.rs:100,166,572,575,586`, `native/src/app.rs:992,993,1010`
+- TS: `src/sidecar/protocol.ts:44,656`, `src/dictation/dictation-session-controller.ts:15,190,397`, `src/ui/dictation-ribbon.ts:49,74`
+- Tests: `test/dictation-session-controller.test.ts`, `test/dictation-ribbon.test.ts`, native session tests
+- Docs: `docs/architecture/system-architecture.md:199-201,365,370`
+
+Serde `rename_all = "snake_case"` (`protocol.rs:89`) turns the Rust variant name into the wire string — renaming the variant to `SpeechEnding` emits `"speech_ending"` automatically.
+
+## Constraints
+
+- **Root-cause-first for the spinner bug.** Repro and instrument before deciding whether the problem is solved by plugin-side spinner debounce/cancellation or whether Balanced-mode VAD tuning is also required.
+- **One UX model only.** No feature flags, no hidden toggles, no fallback path that restores ribbon-based processing feedback.
+- **Wire protocol rename is atomic.** Rust variant + TS parser + type union + all branches must land in one commit. Session state is transient (no persisted string), so no migration is needed.
+- **Preserve everything from the last round**: delayed pulse (2500ms), ribbon/anchor split, reduced-motion fallbacks.
+- **No speculative VAD constant changes.** If we adjust `silence_end_frames` or `negative_threshold`, a new Rust test must demonstrate a scenario that fails before and passes after.
+- **Zero-width widget must still be keyboard/screen-reader inert.** `aria-hidden="true"`, `pointer-events: none`, `user-select: none` stay.
+- **Do not expose hysteresis detail in the UI.** `speech_ending` is an internal/protocol rename; ribbon and anchor behavior should stay grouped with the speaking phase.
+
+## Approach
+
+### 1. Rename `speech_paused` → `speech_ending`
+
+One atomic commit:
+
+- Rust: rename `SessionBaseState::SpeechPaused` and `SessionState::SpeechPaused` to `SpeechEnding`. All match arms, test names, and comments that reference the old name move with it. The serde tag becomes `"speech_ending"` via existing `rename_all`.
+- TS: update the `SessionState` union (`src/sidecar/protocol.ts:44`), parser (`:656`), `DictationControllerState` (`dictation-session-controller.ts:15`), and all match arms in `applySessionStateToAnchor` and `buildRibbonState` / `toVisualState`.
+- UX mapping stays intentionally grouped with speech: `speech_ending` keeps the same delayed purple-caret behavior as `speech_detected`, and the ribbon keeps the same speaking-phase visual treatment rather than surfacing a new user-facing mode.
+- Tests: rename the case in the ribbon parametrised table, update the short-utterance test narrative, rename the Rust session test `speech_paused_state_during_brief_silence`.
+- Docs: update `system-architecture.md` state diagram (lines 199-201), the ribbon mapping table (line 365), and the explanatory paragraph (line 370).
+
+### 2. Flush the widget to the insertion offset (CSS)
+
+Replace the 1em inline-flex box with a zero-width, absolutely-positioned overlay. The caret and the spinner become positioned children; text layout is not displaced.
+
+```css
+.local-stt-dictation-anchor {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 1.2em;
+  vertical-align: middle;
+  overflow: visible;
+  pointer-events: none;
+  user-select: none;
+}
+
+.local-stt-dictation-anchor--speaking::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 1em;
+  /* existing border-radius / background / animations */
+}
+
+.local-stt-dictation-anchor--processing {
+  /* spinner icon sits in a child <span>; pin it with absolute positioning */
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  /* existing color / opacity / animation */
+}
+```
+
+Because `setIcon` writes to the span itself (not a child — `dictation-anchor-extension.ts:58`), the `--processing` rules target the same element. We either (a) keep the SVG inside the span and let the SVG inherit positioning, or (b) wrap the icon in a child and position the child. (a) is simpler — the SVG from `setIcon` is a direct child and natural flow keeps it at `left: 0`. Verify under Obsidian's lucide SVG sizing.
+
+This change is only about making the purple dictation caret/spinner flush with the insertion point. Native/white-caret overlap remains out of scope for this plan.
+
+### 3. Root-cause and stabilize the phantom spinner
+
+Instrument first, decide second. No constant changes before we see the emitted event sequence for a real repro. The sidecar already only surfaces processing after queueing a real utterance, so the first fix path is about **when the plugin chooses to show the in-note spinner**, not about restoring ribbon loading or adding toggles.
+
+- **3a. Instrument.** Add temporary debug logging for the emitted event sequence we actually have access to:
+  - plugin side: every `session_state_changed` with timestamp and state, plus every `transcript_ready` with normalized-text length
+  - only if that is insufficient, add Rust-side debug around `emit_state_if_changed`
+  - do **not** try to log a plugin-side `transcription_active` snapshot; that value only exists inside the Rust sidecar
+- **3b. Classify.** With the log, answer:
+  - Is this primarily a **fast/empty processing window** where no useful spinner should be shown?
+  - Or is this a **real utterance split** where a short but substantive transcript lands and the VAD boundary itself is wrong?
+  - How long is the gap between the first processing state and `transcript_ready` / resumed speech?
+- **3c. Fix, ordered by preference.** (i) and (ii) are complementary and should land together if the repro supports both.
+  - **(i) Plugin: debounce the in-note processing indicator.** Delay `setAnchorMode('processing')` by ~300-350ms. If the state flips back to `speech_detected` / `speech_ending`, `listening`, `idle`, or `error` before that window expires, cancel the pending spinner. Also clear the pending timer on `transcript_ready` so a fast result cannot surface a late spinner after text insertion or an empty drop. Matches the UX problem directly: show processing only when the user benefits from seeing it.
+  - **(ii) Sidecar: suppress micro-utterance handoff.** When `FinalizeUtterance` fires with committed audio shorter than a threshold (~150ms, i.e. under `silence_end_frames` worth of real speech frames), drop it in `enqueue_utterance` without setting `transcription_active`. These rounds almost always produce blank or hallucinated transcripts and the processing state they trigger is pure noise. Add a Rust test that drives the session to a sub-threshold utterance and asserts no `Transcribing`/`Paused` emission.
+  - **(iii) Sidecar: VAD tightening, only if logs show a real utterance-boundary bug.** Bump `silence_end_frames` for Balanced (e.g., 50 → 60 frames = 1200ms) and/or widen `NEGATIVE_THRESHOLD_DELTA` (0.15 → 0.20). Add a Rust test with a mid-phrase pause that finalized before and no longer finalizes after.
+  - **(iv) Do not add feature flags or alternate indicator surfaces.** Ribbon processing is not coming back as a fallback path.
+
+### 4. Deferred / out of scope
+
+- Native/white-caret overlap: out of scope for this change.
+- Any broader VAD redesign or SpeakingStyle UX copy changes.
+- Engine-level hallucination post-filter (e.g., whisper's known filler-token outputs). Complementary to §3c-ii but whisper-specific and larger in scope; track separately if the micro-utterance suppression doesn't cover enough of the real cases.
+
 ## Execution Steps
 
-- [ ] **Build config**: add `@codemirror/state`, `@codemirror/view` to `devDependencies`; add both strings to `externalModules` in `esbuild.config.mjs`. Run `npm install`. Verify `npm run build` succeeds and `main.js` does not contain a bundled CM6 (`grep -c '@codemirror/state' main.js` should be small / import-only).
-- [ ] **Settings model**: rewrite `src/settings/plugin-settings.ts` to remove `insertionMode` and add `dictationAnchor` + `phraseSeparator`. Outcome: `tsc` clean; old saved-data values silently fall back to defaults.
-- [ ] **Pure prefix calculator**: rewrite `src/editor/transcript-placement.ts` as `computePhrasePrefix({ anchor, separator, isFirstPhrase, charBeforeAnchor }): string`. Delete the old `resolveAppendTranscriptPlacement` shape.
-- [ ] **CM6 extension**: create `src/editor/dictation-anchor-extension.ts` with the `StateField` pair, `StateEffect`s, `WidgetType`. Register it in `src/main.ts` via `this.registerEditorExtension(...)`.
-- [ ] **EditorService**: replace `insertTranscript` with `beginAnchor` / `insertPhrase` / `setAnchorMode` / `endAnchor`. Wire the `workspace.on('active-leaf-change')` listener via `plugin.registerEvent`, with `Notice` on re-anchor.
-- [ ] **Session wiring**: update `src/dictation/dictation-session-controller.ts::handleSidecarEvent` to call the new EditorService API per the mode-mapping table.
-- [ ] **CSS**: add `.local-stt-dictation-anchor` + modifier styles + `local-stt-pulse` keyframe + reduced-motion override.
-- [ ] **Settings UI**: replace the single "Transcript placement" `Setting` in `src/settings/settings-tab.ts` with two dropdowns and the copy above.
-- [ ] **Tests** (Vitest, Node env, `EditorState` only — no `EditorView`):
-  - [ ] `test/plugin-settings.test.ts` — new fields resolve correctly; legacy `insertionMode` silently dropped; defaults applied; unknown values rejected.
-  - [ ] `test/transcript-placement.test.ts` — `computePhrasePrefix` matrix: each anchor × first-vs-subsequent, paragraph dedup when char-before is `\n`.
-  - [ ] **NEW** `test/dictation-anchor-extension.test.ts` — construct `EditorState` with the extension; `setAnchor` updates pos; `setMode` changes class; `mapPos(-1)` keeps anchor at left edge of an at-anchor insertion; edits above the anchor shift `pos`.
-  - [ ] `test/editor-service.test.ts` — replace `FakeEditor` with a CM6 `EditorState`-backed fake; `beginAnchor → insertPhrase(×3) → endAnchor` for each (anchor × separator); user-cursor-moves preserved; user-edits-above-anchor preserves alignment; `setAnchorMode` no-ops when stored view ≠ active view.
-  - [ ] `test/dictation-session-controller.test.ts` — mode transitions match the table; `endAnchor` on `session_stopped` regardless of reason.
+- [ ] Reproduce the spinner bug on the current build; capture the event sequence for the phantom-spinner repro (needs the debug instrumentation from §3a).
+- [ ] Rename `speech_paused → speech_ending`: Rust (protocol.rs, session.rs, app.rs, session tests) + TS (protocol.ts, session controller, ribbon, tests) + docs. Gate on `npm run test && cargo test --manifest-path native/Cargo.toml`.
+- [ ] Rework `.local-stt-dictation-anchor` CSS to zero-width / absolute-positioned overlay. Live-verify caret flush at 14px / 16px / 18px editor font, light and dark theme.
+- [ ] Implement §3c(i) plugin debounce with controller tests locking it down.
+- [ ] Implement §3c(ii) sidecar micro-utterance suppression with a Rust test, unless §3b classifies every observed flicker as already-covered by the debounce.
+- [ ] Only touch Rust VAD thresholds (§3c-iii) if §3b proves a real utterance-splitting bug in Balanced mode.
+- [ ] Remove the debug instrumentation added in the first step, or gate it behind the existing plugin logger level if it has ongoing value.
+- [ ] `npm run check` clean — typecheck, biome, vitest, esbuild, cargo fmt, clippy, cargo test.
 
 ## Verification
 
-- `npm run build` — TypeScript compiles. `grep '@codemirror' main.js` returns only externalized references (no bundled module bodies).
-- `npm test` — all suites pass.
-- Manual, in dev vault, across all 6 (`dictationAnchor` × `phraseSeparator`) combos under both listening modes:
-  1. Start dictation → static dot at correct anchor on `session_started`.
-  2. Begin speaking → dot transitions to pulse.
-  3. Click elsewhere in the same note mid-inference → widget stays put.
-  4. Transcript inserts at anchor, not cursor.
-  5. `always_on` × 3 phrases → separator only between phrases (not before first); anchor advances past each.
-  6. `end_of_note` in a long note → editor auto-scrolls so anchor stays visible.
-  7. Type above the anchor mid-inference → insertion lands in same logical spot.
-  8. OS reduced-motion enabled → pulse suppressed, anchor still visible.
-- Edge cases (manual):
-  - Empty note → first-phrase prefix empty.
-  - Doc ending in `\n` + `end_of_note` → first-phrase prefix empty.
-  - `at_cursor` with selection at start → anchor pins at selection end; selection **not** replaced.
-  - `at_cursor` with cursor mid-word → anchor pins at caret offset (splits the word; documented).
-  - Two consecutive `new_paragraph` inserts → dedup to `\n` between them.
-  - Switch notes mid-`always_on` → old widget vanishes immediately, `Notice` appears with new note name, next utterance re-anchors as "first phrase".
-  - Close anchored leaf (`Cmd+W`) → no crash on next state event; next `transcript_ready` dropped with `Notice` if no active markdown editor.
-  - Switch from markdown leaf to graph/canvas mid-session → same as close-leaf path.
-  - Theme switch mid-session → anchor state survives view re-creation.
+**Automated:**
+
+- `npm run typecheck && npm run test` — covers controller mapping, ribbon visual state, protocol parser, session-controller state sequences with the new `speech_ending` label.
+- `cargo test --manifest-path native/Cargo.toml --features engine-cohere-transcribe,engine-whisper` — covers the VAD state machine and the serialized wire name.
+- `npm run check` before PR.
+
+**Live (requires user):**
+
+- Mid-sentence pause in **Balanced** mode that used to produce a phantom spinner → no visible spinner flicker if processing resolves quickly or resumes into speech.
+- Longer deliberate stop → spinner appears once, transcript lands, single contiguous phrase.
+- Caret is flush with the start of a new line / next-word boundary at all three editor font sizes.
+- Ribbon shows active/listening or hearing-speech only; processing feedback is in-note only.
+- Reduced-motion still collapses animations on ribbon and anchor.
 
 ## Risks and Open Questions
 
-- **CM6 identity**: if the esbuild externals step is missed, the extension silently no-ops and the bug looks like "the widget never appears" with no error. Mitigation: explicit verification step on `main.js`.
-- **Active-leaf-change race**: the proactive listener runs before `transcript_ready` arrives in most cases, but a tight race could mean an in-flight `insertPhrase` sees a stale `storedView`. Defensive identity check in EditorService handles this; cost is one dropped insertion in the rare race.
-- **Selection-replace divergence from Dragon/Voice Control**: explicit choice not to replace selection. Revisit if user feedback says otherwise.
-- **Mid-word anchor**: documented carry-over rather than a fix — acceptable for now; could add a "snap to next word boundary" later if it surfaces as friction.
-- **`active-leaf-change` test coverage**: verified manually only. Building a fake workspace to unit-test the listener is not worth the cost for this single path.
-- **Smart pause-based paragraph separator**: deferred. Requires VAD pause metadata on `transcript_ready` — wait for D-009 work before adding.
+- **SpeakingStyle setting.** If the user is on `Responsive` (`silence_end_frames = 400ms`), mid-phrase pauses split utterances by design and no sidecar fix short of a VAD redesign helps. Confirm the current setting during §3a repro.
+- **Rename breakage across boundary.** Plugin and sidecar ship together; rename is safe. Flag in the commit message that an older sidecar binary in someone's sandbox would break — this is intrinsic to changing the wire enum.
+- **Zero-width widget vs. IME / composition.** Obsidian Markdown editor uses CM6; CM handles widgets with `side: -1` cleanly. Watch for any composition-input weirdness during the live check.
+- **Debounce delays real spinner.** This is intentional UX trade-off: sub-350ms processing should usually complete without a spinner. Cap at ~350ms so longer processing still gets feedback.
+- **Real utterance splits may remain after the UX fix.** If the repro still produces short, substantive split transcripts in Balanced mode, the follow-up is a Rust VAD tuning change with a targeted regression test.
+- **Micro-utterance threshold tuning.** Too low (~100ms) and hallucination-prone rounds still slip through; too high (~300ms) and genuine short words ("yes", "no") get dropped. Pick the threshold off §3b log data, not off intuition; include the threshold constant in the Rust test so regressions are obvious.
+- **Spinner CSS — SVG sizing.** Obsidian's lucide icons render at `currentColor` with intrinsic `width: 16px; height: 16px`. Confirm they still display correctly inside an absolutely-positioned, zero-width parent; if not, wrap the icon in a positioned child.

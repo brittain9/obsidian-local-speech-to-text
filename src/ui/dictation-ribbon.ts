@@ -3,6 +3,7 @@ import { setIcon } from 'obsidian';
 import type { DictationControllerState } from '../dictation/dictation-session-controller';
 
 type RibbonIcon = 'audio-lines' | 'loader' | 'mic' | 'mic-off';
+type RibbonVisualState = 'idle' | 'starting' | 'listening' | 'speech_detected' | 'error';
 
 export class DictationRibbonController {
   constructor(private readonly element: HTMLElement) {
@@ -19,7 +20,7 @@ export class DictationRibbonController {
     setIcon(this.element, icon);
     this.element.setAttribute('aria-label', label);
     this.element.setAttribute('data-tooltip-position', 'top');
-    this.element.dataset.localSttState = state;
+    this.element.dataset.localSttState = toVisualState(state);
     this.element.title = label;
   }
 
@@ -45,16 +46,34 @@ function buildRibbonState(state: DictationControllerState): {
     case 'speech_detected':
       return { icon: 'audio-lines', label: 'Local STT: Hearing speech' };
 
-    case 'speech_paused':
-      return { icon: 'audio-lines', label: 'Local STT: Paused speech' };
+    case 'speech_ending':
+      return { icon: 'audio-lines', label: 'Local STT: Hearing speech' };
 
     case 'transcribing':
-      return { icon: 'loader', label: 'Local STT: Transcribing...' };
+      return { icon: 'audio-lines', label: 'Local STT: Transcribing...' };
 
     case 'paused':
-      return { icon: 'loader', label: 'Local STT: Processing...' };
+      return { icon: 'audio-lines', label: 'Local STT: Processing...' };
 
     case 'error':
       return { icon: 'mic-off', label: 'Local STT: Error' };
+  }
+}
+
+function toVisualState(state: DictationControllerState): RibbonVisualState {
+  switch (state) {
+    case 'idle':
+      return 'idle';
+    case 'starting':
+      return 'starting';
+    case 'listening':
+    case 'transcribing':
+    case 'paused':
+      return 'listening';
+    case 'speech_detected':
+    case 'speech_ending':
+      return 'speech_detected';
+    case 'error':
+      return 'error';
   }
 }

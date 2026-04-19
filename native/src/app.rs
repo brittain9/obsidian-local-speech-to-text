@@ -989,8 +989,8 @@ fn derive_session_state(
         return SessionState::SpeechDetected;
     }
 
-    if base_state == SessionBaseState::SpeechPaused {
-        return SessionState::SpeechPaused;
+    if base_state == SessionBaseState::SpeechEnding {
+        return SessionState::SpeechEnding;
     }
 
     if transcription_active {
@@ -1007,7 +1007,7 @@ fn derive_session_state(
 
     match base_state {
         SessionBaseState::Listening => SessionState::Listening,
-        SessionBaseState::SpeechDetected | SessionBaseState::SpeechPaused => {
+        SessionBaseState::SpeechDetected | SessionBaseState::SpeechEnding => {
             unreachable!("handled above")
         }
     }

@@ -97,7 +97,7 @@ pub enum SessionAction {
 pub enum SessionBaseState {
     Listening,
     SpeechDetected,
-    SpeechPaused,
+    SpeechEnding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,7 +163,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     pub fn base_state(&self) -> SessionBaseState {
         if self.speech_started {
             if self.frames_since_confident_speech >= self.tuning.silence_end_frames {
-                SessionBaseState::SpeechPaused
+                SessionBaseState::SpeechEnding
             } else {
                 SessionBaseState::SpeechDetected
             }
@@ -569,10 +569,10 @@ mod tests {
     }
 
     #[test]
-    fn speech_paused_state_during_brief_silence() {
+    fn speech_ending_state_during_brief_silence() {
         // 5 speech frames start speech, then 50 frames at 0.4 (below 0.5 threshold but
         // above 0.35 negative_threshold) push frames_since_confident_speech to the
-        // silence_end_frames threshold, transitioning to SpeechPaused.
+        // silence_end_frames threshold, transitioning to SpeechEnding.
         let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.4_f32, 50));
         let mut session =
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
@@ -583,7 +583,7 @@ mod tests {
                 .expect("frame should succeed");
         }
 
-        assert_eq!(session.base_state(), SessionBaseState::SpeechPaused);
+        assert_eq!(session.base_state(), SessionBaseState::SpeechEnding);
     }
 
     #[test]
