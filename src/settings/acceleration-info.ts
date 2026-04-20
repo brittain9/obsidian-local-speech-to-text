@@ -77,7 +77,7 @@ function buildLabel(backends: EngineBackend[]): string {
   const firstNonCpu = backends.find((b) => b.effective !== 'cpu');
   if (firstNonCpu === undefined) {
     const withMissing = backends.find((b) => b.missingGpu !== null);
-    if (withMissing?.missingGpu != null) {
+    if (withMissing !== undefined && withMissing.missingGpu !== null) {
       return `CPU (${formatAcceleratorLabel(withMissing.missingGpu.accelerator)} unavailable)`;
     }
     return 'CPU';
