@@ -2,8 +2,6 @@
 
 Status: Shelved — reference material for future distribution work.
 
-Tracked follow-up: see `Sidecar distribution strategy for community-plugin releases (CPU/CUDA packaging, binary selection, updates, CUDA licensing)` in [backlog.md](../backlog.md).
-
 ## CI runner migration
 
 The macOS release pipeline migration to `macos-15` is complete. Keep `macos-15` as the Apple Silicon release target for Metal builds; these notes are retained only as rationale for future distribution work.

@@ -20,7 +20,7 @@ Run cutting-edge local transcription directly in Obsidian. Choose between Cohere
 |---|---|---|
 | macOS | Supported | Metal support for Whisper. |
 | Linux Native | Supported | CUDA support for Whisper and Cohere. |
-| Linux Flatpak | Supported | CUDA supported - [Flatpak GPU setup](docs/linux-flatpak-gpu-setup.md). |
+| Linux Flatpak | Supported | CUDA supported - [Flatpak GPU setup](docs/guides/linux-flatpak-gpu-setup.md). |
 | Windows | Planned | Not supported yet. |
 
 ## Quick Start

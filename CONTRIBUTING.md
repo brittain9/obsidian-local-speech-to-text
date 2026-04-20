@@ -63,4 +63,3 @@ Do not merge with failing CI.
 - **User-facing behavior changes** — update [README.md](README.md).
 - **Durable decisions** — record in [docs/decisions.md](docs/decisions.md) in the same PR that changes behavior. Mark superseded decisions explicitly rather than deleting them.
 - **Execution mistakes / corrections** — add a concise preventive rule to [docs/lessons.md](docs/lessons.md). Deduplicate against existing entries.
-- 
