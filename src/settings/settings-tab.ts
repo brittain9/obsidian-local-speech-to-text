@@ -7,7 +7,7 @@ import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-manag
 import { matchesModelTriple } from '../models/model-management-types';
 import type { SpeakingStyle, SystemInfoEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
-import { buildAccelerationSummary, buildEffectiveBackendLines } from './acceleration-info';
+import { describeAcceleration } from './acceleration-info';
 import { renderModelSection } from './model-settings-section';
 import {
   type DictationAnchor,
@@ -364,34 +364,30 @@ export class LocalSttSettingTab extends PluginSettingTab {
       cachedSystemInfo !== undefined ? cachedSystemInfo : await this.fetchSystemInfo();
 
     const settings = this.dependencies.getSettings();
-    const detailLines = buildEffectiveBackendLines(systemInfo, settings.accelerationPreference);
+    const { label } = describeAcceleration(systemInfo, settings.accelerationPreference);
 
     containerEl.empty();
 
+    const descFragment = document.createDocumentFragment();
+    descFragment.createSpan({
+      text: 'Use the GPU when available. Turn off to run every engine on CPU.',
+    });
+    descFragment.createEl('br');
+    descFragment.createSpan({ text: `Currently: ${label}` });
+
     new Setting(containerEl)
-      .setName('GPU acceleration')
-      .setDesc(
-        'Use GPU backends when available for compiled runtimes. Disabled forces every runtime onto CPU.',
-      )
-      .addDropdown((dropdown) => {
-        dropdown.addOption('auto', 'Use when available');
-        dropdown.addOption('cpu_only', 'Disabled');
-        dropdown.setValue(settings.accelerationPreference);
-        dropdown.onChange(async (value) => {
+      .setName('Hardware acceleration')
+      .setDesc(descFragment)
+      .addToggle((toggle) => {
+        toggle.setValue(settings.accelerationPreference === 'auto');
+        toggle.onChange(async (value) => {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            accelerationPreference: value === 'cpu_only' ? 'cpu_only' : 'auto',
+            accelerationPreference: value ? 'auto' : 'cpu_only',
           });
           void this.renderEngineOptions(containerEl, systemInfo);
         });
       });
-
-    const descriptionEl = containerEl.createDiv({ cls: 'setting-item-description' });
-    descriptionEl.createDiv({ text: buildAccelerationSummary(systemInfo) });
-
-    for (const line of detailLines) {
-      descriptionEl.createDiv({ text: line });
-    }
   }
 
   private async fetchSystemInfo(): Promise<SystemInfoEvent | null> {

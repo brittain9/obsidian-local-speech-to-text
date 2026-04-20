@@ -10,6 +10,7 @@ import { dictationAnchorExtension } from './editor/dictation-anchor-extension';
 import { EditorService } from './editor/editor-service';
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
 import { ModelInstallManager } from './models/model-install-manager';
+import { logAccelerationFallbacks } from './settings/acceleration-info';
 import {
   DEFAULT_PLUGIN_SETTINGS,
   type PluginSettings,
@@ -96,9 +97,13 @@ export default class LocalSttPlugin extends Plugin {
       stopDictation: async () => this.requireDictationController().stopDictation(),
     });
 
-    await this.checkSidecarHealth({ showNotice: false }).catch((error: unknown) => {
-      this.logger.error('sidecar', 'initial health check failed', error);
-    });
+    try {
+      await this.checkSidecarHealth({ showNotice: false });
+      const systemInfo = await this.requireSidecarConnection().getSystemInfo();
+      logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
+    } catch (error) {
+      this.logger.error('sidecar', 'initial startup check failed', error);
+    }
 
     this.modelInstallManager?.init().catch((error: unknown) => {
       this.logger.error('model', 'model install manager init failed', error);
