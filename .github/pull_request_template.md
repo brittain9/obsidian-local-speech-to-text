@@ -1,17 +1,17 @@
-## What
+## Summary
 
-<!-- One-sentence summary of the change. -->
+<!-- Bullets work best here. What changed and why, in the order a reviewer should read it. End with "Closes #N" / "Relates to #N"; break out a "Related issues" section only when relationships need explanation. -->
 
-## Why
+## Key changes
 
-<!-- What problem does this solve or what does it enable? Reference an issue with #N if applicable. -->
+<!-- One bullet per meaningful change. Name the subsystem (plugin / sidecar / both) when it disambiguates. -->
 
-## How to verify
+## Notes (optional)
 
-<!-- Steps to manually test, or a note that automated tests cover it. -->
+<!-- Add free-form H2/H3 sections when reviewers need design rationale, protocol/breaking-change notes, or mechanics. Use specific headers ("Wire protocol", "Migration", "Why X over Y"), not a generic "Implementation details" dump. Call out wire-protocol or settings-schema changes explicitly. Delete the section if the change is self-explanatory. -->
 
-## Checklist
+## Test plan
 
-- [ ] `npm run check` passes
-- [ ] Docs updated if behavior changed
-- [ ] No new settings without a default value
+- [ ] `npm run check` (TS typecheck + lint + vitest + esbuild)
+- [ ] `cargo test` (+ `cargo clippy` if Rust changed)
+- [ ] Manual:

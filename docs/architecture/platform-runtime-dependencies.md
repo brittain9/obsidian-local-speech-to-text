@@ -117,6 +117,8 @@ Cohere uses the `ort` crate (ONNX Runtime) with the CUDA execution provider. At 
 
 This means Cohere CUDA has a strictly larger dependency set than Whisper CUDA: it needs everything Whisper needs, plus cuDNN 9.x, plus the sidecar-adjacent ONNX provider libraries.
 
+Cohere CUDA is also encoder-only. The ONNX Runtime CUDA `GroupQueryAttention` kernel does not support the `attention_bias` input that the Cohere decoder graph requires, so the decoder runs on CPU even when CUDA is the selected accelerator. The constraint is enforced in `native/src/adapters/cohere_transcribe.rs` by building the decoder session with `GpuConfig { use_gpu: false }`.
+
 ## Runtime Capability Probing
 
 Accelerator probing lives on the `Runtime` layer (D-008). Each compiled `Runtime` reports `RuntimeCapabilities { availableAccelerators, acceleratorDetails, supportedModelFormats }` at startup; results are cached and surfaced to the plugin through `system_info.compiledRuntimes[]`. Per-selection merges (`model_probe_result.mergedCapabilities`) combine runtime caps with the family adapter's `ModelFamilyCapabilities`.

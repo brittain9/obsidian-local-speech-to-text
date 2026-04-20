@@ -2,85 +2,61 @@
 
 ## What Belongs Here
 
-Durable workflow, product, and architecture decisions. Update in the same change that alters a decision. Mark superseded decisions explicitly.
+Durable workflow, product, and architecture decisions. Update in the same change that alters a decision. Superseded decisions move to `docs/archive/decisions-superseded.md` once they no longer inform new work.
 
 ## Active Decisions
 
 ### D-001: GPU Is Opt-In, CPU Is Default
 
-- Status: active
 - Decision: CPU-only builds are the default. GPU acceleration is an opt-in sidecar Cargo feature and runtime setting.
 - Why: Keeps the default path simple. GPU packaging, binary selection, and redistribution are separate concerns that shouldn't block the core product.
 
 ### D-002: Flatpak Is The Primary Linux Target
 
-- Status: active
-- Decision: Flatpak Obsidian is the primary Linux target. GPU on Flatpak requires advanced setup (`--filesystem=host-os`, `--device=all`, sidecar override, scoped `LD_LIBRARY_PATH`). Documented in `docs/guides/linux-flatpak-gpu-setup.md`.
-- Why: Flatpak sandboxing hides host CUDA libraries. The override path works but requires manual configuration.
+- Decision: Flatpak Obsidian is the primary Linux target.
+- Why: Flatpak sandboxing hides host CUDA libraries; supporting it as primary forces the override and scoping mechanics that native installs get for free. See `docs/guides/linux-flatpak-gpu-setup.md` for the GPU setup procedure.
 
-### D-003: Platform GPU Support Matrix
+### D-003: Shipped Plugin Is CPU-Only By Default; GPU Is Per-Platform Additive
 
-- Status: active
-- Decision: GPU support varies by platform and engine. Shipped plugin always includes CPU-only sidecar.
-
-  | Platform | Whisper GPU | Cohere GPU | Notes |
-  |---|---|---|---|
-  | Windows | CUDA | Encoder only (CUDA) | Decoder pinned to CPU — see Cohere note below |
-  | macOS | Metal | CPU only | CoreML not viable; CPU performance is acceptable |
-  | Linux native | CUDA | Encoder only (CUDA) | Decoder pinned to CPU — see Cohere note below |
-  | Linux Flatpak | CUDA | Encoder only (CUDA) | Requires advanced setup (see `docs/guides/linux-flatpak-gpu-setup.md`); decoder still CPU |
-
-- Cohere note: the Cohere Transcribe decoder runs on CPU even when CUDA is the
-  selected accelerator. ORT's CUDA `GroupQueryAttention` kernel does not support
-  the `attention_bias` input that the decoder graph requires, so offloading the
-  decoder triggers a runtime kernel-fallback error. Only the encoder benefits
-  from CUDA today. Enforced in `native/src/adapters/cohere_transcribe.rs` by
-  building the decoder session with `GpuConfig { use_gpu: false }`.
+- Decision: Every shipped plugin includes a CPU-only sidecar. GPU support is additive per platform — Whisper supports Metal (macOS) and CUDA (Windows/Linux); Cohere supports CUDA encoder-only on Windows/Linux, CPU on macOS.
+- Why: Single CPU baseline keeps the install path simple and makes the inventory promise honest. GPU choices flow through the runtime probe, not hard-coded UI logic.
+- See: `docs/architecture/platform-runtime-dependencies.md` for the full platform matrix and the Cohere decoder constraint.
 
 ### D-004: Ships Both Whisper And Cohere Transcribe Families
 
-- Status: active
-- Decision: V1 registers two model families: Whisper (`whisper_cpp` runtime via whisper-rs) and Cohere Transcribe (`onnx_runtime` runtime via the `ort` crate). Both run in the same Rust sidecar binary — no Python, no subprocesses. Three Cohere tiers: fp16 (~4.1 GB), int8 (~3.1 GB), q4 (~2.1 GB).
-- Why: Cohere leads the HuggingFace Open ASR Leaderboard. Rust-native ONNX avoids fragile Python dependencies. ONNX Runtime provides GPU on CUDA and DirectML from one runtime. Family/runtime terminology matches D-008's three-layer abstraction.
+- Decision: V1 registers two model families: Whisper (`whisper_cpp` runtime via whisper-rs) and Cohere Transcribe (`onnx_runtime` runtime via the `ort` crate). Both run in the same Rust sidecar binary.
+- Why: Cohere leads the HuggingFace Open ASR Leaderboard; Whisper has the long tail of community quantizations. ONNX Runtime gives GPU on CUDA and DirectML from one runtime. Family/runtime terminology matches D-008's three-layer abstraction.
 
 ### D-005: UI Must Be Obsidian-Native
 
-- Status: active
 - Decision: All plugin UI uses Obsidian's built-in primitives (Setting, Modal, Notice, toggles, dropdowns). Custom CSS extends Obsidian's patterns, never replaces them.
 - Why: Users expect plugin settings to look and behave like core Obsidian. Custom UI components accumulate bugs disproportionate to their value.
 
-### D-006: Trunk-Based Development
-
-- Status: active
-- Decision: Short-lived feature branches merged via PR. `main` stays releasable. CI must pass. Incomplete work goes behind feature flags.
-- Why: The project is mature enough that direct-to-main risks destabilizing working features. See `CONTRIBUTING.md`.
-
-### D-007: Transcript Pipeline Architecture
-
-- Status: superseded by D-009
-- Decision: Insert a TranscriptFormatter and TextProcessor pipeline between engine output and editor insertion. Formatter selects output format (plain text, inline timestamps). Processor applies composable text transforms (filtering, user rules). Each layer ships in its own PR.
-- Why: The current pipeline goes directly from engine output to insertion with no formatting or processing step.
-- Superseded because: the plugin/sidecar boundary is cleaner when the sidecar returns finished text rather than raw segments, and capability-gated fallbacks (e.g. VAD-derived timestamps when the model lacks word-level output) need access to data that only the sidecar has. See D-009.
-
 ### D-008: Engine Abstraction Is A Three-Layer Registry
 
-- Status: active
-- Decision: Inference dispatch is layered as **runtime / model family / model**. A `Runtime` owns execution-framework concerns (accelerator registration, probe, supported formats). A `ModelFamilyAdapter` owns model-shape semantics (graph I/O, tokenizer, prompt tokens, audio limits, per-model probe rules). A `LoadedModel` owns per-session inference state. `EngineRegistry::build()` is the single registration site; worker dispatch is `registry.lookup((runtimeId, familyId)) → adapter.load → loaded.transcribe`. Capabilities are declared statically per runtime and per adapter, and flow to the plugin through two seams:
-  - **Inventory** (`system_info.compiledRuntimes[]` + `system_info.compiledAdapters[]`) — every runtime and adapter compiled into this sidecar, with its declared capabilities. The plugin uses this for "what this binary can do at all" context (e.g. show `DirectML` only on Windows builds).
-  - **Selected-model capabilities** (`model_probe_result.mergedCapabilities`) — the merged `RuntimeCapabilities ⊕ ModelFamilyCapabilities` for the current selection, present iff the probe returned `ready`. The plugin exposes this as `ModelManagerState.selectedModelCapabilities`, a discriminated union of `{none | pending | unavailable | ready}`. UI gating (initial-prompt field, language picker, segment formatter) reads from this union; there is no TypeScript mirror of which engine supports what. For unknown-family external files, the merge falls back to `ModelFamilyCapabilities::unknown()` so the struct shape is stable.
-- Why: Removes scattered `match EngineId` dispatch, unblocks capability-gated features (initial-prompt conditioning, per-engine GPU UI, per-adapter post-processing), and gives future adapters an `OCP`-friendly registration path behind a single Cargo feature flag without touching dispatch sites. Selections use the triple `(runtimeId, familyId, modelId)` — so one runtime can host multiple families and one family can be delivered by multiple runtimes.
-- Implication: Unsupported request fields are warn+dropped at the worker, surfaced as `RequestWarning[]` on `TranscriptReadyEvent` (dev console only). Cargo features renamed: `engine-cohere-transcribe`, `engine-whisper`, `gpu-ort-cuda`. Per-model capability overrides are a planned additive extension: a new optional field on `EngineCapabilities` (e.g. `modelOverrides`) that consumers default to merged family caps when absent — no breaking change required.
+- Decision: Inference dispatch is layered as **runtime / model family / model**. A `Runtime` owns execution-framework concerns; a `ModelFamilyAdapter` owns model-shape semantics; a `LoadedModel` owns per-session inference state. `EngineRegistry::build()` is the single registration site. Selections use the triple `(runtimeId, familyId, modelId)`.
+- Capability seams: **inventory** (`system_info.compiledRuntimes[]` + `compiledAdapters[]` — what this binary can do at all) and **selected-model** (`model_probe_result.mergedCapabilities` — what the current selection supports). UI gating reads the merged capabilities; there is no TypeScript mirror of which engine supports what.
+- Why: Removes scattered `match EngineId` dispatch, unblocks capability-gated features (initial-prompt conditioning, per-engine GPU UI, per-adapter post-processing), and gives future adapters an OCP-friendly registration path behind a single Cargo feature flag.
+- Implication: Unsupported request fields are warn+dropped at the worker, surfaced as `RequestWarning[]` on `transcript_ready` (dev console only).
+- See: `docs/architecture/system-architecture.md` Stage 4 for layer details and capability flow.
 
 ### D-009: Post-Transcript Enrichment Runs In The Rust Sidecar
 
-- Status: active
-- Decision: Post-transcript processing — hallucination filter, punctuation, user rules, diarization, optional LLM, and final render — runs in the Rust sidecar, not the plugin. The sidecar produces a canonical transcript struct after inference and applies text-domain stages against it; the plugin receives the final rendered text plus a `stageResults[]` report via `transcript_ready`. Diarization runs in the audio pipeline alongside VAD. LLM post-processing is an experimental side branch outside the text pipeline because it may restructure text freely and destroy segment alignment.
-- Why: Keeps the plugin/sidecar boundary clean — audio in, final text out. The canonical transcript is the architectural seam between audio-domain and text-domain processing. Text stages are segment-preserving so they are composable and individually skippable. Capability-gated features degrade gracefully (e.g. word-level timestamps when the model supports them, VAD-derived segment timestamps otherwise) without requiring engine-specific branches in the plugin.
-- Implication: Three protocol seams — *inventory* (`compiledProcessors[]` alongside the existing `compiledRuntimes[]` / `compiledAdapters[]` on `system_info`), *request* (feature toggles on `start_session`), *report* (`stageResults[]` on `transcript_ready`). Diarization's registration site (standalone adapter vs processor module) and the canonical transcript struct shape are open questions to be resolved in the design spec. Supersedes D-007. Full design in `docs/architecture/system-architecture.md`.
+- Decision: Post-transcript processing — hallucination filter, punctuation, user rules, diarization, optional LLM, final render — runs in the Rust sidecar, not the plugin. The plugin receives final rendered text plus a `stageResults[]` report. Diarization runs in the audio pipeline alongside VAD; LLM post-processing is an experimental side branch outside the text pipeline because it may restructure text freely and destroy alignment.
+- Why: Keeps the plugin/sidecar boundary clean — audio in, final text out. The canonical transcript struct is the architectural seam between audio-domain and text-domain processing. Capability-gated features degrade gracefully without engine-specific branches in the plugin. Supersedes D-007.
+- See: `docs/architecture/system-architecture.md` for the full pipeline and protocol seams.
 
-### D-010: Dictation Anchor Has A Single Live Mode
+### D-011: No Python In The Sidecar
 
-- Status: active
-- Decision: The in-note dictation anchor exposes only two states: `hidden` and `visible`. `visible` is a pulsing cursor. The controller treats `speech_detected`, `speech_ending`, `transcribing`, and `paused` as one utterance-in-flight family: entering that family arms a single 2.5s delay from speech onset, and leaving it hides the anchor immediately. Transcript insertion does not change anchor mode.
-- Why: The removed processing spinner made a promise it could not keep. Real transcripts crossed the old 350ms threshold constantly, empty or filtered utterances left a spinner with no text to deliver, and mid-session insertions hid the anchor between back-to-back utterances. A single live cursor keeps one meaning in one surface: "this utterance is still active."
-- Implication: There is no distinct slow-inference indicator in the note. When visible, the pulsing cursor always renders, including when it overlaps the editor caret. Backend-working feedback for `transcribing` and `paused` lives in the ribbon via the loader state and `Transcribing...` copy, while the note stays spinner-free.
+- Decision: The Rust sidecar does not link, embed, or subprocess Python. All inference and post-processing run in Rust against native libraries (whisper.cpp, ONNX Runtime, etc.).
+- Why: Python in the sidecar means a per-platform Python distribution to bundle, virtualenv management, and a fragile dependency tree at install time. Rust-native runtimes give the same model coverage with one binary per platform. The "just shell out to faster-whisper" path looks tempting and is repeatedly the wrong call.
+
+### D-012: No Cloud, No Telemetry, No Accounts
+
+- Decision: After model setup, the plugin operates fully offline. No network calls for transcription, no analytics or telemetry, no account or login flow. Model downloads from HuggingFace (user-initiated) are the only sanctioned outbound traffic.
+- Why: Privacy is the product. Anything that calls home or requires an account changes the value proposition fundamentally — even an anonymous "crash report" defaults users into trust they didn't grant. Treat this as a hard constraint when evaluating new features.
+
+### D-013: No Settings Versioning Or Migration Code
+
+- Decision: No `schemaVersion` field on settings, no migration code paths, no "preserve newer version" downgrade guards, no compatibility shims for hypothetical past schemas.
+- Why: This project is greenfield with no released installed-user base. Versioning and migration code is dead weight added for users that don't exist. Change settings shape in place; fix defaults; delete old code. Reintroduce versioning only when a real released schema needs to evolve without breaking installed users.
