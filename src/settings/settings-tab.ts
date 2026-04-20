@@ -5,10 +5,9 @@ import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
 import { matchesModelTriple } from '../models/model-management-types';
-import type { PluginLogger } from '../shared/plugin-logger';
 import type { SpeakingStyle, SystemInfoEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
-import { describeAcceleration, formatAcceleratorLabel } from './acceleration-info';
+import { describeAcceleration } from './acceleration-info';
 import { renderModelSection } from './model-settings-section';
 import {
   type DictationAnchor,
@@ -21,7 +20,6 @@ import {
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
-  logger: PluginLogger;
   modelInstallManager: ModelInstallManager;
   saveSettings: (settings: PluginSettings) => Promise<void>;
   sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
@@ -366,14 +364,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       cachedSystemInfo !== undefined ? cachedSystemInfo : await this.fetchSystemInfo();
 
     const settings = this.dependencies.getSettings();
-    const { fallbacks, label } = describeAcceleration(systemInfo, settings.accelerationPreference);
-
-    for (const fb of fallbacks) {
-      this.dependencies.logger.warn(
-        'acceleration',
-        `${fb.engine}: ${formatAcceleratorLabel(fb.accelerator)} unavailable — ${fb.reason}`,
-      );
-    }
+    const { label } = describeAcceleration(systemInfo, settings.accelerationPreference);
 
     containerEl.empty();
 

@@ -1,4 +1,5 @@
 import type { AcceleratorId } from '../models/model-management-types';
+import type { PluginLogger } from '../shared/plugin-logger';
 import type {
   AccelerationPreference,
   CompiledAdapterInfo,
@@ -73,12 +74,8 @@ function buildLabel(backends: EngineBackend[]): string {
     return 'CPU';
   }
 
-  const allSame = backends.every((b) => b.effective === first.effective);
-  if (allSame) {
-    const effective = first.effective;
-    if (effective !== 'cpu') {
-      return formatAcceleratorLabel(effective);
-    }
+  const firstNonCpu = backends.find((b) => b.effective !== 'cpu');
+  if (firstNonCpu === undefined) {
     const withMissing = backends.find((b) => b.missingGpu !== null);
     if (withMissing?.missingGpu != null) {
       return `CPU (${formatAcceleratorLabel(withMissing.missingGpu.accelerator)} unavailable)`;
@@ -86,11 +83,14 @@ function buildLabel(backends: EngineBackend[]): string {
     return 'CPU';
   }
 
-  const primary = backends.find((b) => b.effective !== 'cpu')!.effective;
+  const primary = firstNonCpu.effective;
   const exceptions = backends
     .filter((b) => b.effective !== primary)
     .map((b) => `${b.engineName}: ${formatAcceleratorLabel(b.effective)}`);
 
+  if (exceptions.length === 0) {
+    return formatAcceleratorLabel(primary);
+  }
   return `${formatAcceleratorLabel(primary)} (${exceptions.join(', ')})`;
 }
 
@@ -131,4 +131,18 @@ function formatReason(reason: string | null): string {
   }
   const trimmed = reason.trim();
   return trimmed.length > 0 ? trimmed : 'unknown reason';
+}
+
+export function logAccelerationFallbacks(
+  systemInfo: SystemInfoEvent,
+  accelerationPreference: AccelerationPreference,
+  logger: Pick<PluginLogger, 'warn'>,
+): void {
+  const { fallbacks } = describeAcceleration(systemInfo, accelerationPreference);
+  for (const fb of fallbacks) {
+    logger.warn(
+      'acceleration',
+      `${fb.engine}: ${formatAcceleratorLabel(fb.accelerator)} unavailable — ${fb.reason}`,
+    );
+  }
 }

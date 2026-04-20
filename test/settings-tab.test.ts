@@ -139,6 +139,29 @@ describe('describeAcceleration', () => {
     ).toBe('CUDA');
   });
 
+  it('uses adapter order to choose the primary when engines land on different GPUs', () => {
+    // Adapter order below is [Whisper/CUDA, Cohere/Metal], so Whisper's CUDA wins.
+    const whisper = whisperRuntime({
+      acceleratorDetails: {
+        cpu: { available: true, unavailableReason: null },
+        cuda: { available: true, unavailableReason: null },
+      },
+      availableAccelerators: ['cpu', 'cuda'],
+    });
+    const onnx = onnxRuntime({
+      acceleratorDetails: {
+        cpu: { available: true, unavailableReason: null },
+        metal: { available: true, unavailableReason: null },
+      },
+      availableAccelerators: ['cpu', 'metal'],
+    });
+
+    expect(
+      describeAcceleration(systemInfo([whisper, onnx], [whisperAdapter(), cohereAdapter()]), 'auto')
+        .label,
+    ).toBe('CUDA (Cohere Transcribe: Metal)');
+  });
+
   it('names the primary backend and lists engines using a different accelerator', () => {
     const whisper = whisperRuntime({
       acceleratorDetails: {
