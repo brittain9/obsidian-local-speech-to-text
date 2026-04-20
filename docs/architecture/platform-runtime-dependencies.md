@@ -126,10 +126,10 @@ Accelerator probing lives on the `Runtime` layer (D-008). Each compiled `Runtime
 | Runtime | Probe method |
 |---|---|
 | `whisper_cpp` (Metal) | Compile-time: reports available if built with `gpu-metal` on macOS |
-| `whisper_cpp` (CUDA) | Fast heuristic: checks for `/dev/nvidiactl` and `/dev/nvidia0` device nodes |
+| `whisper_cpp` (CUDA) | Runtime probe: `dlopen`/`LoadLibrary` the CUDA runtime (`libcudart.so.12`, `libcudart.so`, or `cudart64_12.dll`), resolve `cudaGetDeviceCount`, and require at least one device |
 | `onnx_runtime` (CUDA) | Full probe: attempts ONNX Runtime CUDA EP registration via `CUDAExecutionProvider::is_available()` + `.build().error_on_failure()` |
 
-The `onnx_runtime` probe is stronger — it catches missing userspace libraries, driver mismatches, and cuDNN version issues. The `whisper_cpp` probe confirms the driver is loaded but does not verify the full library chain. If the Whisper probe reports CUDA available but inference fails, the root cause is usually a missing CUDA userspace library.
+The `onnx_runtime` probe is still stronger — it catches the full ONNX Runtime provider stack, driver mismatches, and cuDNN version issues. The `whisper_cpp` probe now verifies that the CUDA runtime library is loadable and that `cudaGetDeviceCount` can see at least one device, but it still does not validate every downstream CUDA library whisper.cpp may need during inference.
 
 ## Bundling Principles
 

@@ -753,6 +753,7 @@ dependencies = [
  "directories",
  "futures-util",
  "half",
+ "libloading",
  "ndarray",
  "ort",
  "realfft",
