@@ -368,9 +368,16 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     containerEl.empty();
 
+    const descFragment = document.createDocumentFragment();
+    descFragment.createSpan({
+      text: 'Use the GPU when available. Turn off to run every engine on CPU.',
+    });
+    descFragment.createEl('br');
+    descFragment.createSpan({ text: `Currently: ${label}` });
+
     new Setting(containerEl)
       .setName('Hardware acceleration')
-      .setDesc('Use the GPU when available. Turn off to run every engine on CPU.')
+      .setDesc(descFragment)
       .addToggle((toggle) => {
         toggle.setValue(settings.accelerationPreference === 'auto');
         toggle.onChange(async (value) => {
@@ -381,9 +388,6 @@ export class LocalSttSettingTab extends PluginSettingTab {
           void this.renderEngineOptions(containerEl, systemInfo);
         });
       });
-
-    const readoutEl = containerEl.createDiv({ cls: 'setting-item-description' });
-    readoutEl.createDiv({ text: `Active backend: ${label}` });
   }
 
   private async fetchSystemInfo(): Promise<SystemInfoEvent | null> {
