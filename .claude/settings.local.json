@@ -21,7 +21,9 @@
       "Bash(grep -E \"\\\\.\\(json|ts\\)$\")",
       "Bash(gh api *)",
       "Bash(gh pr *)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "WebFetch(domain:www.anthropic.com)",
+      "Bash(gh label *)"
     ]
   }
 }

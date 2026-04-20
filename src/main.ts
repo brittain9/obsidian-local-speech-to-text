@@ -79,6 +79,7 @@ export default class LocalSttPlugin extends Plugin {
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
         getSettings: () => this.settings,
+        logger: this.logger,
         modelInstallManager: this.requireModelInstallManager(),
         saveSettings: async (nextSettings) => {
           await this.updateSettings(nextSettings);

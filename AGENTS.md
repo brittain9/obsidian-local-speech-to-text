@@ -80,6 +80,8 @@ At the start of every non-trivial task:
 
 After any user correction or process mistake, add a concise lesson to `docs/lessons.md` capturing the pattern and a concrete preventive rule. Deduplicate instead of accumulating near-identical lessons.
 
+Format: `- YYYY-MM-DD | [tag] | Pattern: … | Rule: …`. Tags are one of `[build]`, `[test]`, `[ui]`, `[process]`, `[gpu]` — add a new tag only when none fit and the area is likely to recur. Tags make the file greppable by area as it grows.
+
 ### Decisions
 
 Record durable product and architecture decisions in `docs/decisions.md` with status, decision, rationale, and implication. Update in the same change that alters a decision. Mark superseded decisions explicitly.

@@ -5,9 +5,10 @@ import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
 import { matchesModelTriple } from '../models/model-management-types';
+import type { PluginLogger } from '../shared/plugin-logger';
 import type { SpeakingStyle, SystemInfoEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
-import { buildAccelerationSummary, buildEffectiveBackendLines } from './acceleration-info';
+import { describeAcceleration, formatAcceleratorLabel } from './acceleration-info';
 import { renderModelSection } from './model-settings-section';
 import {
   type DictationAnchor,
@@ -20,6 +21,7 @@ import {
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
+  logger: PluginLogger;
   modelInstallManager: ModelInstallManager;
   saveSettings: (settings: PluginSettings) => Promise<void>;
   sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
@@ -364,34 +366,33 @@ export class LocalSttSettingTab extends PluginSettingTab {
       cachedSystemInfo !== undefined ? cachedSystemInfo : await this.fetchSystemInfo();
 
     const settings = this.dependencies.getSettings();
-    const detailLines = buildEffectiveBackendLines(systemInfo, settings.accelerationPreference);
+    const { fallbacks, label } = describeAcceleration(systemInfo, settings.accelerationPreference);
+
+    for (const fb of fallbacks) {
+      this.dependencies.logger.warn(
+        'acceleration',
+        `${fb.engine}: ${formatAcceleratorLabel(fb.accelerator)} unavailable — ${fb.reason}`,
+      );
+    }
 
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName('GPU acceleration')
-      .setDesc(
-        'Use GPU backends when available for compiled runtimes. Disabled forces every runtime onto CPU.',
-      )
-      .addDropdown((dropdown) => {
-        dropdown.addOption('auto', 'Use when available');
-        dropdown.addOption('cpu_only', 'Disabled');
-        dropdown.setValue(settings.accelerationPreference);
-        dropdown.onChange(async (value) => {
+      .setName('Hardware acceleration')
+      .setDesc('Use the GPU when available. Turn off to run every engine on CPU.')
+      .addToggle((toggle) => {
+        toggle.setValue(settings.accelerationPreference === 'auto');
+        toggle.onChange(async (value) => {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            accelerationPreference: value === 'cpu_only' ? 'cpu_only' : 'auto',
+            accelerationPreference: value ? 'auto' : 'cpu_only',
           });
           void this.renderEngineOptions(containerEl, systemInfo);
         });
       });
 
-    const descriptionEl = containerEl.createDiv({ cls: 'setting-item-description' });
-    descriptionEl.createDiv({ text: buildAccelerationSummary(systemInfo) });
-
-    for (const line of detailLines) {
-      descriptionEl.createDiv({ text: line });
-    }
+    const readoutEl = containerEl.createDiv({ cls: 'setting-item-description' });
+    readoutEl.createDiv({ text: `Active backend: ${label}` });
   }
 
   private async fetchSystemInfo(): Promise<SystemInfoEvent | null> {
