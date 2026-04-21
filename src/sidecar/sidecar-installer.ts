@@ -1,6 +1,8 @@
 import { createHash, type Hash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import type { IncomingMessage } from 'node:http';
+import { get as httpsGet, type RequestOptions } from 'node:https';
 import { dirname, join, normalize, sep } from 'node:path';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 
@@ -226,14 +228,87 @@ export function parseChecksum(checksumsText: string, targetFilename: string): st
   throw new Error(`Checksum entry for ${targetFilename} not found in checksums.txt.`);
 }
 
-async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(url, { redirect: 'follow', ...(signal ? { signal } : {}) });
+const MAX_REDIRECTS = 5;
+const CHECKSUMS_SIZE_LIMIT = 1024 * 1024;
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${String(response.status)} fetching ${url}.`);
+async function openHttpsStream(
+  url: string,
+  signal: AbortSignal | undefined,
+  hops: number,
+): Promise<IncomingMessage> {
+  if (hops > MAX_REDIRECTS) {
+    throw new Error(`Too many redirects fetching ${url}.`);
   }
 
-  return response.text();
+  if (signal?.aborted) {
+    throw abortError();
+  }
+
+  return new Promise((resolve, reject) => {
+    const requestOptions: RequestOptions = { headers: { 'user-agent': 'obsidian-local-stt' } };
+    const req = httpsGet(url, requestOptions, (res) => {
+      const status = res.statusCode ?? 0;
+      const location = res.headers.location;
+
+      if (status >= 300 && status < 400 && typeof location === 'string' && location.length > 0) {
+        res.resume();
+        const nextUrl = new URL(location, url).toString();
+        openHttpsStream(nextUrl, signal, hops + 1).then(resolve, reject);
+        return;
+      }
+
+      if (status < 200 || status >= 300) {
+        res.resume();
+        reject(new Error(`HTTP ${String(status)} fetching ${url}.`));
+        return;
+      }
+
+      resolve(res);
+    });
+
+    req.on('error', reject);
+
+    if (signal) {
+      const onAbort = (): void => {
+        req.destroy(abortError());
+      };
+
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener('abort', onAbort, { once: true });
+        req.once('close', () => {
+          signal.removeEventListener('abort', onAbort);
+        });
+      }
+    }
+  });
+}
+
+function abortError(): Error {
+  const error = new Error('The operation was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
+  const stream = await openHttpsStream(url, signal, 0);
+  let size = 0;
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of stream) {
+    const buffer = chunk as Buffer;
+    size += buffer.length;
+
+    if (size > CHECKSUMS_SIZE_LIMIT) {
+      stream.destroy();
+      throw new Error(`Response body for ${url} exceeded ${CHECKSUMS_SIZE_LIMIT} bytes.`);
+    }
+
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 async function downloadToFile(
@@ -242,19 +317,10 @@ async function downloadToFile(
   onProgress: (bytesDownloaded: number, totalBytes: number | null) => void,
   signal?: AbortSignal,
 ): Promise<string> {
-  const response = await fetch(url, { redirect: 'follow', ...(signal ? { signal } : {}) });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${String(response.status)} downloading ${url}.`);
-  }
-
-  if (response.body === null) {
-    throw new Error(`Response for ${url} has no body.`);
-  }
-
-  const contentLengthHeader = response.headers.get('content-length');
+  const stream = await openHttpsStream(url, signal, 0);
+  const contentLengthHeader = stream.headers['content-length'];
   const totalBytes =
-    contentLengthHeader !== null && /^\d+$/.test(contentLengthHeader)
+    typeof contentLengthHeader === 'string' && /^\d+$/.test(contentLengthHeader)
       ? Number.parseInt(contentLengthHeader, 10)
       : null;
 
@@ -263,25 +329,15 @@ async function downloadToFile(
   let bytesDownloaded = 0;
 
   try {
-    const reader = response.body.getReader();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      bytesDownloaded += value.byteLength;
-      hash.update(value);
+    for await (const chunk of stream) {
+      const buffer = chunk as Buffer;
+      bytesDownloaded += buffer.length;
+      hash.update(buffer);
       onProgress(bytesDownloaded, totalBytes);
 
-      await new Promise<void>((resolve, reject) => {
-        fileStream.write(value, (writeError) => {
-          if (writeError) {
-            reject(writeError);
-          } else {
-            resolve();
-          }
-        });
-      });
+      if (!fileStream.write(buffer)) {
+        await new Promise<void>((resolve) => fileStream.once('drain', resolve));
+      }
     }
   } finally {
     await new Promise<void>((resolve) => {

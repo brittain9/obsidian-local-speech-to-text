@@ -14,6 +14,7 @@ import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import {
   type InstallManifest,
   readInstallManifest,
+  type SidecarInstallVariant,
   uninstallSidecarVariant,
   variantDirectoryPath,
 } from '../sidecar/sidecar-installer';
@@ -415,6 +416,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     const cudaManifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cuda'));
 
     this.renderInstalledStatus(containerEl, cpuManifest, cudaManifest);
+    this.renderCpuInstallRow(containerEl, pluginDirectory, cpuManifest);
 
     if (Platform.isMacOS) {
       containerEl.createEl('p', {
@@ -429,6 +431,38 @@ export class LocalSttSettingTab extends PluginSettingTab {
     } else {
       this.renderUninstallCudaRow(containerEl, pluginDirectory);
     }
+  }
+
+  private renderCpuInstallRow(
+    containerEl: HTMLDivElement,
+    pluginDirectory: string,
+    cpuManifest: InstallManifest | null,
+  ): void {
+    const isInstalled = cpuManifest !== null;
+    const setting = new Setting(containerEl)
+      .setName(isInstalled ? 'Reinstall CPU sidecar' : 'Install CPU sidecar')
+      .setDesc(
+        isInstalled
+          ? 'Re-downloads the CPU sidecar archive from GitHub releases. Useful if the install looks corrupted.'
+          : 'Downloads the CPU speech-to-text sidecar from GitHub releases. Required to run transcription.',
+      );
+
+    setting.addButton((button) => {
+      button.setButtonText(isInstalled ? 'Reinstall' : 'Download CPU sidecar');
+      if (!isInstalled) button.setCta();
+      button.onClick(() => {
+        this.openInstallModal(pluginDirectory, 'cpu', {
+          bodyText: isInstalled
+            ? 'Re-download the CPU speech-to-text sidecar from GitHub releases. This replaces the current CPU install.'
+            : 'Download the CPU speech-to-text sidecar from GitHub releases. Transcription stays local on your machine after this completes.',
+          primaryButtonText: isInstalled ? 'Redownload CPU sidecar' : 'Download CPU sidecar',
+          successNotice: isInstalled
+            ? 'CPU sidecar reinstalled and restarted.'
+            : 'CPU sidecar installed and started.',
+          title: isInstalled ? 'Reinstall CPU sidecar' : 'Install CPU sidecar',
+        });
+      });
+    });
   }
 
   private renderInstalledStatus(
@@ -490,23 +524,45 @@ export class LocalSttSettingTab extends PluginSettingTab {
   }
 
   private openCudaInstallModal(pluginDirectory: string): void {
-    new SidecarInstallModal(this.app, {
+    this.openInstallModal(pluginDirectory, 'cuda', {
       bodyText:
         'Download the CUDA-accelerated sidecar for NVIDIA GPUs. This replaces the CPU sidecar while active. The CPU sidecar remains installed as a fallback.',
-      logger: this.dependencies.logger,
       onInstalled: async () => {
         await this.persistSettings({
           ...this.dependencies.getSettings(),
           accelerationPreference: 'auto',
         });
+      },
+      primaryButtonText: 'Download CUDA sidecar',
+      successNotice: 'CUDA sidecar installed and started.',
+      title: 'Install CUDA acceleration',
+    });
+  }
+
+  private openInstallModal(
+    pluginDirectory: string,
+    variant: SidecarInstallVariant,
+    copy: {
+      bodyText: string;
+      onInstalled?: () => Promise<void>;
+      primaryButtonText: string;
+      successNotice: string;
+      title: string;
+    },
+  ): void {
+    new SidecarInstallModal(this.app, {
+      bodyText: copy.bodyText,
+      logger: this.dependencies.logger,
+      onInstalled: async () => {
+        await copy.onInstalled?.();
         await this.dependencies.restartSidecar();
         this.display();
       },
       pluginDirectory,
-      primaryButtonText: 'Download CUDA sidecar',
-      successNotice: 'CUDA sidecar installed and started.',
-      title: 'Install CUDA acceleration',
-      variant: 'cuda',
+      primaryButtonText: copy.primaryButtonText,
+      successNotice: copy.successNotice,
+      title: copy.title,
+      variant,
       version: this.dependencies.pluginVersion,
     }).open();
   }

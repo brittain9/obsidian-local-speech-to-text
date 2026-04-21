@@ -1,10 +1,53 @@
 import { createHash } from 'node:crypto';
+import type { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateRawSync, gzipSync } from 'node:zlib';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { httpsResponses } = vi.hoisted(() => ({
+  httpsResponses: new Map<string, Buffer>(),
+}));
+
+vi.mock('node:https', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { Readable } = await import('node:stream');
+
+  return {
+    get: (url: string | URL, ...args: unknown[]): EventEmitter => {
+      const urlString = typeof url === 'string' ? url : url.toString();
+      const callback = args.find((arg): arg is (res: unknown) => void => typeof arg === 'function');
+      const req = new EventEmitter() as EventEmitter & {
+        destroy(err?: Error): void;
+      };
+      req.destroy = (err?: Error): void => {
+        if (err) req.emit('error', err);
+      };
+
+      queueMicrotask(() => {
+        const body = httpsResponses.get(urlString);
+
+        if (body === undefined) {
+          const res = Readable.from(Buffer.alloc(0));
+          Object.assign(res, { headers: {}, statusCode: 404 });
+          callback?.(res);
+          return;
+        }
+
+        const res = Readable.from([body]);
+        Object.assign(res, {
+          headers: { 'content-length': String(body.length) },
+          statusCode: 200,
+        });
+        callback?.(res);
+      });
+
+      return req;
+    },
+  };
+});
 
 import {
   detectPlatformAsset,
@@ -23,7 +66,7 @@ afterEach(async () => {
       .splice(0)
       .map((directoryPath) => rm(directoryPath, { force: true, recursive: true })),
   );
-  vi.unstubAllGlobals();
+  httpsResponses.clear();
 });
 
 describe('detectPlatformAsset', () => {
@@ -134,7 +177,7 @@ describe('installSidecar', () => {
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
     const checksumsText = `${archiveSha256}  ${assetName}\n`;
 
-    stubFetch({
+    stubHttps({
       [`https://releases.test/2026.4.21/${assetName}`]: archive,
       'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
     });
@@ -182,7 +225,7 @@ describe('installSidecar', () => {
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
     const checksumsText = `${'0'.repeat(64)}  ${assetName}\n`;
 
-    stubFetch({
+    stubHttps({
       [`https://releases.test/2026.4.21/${assetName}`]: archive,
       'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
     });
@@ -207,7 +250,7 @@ describe('installSidecar', () => {
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
     const checksumsText = `${archiveSha256}  ${assetName}\n`;
 
-    stubFetch({
+    stubHttps({
       [`https://releases.test/2026.4.21/${assetName}`]: archive,
       'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
     });
@@ -232,7 +275,7 @@ describe('installSidecar', () => {
     const assetName = 'sidecar-windows-x86_64-cpu.zip';
     const checksumsText = `${archiveSha256}  ${assetName}\n`;
 
-    stubFetch({
+    stubHttps({
       [`https://releases.test/2026.4.21/${assetName}`]: archive,
       'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
     });
@@ -279,20 +322,11 @@ function sha256Hex(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
-function stubFetch(responseMap: Record<string, Buffer>): void {
-  vi.stubGlobal('fetch', async (input: string | URL) => {
-    const url = typeof input === 'string' ? input : input.toString();
-    const body = responseMap[url];
-
-    if (body === undefined) {
-      return new Response(null, { status: 404, statusText: 'Not Found' });
-    }
-
-    return new Response(new Uint8Array(body), {
-      headers: { 'content-length': String(body.length) },
-      status: 200,
-    });
-  });
+function stubHttps(responseMap: Record<string, Buffer>): void {
+  httpsResponses.clear();
+  for (const [url, body] of Object.entries(responseMap)) {
+    httpsResponses.set(url, body);
+  }
 }
 
 function buildTarGz(entries: Array<{ name: string; content: Buffer }>): Buffer {
