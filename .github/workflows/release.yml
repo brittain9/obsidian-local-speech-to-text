@@ -283,9 +283,9 @@ jobs:
           cp dist/plugin-bundle/main.js dist/release/main.js
           cp dist/plugin-bundle/manifest.json dist/release/manifest.json
           cp dist/plugin-bundle/styles.css dist/release/styles.css
-          find dist/release -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > dist/release/checksums.txt
+          (cd dist/release && find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%P\n' \
+            | sort \
+            | xargs sha256sum > checksums.txt)
           test -f dist/release/main.js
           test -f dist/release/manifest.json
           test -f dist/release/styles.css
