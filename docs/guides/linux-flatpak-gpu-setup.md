@@ -122,8 +122,7 @@ flatpak run --command=sh md.obsidian.Obsidian -c '
 
 1. Fully quit and reopen Obsidian after applying Flatpak overrides.
 2. Open `Settings -> Local STT -> Advanced: Sidecar`.
-3. Set `Sidecar path override` to the CUDA binary:
-   `/absolute/path/to/native/target-cuda/debug/obsidian-local-stt-sidecar`
+3. The plugin auto-detects `native/target-cuda/debug` when present and falls back to `native/target/debug`, so leave `Sidecar path override` empty unless you need a custom layout.
 4. Set `CUDA library path` to the colon-separated `/run/host/...` value you built earlier.
 5. Under `Engine options`, leave `GPU acceleration` on `Use when available` unless you intentionally want CPU only.
 6. Run `Local STT: Check Sidecar Health`.

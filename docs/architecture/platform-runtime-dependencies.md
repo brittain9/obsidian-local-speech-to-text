@@ -8,9 +8,9 @@ The sidecar ships as a single native binary per platform. Three build flavors ex
 
 | Flavor | Command | Cargo features | Model families |
 |---|---|---|---|
-| CPU | `npm run build:sidecar` (Linux) | `engine-whisper,engine-cohere-transcribe` | Whisper (CPU), Cohere Transcribe (CPU) |
+| CPU | `npm run build:sidecar` (Windows/Linux) | `engine-whisper,engine-cohere-transcribe` | Whisper (CPU), Cohere Transcribe (CPU) |
 | Metal | `npm run build:sidecar` (macOS) | `engine-whisper,engine-cohere-transcribe,gpu-metal` | Whisper (Metal GPU), Cohere Transcribe (CPU) |
-| CUDA | `npm run build:sidecar:cuda` | `engine-whisper,engine-cohere-transcribe,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere Transcribe (CUDA GPU) |
+| CUDA | Linux: `npm run build:sidecar:cuda`<br>Windows: `npm run build:sidecar:cuda:windows` | `engine-whisper,engine-cohere-transcribe,gpu-cuda,gpu-ort-cuda` | Whisper (CUDA GPU), Cohere Transcribe (CUDA GPU) |
 
 The CPU flavor is the default everywhere. GPU flavors are additive — they include all CPU capabilities plus GPU acceleration for the engines listed.
 
@@ -25,8 +25,10 @@ The shipped plugin always includes:
 
 The CUDA build additionally stages ONNX Runtime provider libraries next to the sidecar:
 
-- `libonnxruntime_providers_shared.so`
-- `libonnxruntime_providers_cuda.so`
+| Platform | Provider libraries |
+|---|---|
+| Linux | `libonnxruntime_providers_shared.so`, `libonnxruntime_providers_cuda.so` |
+| Windows | `onnxruntime_providers_shared.dll`, `onnxruntime_providers_cuda.dll` |
 
 These are sidecar-owned artifacts produced during the build. They travel with the binary and do not need to be installed separately.
 
@@ -58,7 +60,7 @@ Cohere is CPU-only on macOS. The ONNX Runtime CUDA execution provider is Linux/W
 
 Windows has no sandbox. The sidecar inherits the host environment directly, so CUDA and cuDNN libraries found on `PATH` or in standard install locations resolve without manual path configuration.
 
-The intended packaging model bundles the sidecar-owned ONNX provider DLLs next to the executable. Users should not need to hand-edit paths. The Windows build and release flow is not yet productized in this repo.
+The intended packaging model bundles the sidecar-owned ONNX provider DLLs next to the executable. Users should not need to hand-edit paths. See [Windows CUDA setup](../guides/windows-cuda-setup.md) for the supported Windows CUDA setup flow.
 
 ### Linux (native install)
 
@@ -146,9 +148,11 @@ Automated release artifacts (via `workflow_dispatch`) currently cover:
 | Artifact | Runner | Build command |
 |---|---|---|
 | `sidecar-linux-x86_64` | `ubuntu-latest` | `npm run build:sidecar:release` |
+| `sidecar-windows-x86_64` | `windows-latest` | `npm run build:sidecar:release` |
+| `sidecar-windows-x86_64-cuda` | `windows-latest` | `npm run build:sidecar:cuda:windows:release` |
 | `sidecar-macos-arm64` | `macos-15` | `npm run build:sidecar:release` |
 
-CUDA release artifacts are not yet automated. Producing them requires a CUDA-capable runner or a self-hosted packaging flow. The CUDA build script (`scripts/build-cuda.sh`) is production-ready but must be run on a machine with the CUDA toolkit installed.
+Linux CUDA release artifacts are still manual. The automated CUDA release lane currently covers Windows only.
 
 ## Redistribution Considerations
 

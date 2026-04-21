@@ -229,27 +229,33 @@ export default class LocalSttPlugin extends Plugin {
 
     const pluginDirectory = await this.resolvePluginDirectoryPath();
     const sidecarProjectDirectory = join(pluginDirectory, 'native');
-    const executablePath = join(
-      sidecarProjectDirectory,
-      'target',
-      'debug',
-      getSidecarExecutableName(),
-    );
-    const pathKind = await getExistingPathKind(executablePath);
+    const executableName = getSidecarExecutableName();
+    const cpuPath = join(sidecarProjectDirectory, 'target', 'debug', executableName);
+
+    if (!Platform.isMacOS) {
+      const cudaPath = join(sidecarProjectDirectory, 'target-cuda', 'debug', executableName);
+      if ((await getExistingPathKind(cudaPath)) === 'file') {
+        this.logger.debug('sidecar', `using CUDA sidecar build at ${cudaPath}`);
+        await assertSidecarExecutableIsFresh(cudaPath, sidecarProjectDirectory);
+        return cudaPath;
+      }
+    }
+
+    const pathKind = await getExistingPathKind(cpuPath);
 
     if (pathKind === 'missing') {
       throw new Error(
-        `Sidecar executable was not found at ${executablePath}. Build native first or configure Sidecar path override.`,
+        `Sidecar executable was not found at ${cpuPath}. Build native first or configure Sidecar path override.`,
       );
     }
 
     if (pathKind !== 'file') {
-      throw new Error(`Sidecar executable path must point to a file: ${executablePath}`);
+      throw new Error(`Sidecar executable path must point to a file: ${cpuPath}`);
     }
 
-    await assertSidecarExecutableIsFresh(executablePath, sidecarProjectDirectory);
+    await assertSidecarExecutableIsFresh(cpuPath, sidecarProjectDirectory);
 
-    return executablePath;
+    return cpuPath;
   }
 
   private async resolvePluginDirectoryPath(): Promise<string> {

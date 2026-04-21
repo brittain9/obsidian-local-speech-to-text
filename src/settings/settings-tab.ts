@@ -207,7 +207,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       .setName('Sidecar path override')
       .setDesc('Optional absolute path to a debug or manually installed sidecar executable file.')
       .addText((text) => {
-        text.setPlaceholder('Auto-detect from native/target/debug');
+        text.setPlaceholder('Auto-detect from native/target-cuda/debug or native/target/debug');
         text.setValue(settings.sidecarPathOverride);
         text.onChange(async (value) => {
           await this.persistSettings({
