@@ -8,18 +8,13 @@ const MAIN_BUNDLE_PATH = 'main.js';
 const RECORDER_WORKLET_PATH = 'assets/pcm-recorder.worklet.js';
 const SIDECAR_BINARY_PATH = `native/target/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
 const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
-const CUDA_PROVIDER_PATHS =
-  process.platform === 'win32'
-    ? [
-        `native/target-cuda/${profile}/onnxruntime_providers_shared.dll`,
-        `native/target-cuda/${profile}/onnxruntime_providers_cuda.dll`,
-      ]
-    : process.platform === 'linux'
-      ? [
-          `native/target-cuda/${profile}/libonnxruntime_providers_shared.so`,
-          `native/target-cuda/${profile}/libonnxruntime_providers_cuda.so`,
-        ]
-      : [];
+const CUDA_PROVIDER_NAMES_BY_PLATFORM = {
+  win32: ['onnxruntime_providers_shared.dll', 'onnxruntime_providers_cuda.dll'],
+  linux: ['libonnxruntime_providers_shared.so', 'libonnxruntime_providers_cuda.so'],
+};
+const CUDA_PROVIDER_PATHS = (CUDA_PROVIDER_NAMES_BY_PLATFORM[process.platform] ?? []).map(
+  (name) => `native/target-cuda/${profile}/${name}`,
+);
 
 async function main() {
   const mainBundle = await readFile(MAIN_BUNDLE_PATH, 'utf8');
