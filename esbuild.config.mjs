@@ -26,32 +26,18 @@ const mainBuildOptions = {
   treeShaking: true,
   outfile: 'main.js',
   external: externalModules,
-};
-
-const recorderWorkletBuildOptions = {
-  entryPoints: ['src/audio/pcm-recorder.worklet.ts'],
-  bundle: true,
-  format: 'esm',
-  platform: 'browser',
-  target: 'es2022',
-  logLevel: 'info',
-  sourcemap: isProduction ? false : 'inline',
-  treeShaking: true,
-  outfile: 'assets/pcm-recorder.worklet.js',
+  plugins: [pcmRecorderWorkletSourcePlugin()],
 };
 
 async function buildAll() {
-  await Promise.all([build(mainBuildOptions), build(recorderWorkletBuildOptions)]);
+  await build(mainBuildOptions);
 }
 
 async function main() {
   if (isWatch) {
-    const watchers = await Promise.all([
-      context(mainBuildOptions),
-      context(recorderWorkletBuildOptions),
-    ]);
+    const watcher = await context(mainBuildOptions);
 
-    await Promise.all(watchers.map((watcher) => watcher.watch()));
+    await watcher.watch();
     console.log('[esbuild] watching for changes');
     return;
   }
@@ -63,3 +49,47 @@ main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+
+function pcmRecorderWorkletSourcePlugin() {
+  const workletSourceId = 'virtual:pcm-recorder-worklet-source';
+
+  return {
+    name: 'pcm-recorder-worklet-source',
+    setup(buildContext) {
+      buildContext.onResolve({ filter: /^virtual:pcm-recorder-worklet-source$/ }, () => ({
+        namespace: 'pcm-recorder-worklet-source',
+        path: workletSourceId,
+      }));
+
+      buildContext.onLoad(
+        {
+          filter: /^virtual:pcm-recorder-worklet-source$/,
+          namespace: 'pcm-recorder-worklet-source',
+        },
+        async () => {
+          const bundledWorklet = await build({
+            bundle: true,
+            entryPoints: ['src/audio/pcm-recorder.worklet.ts'],
+            format: 'esm',
+            logLevel: 'silent',
+            platform: 'browser',
+            sourcemap: false,
+            target: 'es2022',
+            treeShaking: true,
+            write: false,
+          });
+          const workletSource = bundledWorklet.outputFiles[0]?.text;
+
+          if (workletSource === undefined) {
+            throw new Error('Failed to bundle the recorder worklet source.');
+          }
+
+          return {
+            contents: `export const PCM_RECORDER_WORKLET_SOURCE = ${JSON.stringify(workletSource)};`,
+            loader: 'js',
+          };
+        },
+      );
+    },
+  };
+}

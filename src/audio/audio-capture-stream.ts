@@ -1,15 +1,13 @@
-import { readFile } from 'node:fs/promises';
-
 import { asError } from '../shared/error-utils';
 import { PCM_BYTES_PER_FRAME, PCM_CHANNEL_COUNT } from '../shared/pcm-format';
 import type { PluginLogger } from '../shared/plugin-logger';
 import { PCM_RECORDER_WORKLET_NAME } from './pcm-recorder-worklet-shared';
+import { PCM_RECORDER_WORKLET_SOURCE } from './pcm-recorder-worklet-source';
 
 type AudioFrameListener = (frameBytes: Uint8Array) => void;
 
 interface AudioCaptureStreamOptions {
   logger?: PluginLogger;
-  resolveWorkletModulePath: () => Promise<string>;
 }
 
 export class AudioCaptureStream {
@@ -52,11 +50,7 @@ export class AudioCaptureStream {
     try {
       const AudioContextConstructor = getAudioContextConstructor();
       audioContext = new AudioContextConstructor();
-      await installRecorderWorklet(
-        audioContext,
-        await this.options.resolveWorkletModulePath(),
-        this.options.logger,
-      );
+      await installRecorderWorklet(audioContext, this.options.logger);
       await audioContext.resume();
 
       const sourceNode = audioContext.createMediaStreamSource(mediaStream);
@@ -178,32 +172,22 @@ async function closeAudioContext(audioContext: AudioContext): Promise<void> {
 
 async function installRecorderWorklet(
   audioContext: AudioContext,
-  workletModulePath: string,
   logger?: PluginLogger,
 ): Promise<void> {
   if (audioContext.audioWorklet === undefined) {
     throw new Error('AudioWorklet is not available in this Obsidian runtime.');
   }
 
-  let workletModuleSource: string;
-
-  try {
-    workletModuleSource = await readFile(workletModulePath, 'utf8');
-  } catch (error) {
-    logger?.error('audio', 'failed to read recorder worklet module', error);
-    throw asError(error, `Failed to read recorder worklet module: ${workletModulePath}`);
-  }
-
   logger?.debug('audio', 'installing recorder worklet');
   const workletModuleUrl = URL.createObjectURL(
-    new Blob([workletModuleSource], { type: 'text/javascript' }),
+    new Blob([PCM_RECORDER_WORKLET_SOURCE], { type: 'text/javascript' }),
   );
 
   try {
     await audioContext.audioWorklet.addModule(workletModuleUrl);
   } catch (error) {
     logger?.error('audio', 'failed to load recorder worklet module', error);
-    throw asError(error, `Failed to load recorder worklet module: ${workletModulePath}`);
+    throw asError(error, 'Failed to load recorder worklet module.');
   } finally {
     URL.revokeObjectURL(workletModuleUrl);
   }
