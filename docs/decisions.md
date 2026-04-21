@@ -6,27 +6,6 @@ Durable workflow, product, and architecture decisions. Update in the same change
 
 ## Active Decisions
 
-### D-001: GPU Is Opt-In, CPU Is Default
-
-- Decision: CPU-only builds are the default. GPU acceleration is an opt-in sidecar Cargo feature and runtime setting.
-- Why: Keeps the default path simple. GPU packaging, binary selection, and redistribution are separate concerns that shouldn't block the core product.
-
-### D-002: Flatpak Is The Primary Linux Target
-
-- Decision: Flatpak Obsidian is the primary Linux target.
-- Why: Flatpak sandboxing hides host CUDA libraries; supporting it as primary forces the override and scoping mechanics that native installs get for free. See `docs/guides/linux-flatpak-gpu-setup.md` for the GPU setup procedure.
-
-### D-003: Shipped Plugin Is CPU-Only By Default; GPU Is Per-Platform Additive
-
-- Decision: Every shipped plugin includes a CPU-only sidecar. GPU support is additive per platform — Whisper supports Metal (macOS) and CUDA (Windows/Linux); Cohere supports CUDA encoder-only on Windows/Linux, CPU on macOS.
-- Why: Single CPU baseline keeps the install path simple and makes the inventory promise honest. GPU choices flow through the runtime probe, not hard-coded UI logic.
-- See: `docs/architecture/platform-runtime-dependencies.md` for the full platform matrix and the Cohere decoder constraint.
-
-### D-004: Ships Both Whisper And Cohere Transcribe Families
-
-- Decision: V1 registers two model families: Whisper (`whisper_cpp` runtime via whisper-rs) and Cohere Transcribe (`onnx_runtime` runtime via the `ort` crate). Both run in the same Rust sidecar binary.
-- Why: Cohere leads the HuggingFace Open ASR Leaderboard; Whisper has the long tail of community quantizations. ONNX Runtime gives GPU on CUDA and DirectML from one runtime. Family/runtime terminology matches D-008's three-layer abstraction.
-
 ### D-005: UI Must Be Obsidian-Native
 
 - Decision: All plugin UI uses Obsidian's built-in primitives (Setting, Modal, Notice, toggles, dropdowns). Custom CSS extends Obsidian's patterns, never replaces them.
@@ -55,8 +34,3 @@ Durable workflow, product, and architecture decisions. Update in the same change
 
 - Decision: After model setup, the plugin operates fully offline. No network calls for transcription, no analytics or telemetry, no account or login flow. Model downloads from HuggingFace (user-initiated) are the only sanctioned outbound traffic.
 - Why: Privacy is the product. Anything that calls home or requires an account changes the value proposition fundamentally — even an anonymous "crash report" defaults users into trust they didn't grant. Treat this as a hard constraint when evaluating new features.
-
-### D-013: No Settings Versioning Or Migration Code
-
-- Decision: No `schemaVersion` field on settings, no migration code paths, no "preserve newer version" downgrade guards, no compatibility shims for hypothetical past schemas.
-- Why: This project is greenfield with no released installed-user base. Versioning and migration code is dead weight added for users that don't exist. Change settings shape in place; fix defaults; delete old code. Reintroduce versioning only when a real released schema needs to evolve without breaking installed users.

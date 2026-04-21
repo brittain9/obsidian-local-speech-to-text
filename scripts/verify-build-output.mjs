@@ -5,7 +5,6 @@ const profile = args.has('--release') ? 'release' : 'debug';
 const SIDECAR_BINARY_SUFFIX = process.platform === 'win32' ? '.exe' : '';
 
 const MAIN_BUNDLE_PATH = 'main.js';
-const RECORDER_WORKLET_PATH = 'assets/pcm-recorder.worklet.js';
 const SIDECAR_BINARY_PATH = `native/target/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
 const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
 const CUDA_PROVIDER_NAMES_BY_PLATFORM = {
@@ -25,12 +24,23 @@ async function main() {
     );
   }
 
-  await access(RECORDER_WORKLET_PATH);
+  if (mainBundle.includes('pcm-recorder.worklet.js')) {
+    throw new Error(
+      `Build output regression: ${MAIN_BUNDLE_PATH} still references an external recorder worklet asset.`,
+    );
+  }
+
+  if (!mainBundle.includes('PcmRecorderProcessor')) {
+    throw new Error(
+      `Build output regression: ${MAIN_BUNDLE_PATH} is missing the inlined recorder worklet source (PcmRecorderProcessor marker).`,
+    );
+  }
+
   await access(SIDECAR_BINARY_PATH);
 
   const cudaBuildVerified = await verifyOptionalCudaBuild();
   console.log(
-    `[verify-build-output] ${profile} profile: main bundle, recorder worklet, sidecar executable, and ${cudaBuildVerified ? 'CUDA runtime artifacts' : 'optional CUDA build path'} look valid`,
+    `[verify-build-output] ${profile} profile: main bundle, inlined recorder worklet, sidecar executable, and ${cudaBuildVerified ? 'CUDA runtime artifacts' : 'optional CUDA build path'} look valid`,
   );
 }
 
