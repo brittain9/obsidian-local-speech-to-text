@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "obsidian-local-stt-sidecar"
-version = "2026.4.20"
+version = "2026.4.21"
 dependencies = [
  "anyhow",
  "directories",
