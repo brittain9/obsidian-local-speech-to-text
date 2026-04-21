@@ -312,4 +312,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.metadata.outputs.version }}
-        run: gh release edit "$TAG" --draft=false
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
