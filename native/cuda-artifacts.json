@@ -1,0 +1,6 @@
+{
+  "providers": {
+    "linux": ["libonnxruntime_providers_shared.so", "libonnxruntime_providers_cuda.so"],
+    "win32": ["onnxruntime_providers_shared.dll", "onnxruntime_providers_cuda.dll"]
+  }
+}
