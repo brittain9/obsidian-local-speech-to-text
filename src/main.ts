@@ -3,12 +3,10 @@ import { dirname, join } from 'node:path';
 import { FileSystemAdapter, Notice, Platform, Plugin } from 'obsidian';
 
 import { AudioCaptureStream } from './audio/audio-capture-stream';
-import { PCM_RECORDER_WORKLET_OUTPUT_PATH } from './audio/pcm-recorder-worklet-shared';
 import { registerCommands } from './commands/register-commands';
 import { DictationSessionController } from './dictation/dictation-session-controller';
 import { dictationAnchorExtension } from './editor/dictation-anchor-extension';
 import { EditorService } from './editor/editor-service';
-import { assertAbsoluteExistingFilePath, getExistingPathKind } from './filesystem/path-validation';
 import { ModelInstallManager } from './models/model-install-manager';
 import { logAccelerationFallbacks } from './settings/acceleration-info';
 import {
@@ -21,6 +19,7 @@ import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
+import { resolveSidecarExecutablePath } from './sidecar/sidecar-paths';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
 
@@ -48,7 +47,6 @@ export default class LocalSttPlugin extends Plugin {
     });
     this.audioCaptureStream = new AudioCaptureStream({
       logger: this.logger,
-      resolveWorkletModulePath: async () => this.resolveRecorderWorkletModulePath(),
     });
     this.modelInstallManager = new ModelInstallManager({
       getSettings: () => this.settings,
@@ -221,41 +219,30 @@ export default class LocalSttPlugin extends Plugin {
   }
 
   private async resolveSidecarExecutablePath(): Promise<string> {
-    const overridePath = this.settings.sidecarPathOverride.trim();
-
-    if (overridePath.length > 0) {
-      return assertAbsoluteExistingFilePath(overridePath, 'Sidecar path override');
-    }
-
     const pluginDirectory = await this.resolvePluginDirectoryPath();
     const sidecarProjectDirectory = join(pluginDirectory, 'native');
-    const executableName = getSidecarExecutableName();
-    const cpuPath = join(sidecarProjectDirectory, 'target', 'debug', executableName);
+    const resolved = await resolveSidecarExecutablePath({
+      accelerationPreference: this.settings.accelerationPreference,
+      executableName: getSidecarExecutableName(),
+      pluginDirectory,
+      sidecarPathOverride: this.settings.sidecarPathOverride,
+      sidecarProjectDirectory,
+      supportsCuda: !Platform.isMacOS,
+    });
 
-    if (!Platform.isMacOS) {
-      const cudaPath = join(sidecarProjectDirectory, 'target-cuda', 'debug', executableName);
-      if ((await getExistingPathKind(cudaPath)) === 'file') {
-        this.logger.debug('sidecar', `using CUDA sidecar build at ${cudaPath}`);
-        await assertSidecarExecutableIsFresh(cudaPath, sidecarProjectDirectory);
-        return cudaPath;
-      }
-    }
-
-    const pathKind = await getExistingPathKind(cpuPath);
-
-    if (pathKind === 'missing') {
-      throw new Error(
-        `Sidecar executable was not found at ${cpuPath}. Build native first or configure Sidecar path override.`,
+    if (resolved.source === 'installed' && resolved.variant !== null) {
+      this.logger.debug(
+        'sidecar',
+        `using installed ${resolved.variant.toUpperCase()} sidecar at ${resolved.path}`,
       );
+    } else if (resolved.source === 'dev') {
+      if (resolved.variant === 'cuda') {
+        this.logger.debug('sidecar', `using CUDA sidecar build at ${resolved.path}`);
+      }
+      await assertSidecarExecutableIsFresh(resolved.path, sidecarProjectDirectory);
     }
 
-    if (pathKind !== 'file') {
-      throw new Error(`Sidecar executable path must point to a file: ${cpuPath}`);
-    }
-
-    await assertSidecarExecutableIsFresh(cpuPath, sidecarProjectDirectory);
-
-    return cpuPath;
+    return resolved.path;
   }
 
   private async resolvePluginDirectoryPath(): Promise<string> {
@@ -270,10 +257,6 @@ export default class LocalSttPlugin extends Plugin {
     }
 
     return join(vaultAdapter.getBasePath(), this.app.vault.configDir, 'plugins', this.manifest.id);
-  }
-
-  private async resolveRecorderWorkletModulePath(): Promise<string> {
-    return join(await this.resolvePluginDirectoryPath(), PCM_RECORDER_WORKLET_OUTPUT_PATH);
   }
 }
 
