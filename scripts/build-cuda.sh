@@ -164,8 +164,10 @@ cargo "${args[@]}"
 
 binary="$target_dir/$profile/obsidian-local-stt-sidecar"
 [[ -f "$binary" ]] || die "build completed but binary not found at $binary"
-require_glob_match "$target_dir/$profile/libonnxruntime_providers_shared.so*"
-require_glob_match "$target_dir/$profile/libonnxruntime_providers_cuda.so*"
-stage_runtime_artifact "$target_dir/$profile/libonnxruntime_providers_shared.so"
-stage_runtime_artifact "$target_dir/$profile/libonnxruntime_providers_cuda.so"
+
+providers=$(node -e 'const d=require("./native/cuda-artifacts.json"); console.log(d.providers.linux.join(" "))')
+for provider in $providers; do
+  require_glob_match "$target_dir/$profile/${provider}*"
+  stage_runtime_artifact "$target_dir/$profile/$provider"
+done
 printf 'Done: %s\n' "$binary"

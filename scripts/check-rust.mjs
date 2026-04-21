@@ -7,7 +7,6 @@ function run(command, args, env = process.env) {
   });
 }
 
-run(process.execPath, ['scripts/build-sidecar.mjs']);
 run('cargo', ['fmt', '--manifest-path', 'native/Cargo.toml', '--check']);
 run(
   'cargo',

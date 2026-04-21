@@ -79,7 +79,6 @@ jobs:
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
-            extra_files: ''
           - runner: macos-13
             asset_name: sidecar-macos-x86_64
             archive_name: sidecar-macos-x86_64.tar.gz
@@ -87,7 +86,6 @@ jobs:
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
-            extra_files: ''
           - runner: ubuntu-latest
             asset_name: sidecar-linux-x86_64-cpu
             archive_name: sidecar-linux-x86_64-cpu.tar.gz
@@ -95,7 +93,6 @@ jobs:
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
-            extra_files: ''
           - runner: ubuntu-latest
             asset_name: sidecar-linux-x86_64-cuda
             archive_name: sidecar-linux-x86_64-cuda.tar.gz
@@ -103,7 +100,6 @@ jobs:
             build_command: npm run build:sidecar:cuda:release
             cache_workspaces: native -> target-cuda
             cuda: true
-            extra_files: libonnxruntime_providers_shared.so libonnxruntime_providers_cuda.so
 
     runs-on: ${{ matrix.runner }}
 
@@ -115,10 +111,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24.14.1
-          cache: npm
-
-      - name: Upgrade npm
-        run: npm install --global npm@11.12.1
 
       - name: Install native build dependencies
         if: runner.os == 'Linux'
@@ -136,9 +128,6 @@ jobs:
           shared-key: ${{ matrix.asset_name }}
           cache-on-failure: true
 
-      - name: Install JavaScript dependencies
-        run: npm ci
-
       - name: Install CUDA toolkit
         if: matrix.cuda
         uses: Jimver/cuda-toolkit@v0.2.35
@@ -148,10 +137,6 @@ jobs:
 
       - name: Build sidecar
         run: ${{ matrix.build_command }}
-
-      - name: Verify CPU release build output
-        if: ${{ !matrix.cuda }}
-        run: npm run verify:build-output:release
 
       - name: Ad-hoc sign macOS binary
         if: runner.os == 'macOS'
@@ -163,13 +148,14 @@ jobs:
           ARCHIVE_NAME: ${{ matrix.archive_name }}
           ASSET_NAME: ${{ matrix.asset_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
-          EXTRA_FILES: ${{ matrix.extra_files }}
+          CUDA: ${{ matrix.cuda }}
         run: |
           artifact_dir="dist/${ASSET_NAME}"
           mkdir -p "$artifact_dir"
           cp "$BINARY_PATH" "$artifact_dir/obsidian-local-stt-sidecar"
-          if [[ -n "$EXTRA_FILES" ]]; then
-            for extra_file in $EXTRA_FILES; do
+          if [[ "$CUDA" == "true" ]]; then
+            extra_files=$(node -e 'const d=require("./native/cuda-artifacts.json"); console.log(d.providers.linux.join(" "))')
+            for extra_file in $extra_files; do
               cp "$(dirname "$BINARY_PATH")/$extra_file" "$artifact_dir/$extra_file"
             done
           fi
@@ -199,14 +185,12 @@ jobs:
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
-            extra_files: ''
           - asset_name: sidecar-windows-x86_64-cuda
             archive_name: sidecar-windows-x86_64-cuda.zip
             binary_path: native/target-cuda/release/obsidian-local-stt-sidecar.exe
             build_command: npm run build:sidecar:cuda:windows:release
             cache_workspaces: native -> target-cuda
             cuda: true
-            extra_files: onnxruntime_providers_shared.dll onnxruntime_providers_cuda.dll
 
     runs-on: windows-latest
 
@@ -218,10 +202,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24.14.1
-          cache: npm
-
-      - name: Upgrade npm
-        run: npm install --global npm@11.12.1
 
       - name: Expose libclang
         shell: pwsh
@@ -239,9 +219,6 @@ jobs:
           shared-key: ${{ matrix.asset_name }}
           cache-on-failure: true
 
-      - name: Install JavaScript dependencies
-        run: npm ci
-
       - name: Install CUDA toolkit
         if: matrix.cuda
         uses: Jimver/cuda-toolkit@v0.2.35
@@ -253,24 +230,20 @@ jobs:
         shell: pwsh
         run: ${{ matrix.build_command }}
 
-      - name: Verify CPU release build output
-        if: ${{ !matrix.cuda }}
-        shell: pwsh
-        run: npm run verify:build-output:release
-
       - name: Package release archive
         shell: pwsh
         env:
           ARCHIVE_NAME: ${{ matrix.archive_name }}
           ASSET_NAME: ${{ matrix.asset_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
-          EXTRA_FILES: ${{ matrix.extra_files }}
+          CUDA: ${{ matrix.cuda }}
         run: |
           $artifactDir = "dist/$env:ASSET_NAME"
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
           Copy-Item $env:BINARY_PATH "$artifactDir/obsidian-local-stt-sidecar.exe"
-          if ($env:EXTRA_FILES.Length -gt 0) {
-            foreach ($extraFile in $env:EXTRA_FILES.Split(' ')) {
+          if ($env:CUDA -eq 'true') {
+            $providers = (Get-Content native/cuda-artifacts.json -Raw | ConvertFrom-Json).providers.win32
+            foreach ($extraFile in $providers) {
               Copy-Item (Join-Path (Split-Path $env:BINARY_PATH -Parent) $extraFile) (Join-Path $artifactDir $extraFile)
             }
           }
@@ -331,10 +304,18 @@ jobs:
           name: release-${{ needs.metadata.outputs.version }}
           path: dist/release/*
 
-      - name: Publish GitHub release
+      - name: Create draft release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/release/*
           name: ${{ needs.metadata.outputs.version }}
           tag_name: ${{ needs.metadata.outputs.version }}
+          draft: true
+
+      - name: Publish release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.version }}
+        run: gh release edit "$TAG" --draft=false

@@ -4,13 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  getDevSidecarExecutablePath,
-  getInstalledSidecarExecutablePath,
-  pickSidecarVariant,
-  resolveInstalledSidecarExecutablePath,
-  resolveSidecarExecutablePath,
-} from '../src/sidecar/sidecar-paths';
+import { resolveSidecarExecutablePath } from '../src/sidecar/sidecar-paths';
 
 const tempDirectories: string[] = [];
 
@@ -20,103 +14,6 @@ afterEach(async () => {
       .splice(0)
       .map((directoryPath) => rm(directoryPath, { force: true, recursive: true })),
   );
-});
-
-describe('pickSidecarVariant', () => {
-  it('prefers CUDA when auto mode has an installed CUDA variant', () => {
-    expect(
-      pickSidecarVariant('auto', {
-        hasCpu: true,
-        hasCuda: true,
-        supportsCuda: true,
-      }),
-    ).toBe('cuda');
-  });
-
-  it('falls back to CPU when auto mode has no installed CUDA variant', () => {
-    expect(
-      pickSidecarVariant('auto', {
-        hasCpu: true,
-        hasCuda: false,
-        supportsCuda: true,
-      }),
-    ).toBe('cpu');
-  });
-
-  it('requires an installed CPU binary when cpu_only is selected', () => {
-    expect(
-      pickSidecarVariant('cpu_only', {
-        hasCpu: false,
-        hasCuda: true,
-        supportsCuda: true,
-      }),
-    ).toBeNull();
-  });
-
-  it('does not select CUDA in cpu_only mode for dev fallback either', () => {
-    expect(
-      pickSidecarVariant('cpu_only', {
-        hasCpu: true,
-        hasCuda: true,
-        supportsCuda: true,
-      }),
-    ).toBe('cpu');
-  });
-});
-
-describe('resolveInstalledSidecarExecutablePath', () => {
-  it('returns the installed CUDA binary when auto mode can use it', async () => {
-    const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar.exe';
-    await writeInstalledBinary(pluginDirectory, 'cpu', executableName);
-    await writeInstalledBinary(pluginDirectory, 'cuda', executableName);
-
-    await expect(
-      resolveInstalledSidecarExecutablePath({
-        accelerationPreference: 'auto',
-        executableName,
-        pluginDirectory,
-        supportsCuda: true,
-      }),
-    ).resolves.toEqual({
-      path: getInstalledSidecarExecutablePath(pluginDirectory, 'cuda', executableName),
-      variant: 'cuda',
-    });
-  });
-
-  it('returns the installed CPU binary when cpu_only is selected', async () => {
-    const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
-    await writeInstalledBinary(pluginDirectory, 'cpu', executableName);
-    await writeInstalledBinary(pluginDirectory, 'cuda', executableName);
-
-    await expect(
-      resolveInstalledSidecarExecutablePath({
-        accelerationPreference: 'cpu_only',
-        executableName,
-        pluginDirectory,
-        supportsCuda: true,
-      }),
-    ).resolves.toEqual({
-      path: getInstalledSidecarExecutablePath(pluginDirectory, 'cpu', executableName),
-      variant: 'cpu',
-    });
-  });
-
-  it('returns null when no installed binary matches the requested mode', async () => {
-    const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
-    await writeInstalledBinary(pluginDirectory, 'cuda', executableName);
-
-    await expect(
-      resolveInstalledSidecarExecutablePath({
-        accelerationPreference: 'cpu_only',
-        executableName,
-        pluginDirectory,
-        supportsCuda: true,
-      }),
-    ).resolves.toBeNull();
-  });
 });
 
 describe('resolveSidecarExecutablePath', () => {
@@ -155,6 +52,50 @@ describe('resolveSidecarExecutablePath', () => {
     ).rejects.toThrow(/Sidecar path override does not exist/);
   });
 
+  it('prefers the installed CUDA binary when auto mode can use it', async () => {
+    const pluginDirectory = await createPluginFixture();
+    const executableName = 'obsidian-local-stt-sidecar.exe';
+    await writeInstalledBinary(pluginDirectory, 'cpu', executableName);
+    await writeInstalledBinary(pluginDirectory, 'cuda', executableName);
+
+    await expect(
+      resolveSidecarExecutablePath({
+        accelerationPreference: 'auto',
+        executableName,
+        pluginDirectory,
+        sidecarPathOverride: '',
+        sidecarProjectDirectory: join(pluginDirectory, 'native'),
+        supportsCuda: true,
+      }),
+    ).resolves.toEqual({
+      path: join(pluginDirectory, 'bin', 'cuda', executableName),
+      source: 'installed',
+      variant: 'cuda',
+    });
+  });
+
+  it('picks the installed CPU binary when cpu_only is selected even if CUDA is installed', async () => {
+    const pluginDirectory = await createPluginFixture();
+    const executableName = 'obsidian-local-stt-sidecar';
+    await writeInstalledBinary(pluginDirectory, 'cpu', executableName);
+    await writeInstalledBinary(pluginDirectory, 'cuda', executableName);
+
+    await expect(
+      resolveSidecarExecutablePath({
+        accelerationPreference: 'cpu_only',
+        executableName,
+        pluginDirectory,
+        sidecarPathOverride: '',
+        sidecarProjectDirectory: join(pluginDirectory, 'native'),
+        supportsCuda: true,
+      }),
+    ).resolves.toEqual({
+      path: join(pluginDirectory, 'bin', 'cpu', executableName),
+      source: 'installed',
+      variant: 'cpu',
+    });
+  });
+
   it('prefers an installed binary over a dev build', async () => {
     const pluginDirectory = await createPluginFixture();
     const executableName = 'obsidian-local-stt-sidecar';
@@ -172,7 +113,7 @@ describe('resolveSidecarExecutablePath', () => {
         supportsCuda: true,
       }),
     ).resolves.toEqual({
-      path: getInstalledSidecarExecutablePath(pluginDirectory, 'cpu', executableName),
+      path: join(pluginDirectory, 'bin', 'cpu', executableName),
       source: 'installed',
       variant: 'cpu',
     });
@@ -195,7 +136,7 @@ describe('resolveSidecarExecutablePath', () => {
         supportsCuda: true,
       }),
     ).resolves.toEqual({
-      path: getDevSidecarExecutablePath(sidecarProjectDirectory, 'cuda', executableName),
+      path: join(sidecarProjectDirectory, 'target-cuda', 'debug', executableName),
       source: 'dev',
       variant: 'cuda',
     });
@@ -218,7 +159,7 @@ describe('resolveSidecarExecutablePath', () => {
         supportsCuda: false,
       }),
     ).resolves.toEqual({
-      path: getDevSidecarExecutablePath(sidecarProjectDirectory, 'cpu', executableName),
+      path: join(sidecarProjectDirectory, 'target', 'debug', executableName),
       source: 'dev',
       variant: 'cpu',
     });
@@ -256,17 +197,6 @@ describe('resolveSidecarExecutablePath', () => {
         supportsCuda: true,
       }),
     ).rejects.toThrow(/Sidecar executable was not found/);
-  });
-});
-
-describe('sidecar path helpers', () => {
-  it('builds the expected dev fallback paths', () => {
-    expect(getDevSidecarExecutablePath(join('plugin', 'native'), 'cpu', 'sidecar')).toBe(
-      join('plugin', 'native', 'target', 'debug', 'sidecar'),
-    );
-    expect(getDevSidecarExecutablePath(join('plugin', 'native'), 'cuda', 'sidecar')).toBe(
-      join('plugin', 'native', 'target-cuda', 'debug', 'sidecar'),
-    );
   });
 });
 

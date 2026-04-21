@@ -7,11 +7,8 @@ const SIDECAR_BINARY_SUFFIX = process.platform === 'win32' ? '.exe' : '';
 const MAIN_BUNDLE_PATH = 'main.js';
 const SIDECAR_BINARY_PATH = `native/target/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
 const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
-const CUDA_PROVIDER_NAMES_BY_PLATFORM = {
-  win32: ['onnxruntime_providers_shared.dll', 'onnxruntime_providers_cuda.dll'],
-  linux: ['libonnxruntime_providers_shared.so', 'libonnxruntime_providers_cuda.so'],
-};
-const CUDA_PROVIDER_PATHS = (CUDA_PROVIDER_NAMES_BY_PLATFORM[process.platform] ?? []).map(
+const cudaArtifacts = JSON.parse(await readFile('native/cuda-artifacts.json', 'utf8'));
+const CUDA_PROVIDER_PATHS = (cudaArtifacts.providers[process.platform] ?? []).map(
   (name) => `native/target-cuda/${profile}/${name}`,
 );
 

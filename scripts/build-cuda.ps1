@@ -24,11 +24,8 @@ Write-Host "Building CUDA sidecar ($buildProfile)..."
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $outDir = "native/target-cuda/$buildProfile"
-$expected = @(
-  "$outDir/obsidian-local-stt-sidecar.exe",
-  "$outDir/onnxruntime_providers_shared.dll",
-  "$outDir/onnxruntime_providers_cuda.dll"
-)
+$providers = (Get-Content native/cuda-artifacts.json -Raw | ConvertFrom-Json).providers.win32
+$expected = @("$outDir/obsidian-local-stt-sidecar.exe") + ($providers | ForEach-Object { "$outDir/$_" })
 foreach ($path in $expected) {
   if (-not (Test-Path $path)) {
     throw "expected build artifact missing: $path"

@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises';
 
 const DATE_VERSION_PATTERN = /^(\d{4})\.(1[0-2]|[1-9])\.(3[01]|[12]\d|[1-9])$/;
 
-const args = new Set(process.argv.slice(2));
 const releaseTag = readFlagValue('--tag');
 
 const manifest = JSON.parse(await readFile('manifest.json', 'utf8'));
@@ -53,13 +52,13 @@ function assertDateVersion(source, value) {
 }
 
 function readFlagValue(flagName) {
-  if (!args.has(flagName)) {
+  const flagIndex = process.argv.indexOf(flagName);
+
+  if (flagIndex < 0) {
     return null;
   }
 
-  const argv = process.argv.slice(2);
-  const flagIndex = argv.indexOf(flagName);
-  const flagValue = argv[flagIndex + 1];
+  const flagValue = process.argv[flagIndex + 1];
 
   if (flagValue === undefined) {
     throw new Error(`${flagName} requires a value.`);
