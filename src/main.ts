@@ -15,6 +15,7 @@ import {
   resolvePluginSettings,
 } from './settings/plugin-settings';
 import { LocalSttSettingTab } from './settings/settings-tab';
+import { openFirstRunSetupModal } from './setup/first-run-setup-modal';
 import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
@@ -78,7 +79,13 @@ export default class LocalSttPlugin extends Plugin {
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
         getSettings: () => this.settings,
+        logger: this.logger,
         modelInstallManager: this.requireModelInstallManager(),
+        pluginVersion: this.manifest.version,
+        resolvePluginDirectory: () => this.resolvePluginDirectoryPath(),
+        restartSidecar: async () => {
+          await this.requireSidecarConnection().restart(this.settings.sidecarStartupTimeoutMs);
+        },
         saveSettings: async (nextSettings) => {
           await this.updateSettings(nextSettings);
         },
@@ -95,6 +102,23 @@ export default class LocalSttPlugin extends Plugin {
       stopDictation: async () => this.requireDictationController().stopDictation(),
     });
 
+    this.app.workspace.onLayoutReady(() => {
+      void this.runPostLayoutStartup();
+    });
+
+    this.modelInstallManager?.init().catch((error: unknown) => {
+      this.logger.error('model', 'model install manager init failed', error);
+    });
+  }
+
+  private async runPostLayoutStartup(): Promise<void> {
+    const sidecarAvailable = await this.isSidecarAvailable();
+
+    if (!sidecarAvailable) {
+      await this.openFirstRunSetup();
+      return;
+    }
+
     try {
       await this.checkSidecarHealth({ showNotice: false });
       const systemInfo = await this.requireSidecarConnection().getSystemInfo();
@@ -102,9 +126,57 @@ export default class LocalSttPlugin extends Plugin {
     } catch (error) {
       this.logger.error('sidecar', 'initial startup check failed', error);
     }
+  }
 
-    this.modelInstallManager?.init().catch((error: unknown) => {
-      this.logger.error('model', 'model install manager init failed', error);
+  private async isSidecarAvailable(): Promise<boolean> {
+    if (this.settings.sidecarPathOverride.trim().length > 0) return true;
+
+    let pluginDirectory: string;
+
+    try {
+      pluginDirectory = await this.resolvePluginDirectoryPath();
+    } catch {
+      return false;
+    }
+
+    try {
+      await resolveSidecarExecutablePath({
+        accelerationPreference: this.settings.accelerationPreference,
+        executableName: getSidecarExecutableName(),
+        pluginDirectory,
+        sidecarPathOverride: '',
+        sidecarProjectDirectory: join(pluginDirectory, 'native'),
+        supportsCuda: !Platform.isMacOS,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async openFirstRunSetup(): Promise<void> {
+    let pluginDirectory: string;
+
+    try {
+      pluginDirectory = await this.resolvePluginDirectoryPath();
+    } catch (error) {
+      this.logger.error(
+        'installer',
+        'unable to resolve plugin directory for first-run setup',
+        error,
+      );
+      return;
+    }
+
+    openFirstRunSetupModal(this.app, {
+      logger: this.logger,
+      onInstalled: async () => {
+        await this.requireSidecarConnection().restart(this.settings.sidecarStartupTimeoutMs);
+        const systemInfo = await this.requireSidecarConnection().getSystemInfo();
+        logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
+      },
+      pluginDirectory,
+      version: this.manifest.version,
     });
   }
 

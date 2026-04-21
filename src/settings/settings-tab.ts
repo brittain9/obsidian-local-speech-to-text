@@ -1,12 +1,22 @@
 import type { App, Plugin } from 'obsidian';
-import { Platform, PluginSettingTab, Setting } from 'obsidian';
+import { Notice, Platform, PluginSettingTab, Setting } from 'obsidian';
 import { resolveEngineCapabilities } from '../models/capability-view';
 import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
 import { matchesModelTriple } from '../models/model-management-types';
+import { SidecarInstallModal } from '../setup/sidecar-install-modal';
+import { formatErrorMessage } from '../shared/format-utils';
+import type { PluginLogger } from '../shared/plugin-logger';
+import { detectNvidiaDriver, type NvidiaDriverStatus } from '../sidecar/gpu-precheck';
 import type { SpeakingStyle, SystemInfoEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
+import {
+  type InstallManifest,
+  readInstallManifest,
+  uninstallSidecarVariant,
+  variantDirectoryPath,
+} from '../sidecar/sidecar-installer';
 import { describeAcceleration } from './acceleration-info';
 import { renderModelSection } from './model-settings-section';
 import {
@@ -20,7 +30,11 @@ import {
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
+  logger?: PluginLogger | undefined;
   modelInstallManager: ModelInstallManager;
+  pluginVersion: string;
+  resolvePluginDirectory: () => Promise<string>;
+  restartSidecar: () => Promise<void>;
   saveSettings: (settings: PluginSettings) => Promise<void>;
   sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
 }
@@ -388,6 +402,134 @@ export class LocalSttSettingTab extends PluginSettingTab {
           void this.renderEngineOptions(containerEl, systemInfo);
         });
       });
+
+    await this.renderGpuSidecarControls(containerEl);
+  }
+
+  private async renderGpuSidecarControls(containerEl: HTMLDivElement): Promise<void> {
+    const pluginDirectory = await this.resolvePluginDirectorySafe();
+
+    if (pluginDirectory === null) return;
+
+    const cpuManifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cpu'));
+    const cudaManifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cuda'));
+
+    this.renderInstalledStatus(containerEl, cpuManifest, cudaManifest);
+
+    if (Platform.isMacOS) {
+      containerEl.createEl('p', {
+        cls: 'setting-item-description',
+        text: 'On macOS, Metal acceleration is compiled into the sidecar binary — no separate install step. The toggle above auto-enables it when the sidecar is running.',
+      });
+      return;
+    }
+
+    if (cudaManifest === null) {
+      await this.renderInstallCudaRow(containerEl, pluginDirectory);
+    } else {
+      this.renderUninstallCudaRow(containerEl, pluginDirectory);
+    }
+  }
+
+  private renderInstalledStatus(
+    containerEl: HTMLDivElement,
+    cpuManifest: InstallManifest | null,
+    cudaManifest: InstallManifest | null,
+  ): void {
+    const status = containerEl.createEl('p', { cls: 'setting-item-description' });
+    status.setText(
+      `Installed sidecars — CPU: ${formatInstalledStatus(cpuManifest)} · CUDA: ${formatInstalledStatus(cudaManifest)}`,
+    );
+  }
+
+  private async renderInstallCudaRow(
+    containerEl: HTMLDivElement,
+    pluginDirectory: string,
+  ): Promise<void> {
+    const driverStatus = await detectNvidiaDriver();
+    const driverReason = describeDriverStatus(driverStatus);
+
+    const setting = new Setting(containerEl)
+      .setName('Install CUDA acceleration')
+      .setDesc(driverReason);
+
+    setting.addButton((button) => {
+      button.setButtonText('Install CUDA sidecar');
+      if (driverStatus === 'absent') {
+        button.setDisabled(true);
+      } else if (driverStatus === 'present') {
+        button.setCta();
+      }
+      button.onClick(() => {
+        this.openCudaInstallModal(pluginDirectory);
+      });
+    });
+
+    if (driverStatus === 'absent') {
+      setting.addButton((button) => {
+        button.setButtonText('Install anyway');
+        button.setTooltip('Proceed with CUDA install even though no NVIDIA driver was detected.');
+        button.onClick(() => {
+          this.openCudaInstallModal(pluginDirectory);
+        });
+      });
+    }
+  }
+
+  private renderUninstallCudaRow(containerEl: HTMLDivElement, pluginDirectory: string): void {
+    new Setting(containerEl)
+      .setName('Uninstall GPU acceleration')
+      .setDesc('Removes the CUDA sidecar from this plugin directory and restarts on CPU.')
+      .addButton((button) => {
+        button.setButtonText('Uninstall CUDA sidecar');
+        button.setWarning();
+        button.onClick(() => {
+          void this.handleUninstallCuda(pluginDirectory);
+        });
+      });
+  }
+
+  private openCudaInstallModal(pluginDirectory: string): void {
+    new SidecarInstallModal(this.app, {
+      bodyText:
+        'Download the CUDA-accelerated sidecar for NVIDIA GPUs. This replaces the CPU sidecar while active. The CPU sidecar remains installed as a fallback.',
+      logger: this.dependencies.logger,
+      onInstalled: async () => {
+        await this.persistSettings({
+          ...this.dependencies.getSettings(),
+          accelerationPreference: 'auto',
+        });
+        await this.dependencies.restartSidecar();
+        this.display();
+      },
+      pluginDirectory,
+      primaryButtonText: 'Download CUDA sidecar',
+      successNotice: 'CUDA sidecar installed and started.',
+      title: 'Install CUDA acceleration',
+      variant: 'cuda',
+      version: this.dependencies.pluginVersion,
+    }).open();
+  }
+
+  private async handleUninstallCuda(pluginDirectory: string): Promise<void> {
+    try {
+      await uninstallSidecarVariant(pluginDirectory, 'cuda');
+      await this.dependencies.restartSidecar();
+      new Notice('CUDA sidecar uninstalled. Running on CPU.');
+      this.display();
+    } catch (error) {
+      this.dependencies.logger?.error('installer', 'failed to uninstall CUDA sidecar', error);
+      new Notice(`Failed to uninstall CUDA sidecar: ${formatErrorMessage(error)}`);
+    }
+  }
+
+  private async resolvePluginDirectorySafe(): Promise<string | null> {
+    try {
+      return await this.dependencies.resolvePluginDirectory();
+    } catch (error) {
+      this.dependencies.logger?.error('installer', 'failed to resolve plugin directory', error);
+      return null;
+    }
   }
 
   private async fetchSystemInfo(): Promise<SystemInfoEvent | null> {
@@ -400,5 +542,21 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
   private async persistSettings(nextSettings: PluginSettings): Promise<void> {
     await this.dependencies.saveSettings(nextSettings);
+  }
+}
+
+function formatInstalledStatus(manifest: InstallManifest | null): string {
+  if (manifest === null) return 'not installed';
+  return manifest.version;
+}
+
+function describeDriverStatus(status: NvidiaDriverStatus): string {
+  switch (status) {
+    case 'present':
+      return 'NVIDIA driver detected. Downloads the CUDA sidecar archive from GitHub releases.';
+    case 'absent':
+      return 'No NVIDIA driver detected (nvidia-smi not on PATH). Use "Install anyway" if you are certain your system supports CUDA.';
+    case 'unknown':
+      return 'Unable to probe for an NVIDIA driver. Proceed only if you know your GPU supports CUDA.';
   }
 }
