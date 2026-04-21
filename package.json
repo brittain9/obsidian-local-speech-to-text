@@ -1,6 +1,6 @@
 {
   "name": "local-transcript",
-  "version": "2026.4.18",
+  "version": "2026.4.20",
   "description": "Desktop-only local speech-to-text for Obsidian with a Rust sidecar.",
   "private": true,
   "license": "MIT",

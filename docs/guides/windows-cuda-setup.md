@@ -30,6 +30,8 @@ Current ONNX Runtime CUDA binaries for this repo expect:
 
 If those libraries are missing or mismatched, the sidecar reports that explicitly in Settings and falls back to CPU for Cohere instead of silently pretending CUDA worked.
 
+CUDA 13 is not a drop-in replacement. Whisper will still use CUDA because the sidecar compiles its own kernels against whichever `nvcc` is on PATH, but Cohere needs the CUDA 12 DLLs (`cudart64_12.dll`, `cublas64_12.dll`, etc.) that ship with a 12.x toolkit. Install CUDA 12.9 alongside any newer toolkit if you want Cohere on CUDA; the two versions coexist.
+
 ## Step 1: Verify The Toolkit
 
 Open PowerShell and confirm the CUDA toolkit is on the normal search path:
