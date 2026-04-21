@@ -65,12 +65,7 @@ Keep the provider DLLs next to the CUDA executable. They are part of the sidecar
 
 ## Step 3: Configure The Plugin
 
-If you are testing from a repo checkout, the plugin still auto-detects the CPU dev build in `native\target\debug`. To point the plugin at the CUDA build from `native\target-cuda`, set:
-
-1. `Settings -> Local STT -> Advanced: Sidecar`
-2. `Sidecar path override` = absolute path to `native\target-cuda\debug\obsidian-local-stt-sidecar.exe`
-
-If you are using a packaged Windows CUDA artifact that already ships the sidecar next to the plugin bundle, no extra path configuration is needed.
+If you are testing from a repo checkout, the plugin auto-detects the CUDA debug build at `native\target-cuda\debug` when present and falls back to `native\target\debug` otherwise. No path override is required — use `Sidecar path override` only for custom layouts.
 
 Under `Engine options`, leave `GPU acceleration` on `Use when available` unless you intentionally want CPU only.
 
