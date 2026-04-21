@@ -75,9 +75,9 @@ export const dictationAnchorDecorationsField = StateField.define<DecorationSet>(
     return decorationsFor(state);
   },
   update(value, tr) {
-    if (
-      tr.startState.field(dictationAnchorStateField) === tr.state.field(dictationAnchorStateField)
-    ) {
+    const prev = tr.startState.field(dictationAnchorStateField, false);
+    const next = tr.state.field(dictationAnchorStateField, false);
+    if (prev === next) {
       return value;
     }
     return decorationsFor(tr.state);
