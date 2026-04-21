@@ -37,7 +37,7 @@ Explicit non-goals for this PR:
 Per GitHub tag `<plugin-version>` (exactly matches `manifest.json`, `package.json`, and `native/Cargo.toml`), upload:
 
 - `manifest.json`, `main.js`, `styles.css` — Obsidian community-directory distribution path. `main.js` includes the recorder worklet; there is no extra `assets/` runtime payload.
-- `sidecar-macos-arm64.tar.gz`, `sidecar-macos-x86_64.tar.gz` — one Mach-O per arch; Metal is compile-time linked, no sibling libs.
+- `sidecar-macos-arm64.tar.gz` — Apple Silicon only; Metal is compile-time linked, no sibling libs. (Intel Mac dropped — CPU-only on pre-Metal hardware would be materially worse than Apple Silicon.)
 - `sidecar-linux-x86_64-cpu.tar.gz`, `sidecar-linux-x86_64-cuda.tar.gz` — CUDA archive carries sibling `libonnxruntime_providers_{shared,cuda}.so`.
 - `sidecar-windows-x86_64-cpu.zip`, `sidecar-windows-x86_64-cuda.zip` — CUDA zip carries sibling `onnxruntime_providers_{shared,cuda}.dll`.
 - `checksums.txt` — SHA256 for each sidecar archive.
@@ -142,7 +142,7 @@ New `.github/workflows/release.yml` supports two modes:
 - `workflow_dispatch` dry run — builds and packages the full release set, uploads workflow artifacts, but does not publish a GitHub release.
 - tag push for exact version tags (`1.2.3` style, no `v` prefix) — builds and packages the same artifacts, then publishes the GitHub release.
 
-- Job matrix: `macos-arm64`, `macos-x86_64` (use `macos-13` runner for Intel), `linux-x86_64-cpu`, `linux-x86_64-cuda`, `windows-x86_64-cpu`, `windows-x86_64-cuda`.
+- Job matrix: `macos-arm64`, `linux-x86_64-cpu`, `linux-x86_64-cuda`, `windows-x86_64-cpu`, `windows-x86_64-cuda`.
 - Each job builds the sidecar, packages the tar.gz/zip, emits a per-artifact SHA256.
 - Final aggregator job downloads all artifacts, writes `checksums.txt`, bundles the plugin, runs the updated release verification path, and then:
   - in dry-run mode, uploads canonical plugin files + sidecar archives + `checksums.txt` as workflow artifacts only

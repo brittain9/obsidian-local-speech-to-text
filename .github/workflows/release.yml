@@ -79,13 +79,6 @@ jobs:
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
-          - runner: macos-13
-            asset_name: sidecar-macos-x86_64
-            archive_name: sidecar-macos-x86_64.tar.gz
-            binary_path: native/target/release/obsidian-local-stt-sidecar
-            build_command: npm run build:sidecar:release
-            cache_workspaces: native -> target
-            cuda: false
           - runner: ubuntu-latest
             asset_name: sidecar-linux-x86_64-cpu
             archive_name: sidecar-linux-x86_64-cpu.tar.gz
