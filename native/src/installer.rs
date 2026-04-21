@@ -1188,7 +1188,10 @@ mod tests {
         let error = run_install_test(&request, cancel_handle, &reporter, &downloader, &probe)
             .expect_err("install should cancel after probe");
 
-        assert!(matches!(error, InstallError::Cancelled));
+        assert!(
+            matches!(error, InstallError::Cancelled),
+            "expected Cancelled, got: {error:?}"
+        );
         assert!(
             !request
                 .store_root

@@ -1296,10 +1296,8 @@ mod tests {
 
     #[test]
     fn start_session_rejects_missing_model() {
-        let (_, events) = test_app().handle_command(start_session_command(
-            "session-1",
-            std::path::Path::new("/tmp/definitely-missing-model.bin"),
-        ));
+        let missing = temp_dir().join("definitely-missing-model.bin");
+        let (_, events) = test_app().handle_command(start_session_command("session-1", &missing));
 
         assert!(
             matches!(events.first(), Some(Event::Error { code, .. }) if code == "missing_model_file")

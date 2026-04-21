@@ -333,13 +333,12 @@ mod tests {
 
     #[test]
     fn resolve_model_store_info_uses_absolute_override() {
-        let info = resolve_model_store_info(Some("/tmp/obsidian-local-stt-models"))
-            .expect("override should resolve");
+        let override_path = std::env::temp_dir().join("obsidian-local-stt-models");
+        let override_str = override_path.to_str().expect("temp path should be UTF-8");
 
-        assert_eq!(
-            info.path,
-            std::path::PathBuf::from("/tmp/obsidian-local-stt-models")
-        );
+        let info = resolve_model_store_info(Some(override_str)).expect("override should resolve");
+
+        assert_eq!(info.path, override_path);
         assert!(!info.using_default_path);
     }
 

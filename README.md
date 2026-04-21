@@ -3,12 +3,12 @@
 Run cutting-edge local transcription directly in Obsidian. Choose between Cohere Transcribe, a new best-in-class model, and Whisper, a well-known standard for offline speech recognition.
 
 ## Features
-- **Cross-platform design** — built for desktop Obsidian on macOS, Linux, and Windows, with Windows support planned for a later release.
+- **Cross-platform design** — built for desktop Obsidian on macOS, Linux, and Windows.
 - **Cohere Transcribe support** — use a [Hugging Face Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)-topping speech recognition model directly inside Obsidian.
 - **Whisper support** — choose a mature offline transcription model with a wide range of size and performance options.
 - **Silero v6 voice activity detection** — [enterprise-grade neural VAD](https://github.com/snakers4/silero-vad) for accurate, real-time speech boundary detection.
 - **One-click model management** — browse, download, and remove models from inside the plugin.
-- **Hardware acceleration** — supports Metal on macOS and CUDA on Linux, with Windows hardware acceleration planned alongside Windows support.
+- **Hardware acceleration** — supports Metal on macOS and CUDA on Linux and Windows.
 - **Obsidian-native experience** — integrates cleanly with the app through native settings, commands, and interface elements.
 - **English-first** — optimized for English; other languages supported where engines allow
 - **Privacy-first** — transcription happens locally, with no cloud processing, no telemetry, and no account required for model downloads.
@@ -21,7 +21,7 @@ Run cutting-edge local transcription directly in Obsidian. Choose between Cohere
 | macOS | Supported | Metal support for Whisper. |
 | Linux Native | Supported | CUDA support for Whisper and Cohere. |
 | Linux Flatpak | Supported | CUDA supported - [Flatpak GPU setup](docs/guides/linux-flatpak-gpu-setup.md). |
-| Windows | Planned | Not supported yet. |
+| Windows | Supported | CUDA support for Whisper and Cohere. [Windows CUDA setup](docs/guides/windows-cuda-setup.md). |
 
 ## Quick Start
 
@@ -62,6 +62,8 @@ Symlink or clone this repo into `<vault>/.obsidian/plugins/local-transcript`, en
 npm run build            # build sidecar + bundle plugin
 npm run build:frontend   # bundle plugin only (skip sidecar rebuild)
 npm run build:sidecar    # build sidecar only
+npm run build:sidecar:cuda            # Linux CUDA sidecar
+npm run build:sidecar:cuda:windows    # Windows CUDA sidecar
 npm run dev              # watch mode for plugin
 ```
 
