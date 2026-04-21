@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from '../filesystem/path-validation';
 import type { AccelerationPreference } from './protocol';
 
+export class SidecarNotInstalledError extends Error {
+  override readonly name = 'SidecarNotInstalledError';
+}
+
 export type SidecarVariant = 'cpu' | 'cuda';
 
 export type SidecarResolutionSource = 'override' | 'installed' | 'dev';
@@ -71,7 +75,7 @@ export async function resolveSidecarExecutablePath(
   }
 
   const searchedDevPaths = devCudaPath !== null ? [devCudaPath, devCpuPath] : [devCpuPath];
-  throw new Error(
+  throw new SidecarNotInstalledError(
     `Sidecar executable was not found in ${installedCpuPath} or ${searchedDevPaths.join(', ')}. Install the sidecar, build native first, or configure Sidecar path override.`,
   );
 }

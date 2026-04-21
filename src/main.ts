@@ -20,7 +20,7 @@ import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
-import { resolveSidecarExecutablePath } from './sidecar/sidecar-paths';
+import { resolveSidecarExecutablePath, SidecarNotInstalledError } from './sidecar/sidecar-paths';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
 
@@ -70,6 +70,9 @@ export default class LocalSttPlugin extends Plugin {
       notice: (message) => {
         new Notice(message);
       },
+      onSidecarMissing: () => {
+        void this.openFirstRunSetup();
+      },
       setRibbonState: (state) => {
         this.ribbonController?.setState(state);
       },
@@ -107,50 +110,29 @@ export default class LocalSttPlugin extends Plugin {
     });
 
     this.modelInstallManager?.init().catch((error: unknown) => {
+      if (error instanceof SidecarNotInstalledError) {
+        this.logger.debug('model', 'model install manager init skipped — sidecar not installed');
+        return;
+      }
       this.logger.error('model', 'model install manager init failed', error);
     });
   }
 
   private async runPostLayoutStartup(): Promise<void> {
-    const sidecarAvailable = await this.isSidecarAvailable();
-
-    if (!sidecarAvailable) {
-      await this.openFirstRunSetup();
-      return;
-    }
-
     try {
       await this.checkSidecarHealth({ showNotice: false });
       const systemInfo = await this.requireSidecarConnection().getSystemInfo();
       logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
     } catch (error) {
+      if (error instanceof SidecarNotInstalledError) {
+        this.logger.debug('sidecar', 'sidecar not installed on startup');
+        if (!this.settings.firstRunCompleted) {
+          await this.updateSettings({ ...this.settings, firstRunCompleted: true });
+          await this.openFirstRunSetup();
+        }
+        return;
+      }
       this.logger.error('sidecar', 'initial startup check failed', error);
-    }
-  }
-
-  private async isSidecarAvailable(): Promise<boolean> {
-    if (this.settings.sidecarPathOverride.trim().length > 0) return true;
-
-    let pluginDirectory: string;
-
-    try {
-      pluginDirectory = await this.resolvePluginDirectoryPath();
-    } catch {
-      return false;
-    }
-
-    try {
-      await resolveSidecarExecutablePath({
-        accelerationPreference: this.settings.accelerationPreference,
-        executableName: getSidecarExecutableName(),
-        pluginDirectory,
-        sidecarPathOverride: '',
-        sidecarProjectDirectory: join(pluginDirectory, 'native'),
-        supportsCuda: !Platform.isMacOS,
-      });
-      return true;
-    } catch {
-      return false;
     }
   }
 

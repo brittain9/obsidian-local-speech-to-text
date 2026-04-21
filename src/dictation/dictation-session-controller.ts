@@ -5,6 +5,7 @@ import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import type { SessionState, SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
+import { SidecarNotInstalledError } from '../sidecar/sidecar-paths';
 
 export type DictationControllerState =
   | 'idle'
@@ -25,10 +26,16 @@ interface DictationSessionControllerDependencies {
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
   notice: (message: string) => void;
+  onSidecarMissing?: () => void;
   setRibbonState: (state: DictationControllerState) => void;
   sidecarConnection: Pick<
     SidecarConnection,
-    'cancelSession' | 'sendAudioFrame' | 'startSession' | 'stopSession' | 'subscribe'
+    | 'cancelSession'
+    | 'ensureStarted'
+    | 'sendAudioFrame'
+    | 'startSession'
+    | 'stopSession'
+    | 'subscribe'
   >;
 }
 
@@ -88,6 +95,18 @@ export class DictationSessionController {
       return;
     }
 
+    try {
+      await this.dependencies.sidecarConnection.ensureStarted();
+    } catch (error) {
+      if (error instanceof SidecarNotInstalledError) {
+        this.dependencies.logger?.debug('sidecar', 'sidecar not installed — prompting install');
+        this.dependencies.onSidecarMissing?.();
+        return;
+      }
+      this.handleError('Failed to start the dictation session', error);
+      return;
+    }
+
     const settings = this.dependencies.getSettings();
     const selectedModel = this.requireSelectedModel(settings);
     const sessionId = createSessionId();
@@ -130,6 +149,12 @@ export class DictationSessionController {
       }
     } catch (error) {
       await this.cleanupLocalSession();
+      if (error instanceof SidecarNotInstalledError) {
+        this.dependencies.logger?.debug('sidecar', 'sidecar not installed — prompting install');
+        this.applyUiState('idle');
+        this.dependencies.onSidecarMissing?.();
+        return;
+      }
       this.handleError('Failed to start the dictation session', error);
     }
   }

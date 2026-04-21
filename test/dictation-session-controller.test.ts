@@ -8,6 +8,7 @@ import {
   type PluginSettings,
 } from '../src/settings/plugin-settings';
 import type { SessionState, SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
+import { SidecarNotInstalledError } from '../src/sidecar/sidecar-paths';
 
 class FakeEditorService {
   public readonly beginCalls: Array<DictationAnchor> = [];
@@ -63,6 +64,7 @@ class FakeSidecarConnection {
       type: 'session_stopped',
     } as const;
   });
+  public ensureStarted = vi.fn(async () => {});
   public listeners = new Set<(event: SidecarEvent) => void>();
   public lastSessionId: string | null = null;
   public sendAudioFrame = vi.fn(() => {});
@@ -192,6 +194,74 @@ describe('DictationSessionController', () => {
     expect(captureStream.stop).toHaveBeenCalledTimes(1);
     expect(controller.getState()).toBe('error');
     expect(controller.isBusy()).toBe(false);
+  });
+
+  it('prompts install when the sidecar is not installed and suppresses the error notice', async () => {
+    const captureStream = new FakeCaptureStream();
+    const notice = vi.fn();
+    const onSidecarMissing = vi.fn();
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.ensureStarted.mockImplementationOnce(async () => {
+      throw new SidecarNotInstalledError('Sidecar executable was not found in ...');
+    });
+    const controller = createController({
+      captureStream,
+      getSettings: () => createSettings({ selectedModel: null }),
+      notice,
+      onSidecarMissing,
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(onSidecarMissing).toHaveBeenCalledTimes(1);
+    expect(notice).not.toHaveBeenCalled();
+    expect(captureStream.start).not.toHaveBeenCalled();
+    expect(sidecarConnection.startSession).not.toHaveBeenCalled();
+    expect(controller.isBusy()).toBe(false);
+  });
+
+  it('does not call onSidecarMissing for generic sidecar errors', async () => {
+    const notice = vi.fn();
+    const onSidecarMissing = vi.fn();
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.startSession.mockImplementationOnce(async () => {
+      throw new Error('Sidecar refused session.');
+    });
+    const controller = createController({
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      notice,
+      onSidecarMissing,
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(onSidecarMissing).not.toHaveBeenCalled();
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice.mock.calls[0]?.[0]).toContain('Failed to start the dictation session');
+  });
+
+  it('surfaces a generic error when the sidecar pre-check fails non-sentinel', async () => {
+    const notice = vi.fn();
+    const onSidecarMissing = vi.fn();
+    const sidecarConnection = new FakeSidecarConnection();
+    sidecarConnection.ensureStarted.mockImplementationOnce(async () => {
+      throw new Error('Sidecar path override does not exist');
+    });
+    const controller = createController({
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      notice,
+      onSidecarMissing,
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(onSidecarMissing).not.toHaveBeenCalled();
+    expect(sidecarConnection.startSession).not.toHaveBeenCalled();
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice.mock.calls[0]?.[0]).toContain('Failed to start the dictation session');
   });
 
   it('handles startup error events through the rejected startSession call only once', async () => {
@@ -671,6 +741,7 @@ function createController(overrides: {
   editorService?: FakeEditorService;
   getSettings?: () => PluginSettings;
   notice?: ReturnType<typeof vi.fn>;
+  onSidecarMissing?: () => void;
   sidecarConnection?: FakeSidecarConnection;
 }): DictationSessionController {
   return new DictationSessionController({
@@ -678,6 +749,7 @@ function createController(overrides: {
     editorService: overrides.editorService ?? new FakeEditorService(),
     getSettings: overrides.getSettings ?? (() => createSettings({})),
     notice: overrides.notice ?? (() => {}),
+    ...(overrides.onSidecarMissing ? { onSidecarMissing: overrides.onSidecarMissing } : {}),
     setRibbonState: () => {},
     sidecarConnection: overrides.sidecarConnection ?? new FakeSidecarConnection(),
   });
