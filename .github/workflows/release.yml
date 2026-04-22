@@ -68,6 +68,16 @@ jobs:
 
   build-sidecar-posix:
     needs: metadata
+    # GGML_NATIVE=OFF forces a portable CPU feature baseline (falls back to
+    # GGML_AVX2). Without this, ggml's cmake probes the runner's CPU and bakes
+    # in whatever SIMD it supports (AVX-512 on current Azure ubuntu-latest /
+    # windows-latest runners), which crashes with STATUS_ILLEGAL_INSTRUCTION
+    # on consumer CPUs that don't execute AVX-512 (e.g. Alder Lake / Raptor
+    # Lake). Set at job scope so Swatinem/rust-cache — which runs before the
+    # Build sidecar step — sees it when computing its key, otherwise stale
+    # AVX-512-compiled artifacts get restored and silently re-shipped.
+    env:
+      GGML_NATIVE: 'OFF'
     strategy:
       fail-fast: false
       matrix:
@@ -119,6 +129,11 @@ jobs:
         with:
           workspaces: ${{ matrix.cache_workspaces }}
           shared-key: ${{ matrix.asset_name }}
+          # Extend the default prefix list (CARGO CC CFLAGS CXX CMAKE RUST)
+          # with GGML and WHISPER so any future toggle of a GGML_* / WHISPER_*
+          # env (e.g. GGML_NATIVE) bumps the cache key and invalidates stale
+          # artifacts automatically.
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST GGML WHISPER
           cache-on-failure: true
 
       - name: Install CUDA toolkit
@@ -129,14 +144,6 @@ jobs:
           method: network
 
       - name: Build sidecar
-        env:
-          # Force a portable CPU feature baseline. Without this, ggml's cmake
-          # probes the runner's CPU and bakes in whatever SIMD it supports
-          # (AVX-512 on current Azure windows-latest / ubuntu-latest runners),
-          # which crashes with STATUS_ILLEGAL_INSTRUCTION on consumer CPUs
-          # that don't execute AVX-512 (e.g. Alder Lake / Raptor Lake).
-          # Disabling GGML_NATIVE falls back to GGML_AVX2 as the baseline.
-          GGML_NATIVE: 'OFF'
         run: ${{ matrix.build_command }}
 
       - name: Ad-hoc sign macOS binary
@@ -159,6 +166,14 @@ jobs:
             for extra_file in $extra_files; do
               cp "$(dirname "$BINARY_PATH")/$extra_file" "$artifact_dir/$extra_file"
             done
+            # CUDA runtime libs aren't provided by the user's system in a
+            # version-compatible form (cudart is major-versioned and not
+            # forward-compatible), so ship them next to the binary. cp -L
+            # dereferences the symlinks into real files.
+            runtime_files=$(node -e 'const d=require("./native/cuda-artifacts.json"); console.log(d.runtime.linux.join(" "))')
+            for runtime_file in $runtime_files; do
+              cp -L "/usr/local/cuda/lib64/$runtime_file" "$artifact_dir/$runtime_file"
+            done
           fi
           tar -czf "dist/${ARCHIVE_NAME}" -C "$artifact_dir" .
 
@@ -176,6 +191,10 @@ jobs:
 
   build-sidecar-windows:
     needs: metadata
+    # See build-sidecar-posix for rationale. Must be at job scope so
+    # Swatinem/rust-cache's key-computation sees it.
+    env:
+      GGML_NATIVE: 'OFF'
     strategy:
       fail-fast: false
       matrix:
@@ -218,6 +237,7 @@ jobs:
         with:
           workspaces: ${{ matrix.cache_workspaces }}
           shared-key: ${{ matrix.asset_name }}
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST GGML WHISPER
           cache-on-failure: true
 
       - name: Install CUDA toolkit
@@ -230,12 +250,6 @@ jobs:
 
       - name: Build sidecar
         shell: pwsh
-        env:
-          # See comment in build-sidecar-posix; same rationale on Windows.
-          # windows-latest runners expose AVX-512-capable CPUs, so GGML_NATIVE=ON
-          # bakes AVX-512 into the binary and users with Alder Lake / Raptor Lake
-          # crash with STATUS_ILLEGAL_INSTRUCTION (0xC000001D).
-          GGML_NATIVE: 'OFF'
         run: ${{ matrix.build_command }}
 
       - name: Package release archive
@@ -244,6 +258,7 @@ jobs:
           ARCHIVE_NAME: ${{ matrix.archive_name }}
           ASSET_NAME: ${{ matrix.asset_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
+          CUDA: ${{ matrix.cuda }}
         run: |
           $artifactDir = "dist/$env:ASSET_NAME"
           $binaryDir = Split-Path $env:BINARY_PATH -Parent
@@ -251,6 +266,16 @@ jobs:
           Copy-Item $env:BINARY_PATH "$artifactDir/obsidian-local-stt-sidecar.exe"
           Get-ChildItem $binaryDir -Filter '*.dll' -File | ForEach-Object {
             Copy-Item $_.FullName (Join-Path $artifactDir $_.Name)
+          }
+          if ($env:CUDA -eq 'true') {
+            # Ship the CUDA runtime DLLs we directly import. Windows DLL search
+            # order checks the exe's own directory first, so this bundled copy
+            # wins over any mismatched system-installed CUDA the user may have.
+            $runtimeJson = node -e "const d=require('./native/cuda-artifacts.json'); console.log(d.runtime.win32.join(' '))"
+            foreach ($runtimeFile in $runtimeJson.Trim().Split(' ')) {
+              $source = Join-Path $env:CUDA_PATH "bin/$runtimeFile"
+              Copy-Item $source (Join-Path $artifactDir $runtimeFile)
+            }
           }
           Compress-Archive -Path "$artifactDir/*" -DestinationPath "dist/$env:ARCHIVE_NAME" -Force
 
