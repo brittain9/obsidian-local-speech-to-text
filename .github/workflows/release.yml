@@ -129,6 +129,14 @@ jobs:
           method: network
 
       - name: Build sidecar
+        env:
+          # Force a portable CPU feature baseline. Without this, ggml's cmake
+          # probes the runner's CPU and bakes in whatever SIMD it supports
+          # (AVX-512 on current Azure windows-latest / ubuntu-latest runners),
+          # which crashes with STATUS_ILLEGAL_INSTRUCTION on consumer CPUs
+          # that don't execute AVX-512 (e.g. Alder Lake / Raptor Lake).
+          # Disabling GGML_NATIVE falls back to GGML_AVX2 as the baseline.
+          GGML_NATIVE: 'OFF'
         run: ${{ matrix.build_command }}
 
       - name: Ad-hoc sign macOS binary
@@ -222,6 +230,12 @@ jobs:
 
       - name: Build sidecar
         shell: pwsh
+        env:
+          # See comment in build-sidecar-posix; same rationale on Windows.
+          # windows-latest runners expose AVX-512-capable CPUs, so GGML_NATIVE=ON
+          # bakes AVX-512 into the binary and users with Alder Lake / Raptor Lake
+          # crash with STATUS_ILLEGAL_INSTRUCTION (0xC000001D).
+          GGML_NATIVE: 'OFF'
         run: ${{ matrix.build_command }}
 
       - name: Package release archive
