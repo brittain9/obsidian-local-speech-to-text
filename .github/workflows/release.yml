@@ -230,16 +230,13 @@ jobs:
           ARCHIVE_NAME: ${{ matrix.archive_name }}
           ASSET_NAME: ${{ matrix.asset_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
-          CUDA: ${{ matrix.cuda }}
         run: |
           $artifactDir = "dist/$env:ASSET_NAME"
+          $binaryDir = Split-Path $env:BINARY_PATH -Parent
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
           Copy-Item $env:BINARY_PATH "$artifactDir/obsidian-local-stt-sidecar.exe"
-          if ($env:CUDA -eq 'true') {
-            $providers = (Get-Content native/cuda-artifacts.json -Raw | ConvertFrom-Json).providers.win32
-            foreach ($extraFile in $providers) {
-              Copy-Item (Join-Path (Split-Path $env:BINARY_PATH -Parent) $extraFile) (Join-Path $artifactDir $extraFile)
-            }
+          Get-ChildItem $binaryDir -Filter '*.dll' -File | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $artifactDir $_.Name)
           }
           Compress-Archive -Path "$artifactDir/*" -DestinationPath "dist/$env:ARCHIVE_NAME" -Force
 
