@@ -156,6 +156,7 @@ export default class LocalSttPlugin extends Plugin {
         await this.requireSidecarConnection().restart(this.settings.sidecarStartupTimeoutMs);
         const systemInfo = await this.requireSidecarConnection().getSystemInfo();
         logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
+        await this.requireModelInstallManager().init();
       },
       pluginDirectory,
       version: this.manifest.version,

@@ -116,16 +116,24 @@ export class DictationSessionController {
     this.applyUiState('starting');
     this.dependencies.logger?.debug('session', `starting dictation session ${sessionId}`);
 
+    let frameForwardAborted = false;
+
     try {
       await this.dependencies.captureStream.start((frameBytes) => {
-        if (this.sessionId !== sessionId) {
+        if (frameForwardAborted || this.sessionId !== sessionId) {
           return;
         }
 
         try {
           this.dependencies.sidecarConnection.sendAudioFrame(frameBytes);
         } catch (error) {
-          this.dependencies.logger?.warn('session', 'failed to forward an audio frame', error);
+          frameForwardAborted = true;
+          this.dependencies.logger?.warn(
+            'session',
+            'stopping audio capture: sidecar rejected an audio frame',
+            error,
+          );
+          void this.dependencies.captureStream.stop();
         }
       });
       this.pendingStartSessionId = sessionId;

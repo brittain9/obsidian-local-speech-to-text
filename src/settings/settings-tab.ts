@@ -37,7 +37,7 @@ interface SettingsTabDependencies {
   resolvePluginDirectory: () => Promise<string>;
   restartSidecar: () => Promise<void>;
   saveSettings: (settings: PluginSettings) => Promise<void>;
-  sidecarConnection: Pick<SidecarConnection, 'getSystemInfo'>;
+  sidecarConnection: Pick<SidecarConnection, 'getSystemInfo' | 'shutdown'>;
 }
 
 const DICTATION_ANCHOR_OPTIONS: Array<{ label: string; value: DictationAnchor }> = [
@@ -556,6 +556,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       onInstalled: async () => {
         await copy.onInstalled?.();
         await this.dependencies.restartSidecar();
+        await this.dependencies.modelInstallManager.init();
         this.display();
       },
       pluginDirectory,
@@ -569,6 +570,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
   private async handleUninstallCuda(pluginDirectory: string): Promise<void> {
     try {
+      await this.dependencies.sidecarConnection.shutdown();
       await uninstallSidecarVariant(pluginDirectory, 'cuda');
       await this.dependencies.restartSidecar();
       new Notice('CUDA sidecar uninstalled. Running on CPU.');
