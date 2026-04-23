@@ -162,10 +162,14 @@ jobs:
           mkdir -p "$artifact_dir"
           cp "$BINARY_PATH" "$artifact_dir/obsidian-local-stt-sidecar"
           if [[ "$CUDA" == "true" ]]; then
-            extra_files=$(node -e 'const d=require("./native/cuda-artifacts.json"); console.log(d.providers.linux.join(" "))')
-            for extra_file in $extra_files; do
+            while IFS= read -r extra_file; do
               cp "$(dirname "$BINARY_PATH")/$extra_file" "$artifact_dir/$extra_file"
-            done
+              # Strip unneeded ELF symbols from provider shared libs to trim
+              # the release archive. strip --strip-unneeded keeps dynamic
+              # symbols that runtime dlopen/dlsym chains need. Linux-only —
+              # macOS CUDA is not a target and its strip flags differ.
+              strip --strip-unneeded "$artifact_dir/$extra_file"
+            done < <(node scripts/list-cuda-artifacts.mjs providers linux)
             # CUDA runtime libs aren't provided by the user's system in a
             # version-compatible form (cudart is major-versioned and not
             # forward-compatible), so ship them next to the binary. cp -L
@@ -173,10 +177,17 @@ jobs:
             # directory the same way scripts/build-cuda.sh does so there's
             # one source of truth.
             cuda_lib="$(dirname "$(dirname "$(which nvcc)")")/targets/$(uname -m)-linux/lib"
-            runtime_files=$(node -e 'const d=require("./native/cuda-artifacts.json"); console.log(d.runtime.linux.join(" "))')
-            for runtime_file in $runtime_files; do
+            while IFS= read -r runtime_file; do
               cp -L "$cuda_lib/$runtime_file" "$artifact_dir/$runtime_file"
-            done
+            done < <(node scripts/list-cuda-artifacts.mjs runtime linux)
+          fi
+          # Linux-only: strip the sidecar ELF. The Rust release profile
+          # strips Rust-owned symbols, but bundled C++/CUDA objects (ggml,
+          # whisper.cpp, ORT kernels) can still carry debug sections.
+          # macOS binaries are ad-hoc codesigned in the previous step; do
+          # not strip them (both the signature and `strip` semantics differ).
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            strip --strip-unneeded "$artifact_dir/obsidian-local-stt-sidecar"
           fi
           tar -czf "dist/${ARCHIVE_NAME}" -C "$artifact_dir" .
 
@@ -271,15 +282,15 @@ jobs:
             # Copy only the ORT provider DLLs we actually register (not a
             # blanket *.dll glob, which scoops up unused providers like
             # DirectML and TensorRT that ort's copy-dylibs drops alongside).
-            $providerJson = node -e "const d=require('./native/cuda-artifacts.json'); console.log(d.providers.win32.join(' '))"
-            foreach ($providerFile in $providerJson.Trim().Split(' ')) {
+            $providerFiles = (& node scripts/list-cuda-artifacts.mjs providers win32) -split "`r?`n" | Where-Object { $_ -ne '' }
+            foreach ($providerFile in $providerFiles) {
               Copy-Item (Join-Path $binaryDir $providerFile) (Join-Path $artifactDir $providerFile)
             }
             # Ship the CUDA runtime DLLs we directly import. Windows DLL search
             # order checks the exe's own directory first, so this bundled copy
             # wins over any mismatched system-installed CUDA the user may have.
-            $runtimeJson = node -e "const d=require('./native/cuda-artifacts.json'); console.log(d.runtime.win32.join(' '))"
-            foreach ($runtimeFile in $runtimeJson.Trim().Split(' ')) {
+            $runtimeFiles = (& node scripts/list-cuda-artifacts.mjs runtime win32) -split "`r?`n" | Where-Object { $_ -ne '' }
+            foreach ($runtimeFile in $runtimeFiles) {
               $source = Join-Path $env:CUDA_PATH "bin/$runtimeFile"
               Copy-Item $source (Join-Path $artifactDir $runtimeFile)
             }

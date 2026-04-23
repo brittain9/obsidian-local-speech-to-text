@@ -35,3 +35,12 @@ engine-cohere-transcribe = ["half", "ort/half", "realfft"]
 gpu-metal = ["whisper-rs/metal"]
 gpu-cuda = ["whisper-rs/cuda"]
 gpu-ort-cuda = ["engine-cohere-transcribe", "ort/cuda"]
+
+# Release profile tuned for distribution size + steady-state perf. `panic`
+# stays at the implicit default (`unwind`) because worker.rs and installer.rs
+# use `catch_unwind` to isolate panics from native whisper/ort code — aborting
+# would regress that crash resilience.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

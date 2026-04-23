@@ -82,6 +82,7 @@ export default class LocalSttPlugin extends Plugin {
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
         getSettings: () => this.settings,
+        isDictationBusy: () => this.dictationController?.isBusy() ?? false,
         logger: this.logger,
         modelInstallManager: this.requireModelInstallManager(),
         pluginVersion: this.manifest.version,

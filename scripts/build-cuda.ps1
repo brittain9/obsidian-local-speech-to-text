@@ -24,7 +24,7 @@ Write-Host "Building CUDA sidecar ($buildProfile)..."
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $outDir = "native/target-cuda/$buildProfile"
-$providers = (Get-Content native/cuda-artifacts.json -Raw | ConvertFrom-Json).providers.win32
+$providers = (& node scripts/list-cuda-artifacts.mjs providers win32) -split "`r?`n" | Where-Object { $_ -ne '' }
 $expected = @("$outDir/obsidian-local-stt-sidecar.exe") + ($providers | ForEach-Object { "$outDir/$_" })
 foreach ($path in $expected) {
   if (-not (Test-Path $path)) {

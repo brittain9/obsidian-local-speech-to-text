@@ -165,9 +165,8 @@ cargo "${args[@]}"
 binary="$target_dir/$profile/obsidian-local-stt-sidecar"
 [[ -f "$binary" ]] || die "build completed but binary not found at $binary"
 
-providers=$(node -e 'const d=require("./native/cuda-artifacts.json"); console.log(d.providers.linux.join(" "))')
-for provider in $providers; do
+while IFS= read -r provider; do
   require_glob_match "$target_dir/$profile/${provider}*"
   stage_runtime_artifact "$target_dir/$profile/$provider"
-done
+done < <(node "$REPO_ROOT/scripts/list-cuda-artifacts.mjs" providers linux)
 printf 'Done: %s\n' "$binary"

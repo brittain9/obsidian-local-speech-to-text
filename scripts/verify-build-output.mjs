@@ -27,9 +27,11 @@ async function main() {
     );
   }
 
-  if (!mainBundle.includes('PcmRecorderProcessor')) {
+  // Use the AudioWorklet's registered name as the canary: it's a string
+  // literal that survives minification, unlike the class symbol.
+  if (!mainBundle.includes('obsidian-local-stt-pcm-recorder')) {
     throw new Error(
-      `Build output regression: ${MAIN_BUNDLE_PATH} is missing the inlined recorder worklet source (PcmRecorderProcessor marker).`,
+      `Build output regression: ${MAIN_BUNDLE_PATH} is missing the inlined recorder worklet source (registerProcessor name marker).`,
     );
   }
 

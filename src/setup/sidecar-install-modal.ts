@@ -22,6 +22,9 @@ export interface SidecarInstallModalOptions {
   version: string;
 }
 
+const STATUS_TONES = ['info', 'success', 'error'] as const;
+type StatusTone = (typeof STATUS_TONES)[number];
+
 export class SidecarInstallModal extends Modal {
   private abortController: AbortController | null = null;
   private installInProgress = false;
@@ -186,12 +189,14 @@ export class SidecarInstallModal extends Modal {
     this.progressBarEl.style.width = `${Math.max(0, Math.min(100, percent))}%`;
   }
 
-  private setStatus(message: string, tone: 'info' | 'success' | 'error'): void {
+  private setStatus(message: string, tone: StatusTone): void {
     if (this.statusEl === null) return;
     this.statusEl.setText(message);
-    this.statusEl.removeClass('local-stt-sidecar-install__status--info');
-    this.statusEl.removeClass('local-stt-sidecar-install__status--success');
-    this.statusEl.removeClass('local-stt-sidecar-install__status--error');
-    this.statusEl.addClass(`local-stt-sidecar-install__status--${tone}`);
+    for (const candidate of STATUS_TONES) {
+      this.statusEl.classList.toggle(
+        `local-stt-sidecar-install__status--${candidate}`,
+        candidate === tone,
+      );
+    }
   }
 }

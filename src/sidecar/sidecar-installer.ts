@@ -311,6 +311,9 @@ async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+const PROGRESS_REPORT_BYTE_DELTA = 256 * 1024;
+const PROGRESS_REPORT_INTERVAL_MS = 100;
+
 async function downloadToFile(
   url: string,
   destPath: string,
@@ -327,17 +330,31 @@ async function downloadToFile(
   const fileStream = createWriteStream(destPath);
   const hash: Hash = createHash('sha256');
   let bytesDownloaded = 0;
+  let lastReportedBytes = 0;
+  let lastReportedAt = 0;
 
   try {
     for await (const chunk of stream) {
       const buffer = chunk as Buffer;
       bytesDownloaded += buffer.length;
       hash.update(buffer);
-      onProgress(bytesDownloaded, totalBytes);
+
+      const now = Date.now();
+      if (
+        bytesDownloaded - lastReportedBytes >= PROGRESS_REPORT_BYTE_DELTA ||
+        now - lastReportedAt >= PROGRESS_REPORT_INTERVAL_MS
+      ) {
+        onProgress(bytesDownloaded, totalBytes);
+        lastReportedBytes = bytesDownloaded;
+        lastReportedAt = now;
+      }
 
       if (!fileStream.write(buffer)) {
         await new Promise<void>((resolve) => fileStream.once('drain', resolve));
       }
+    }
+    if (bytesDownloaded !== lastReportedBytes) {
+      onProgress(bytesDownloaded, totalBytes);
     }
   } finally {
     await new Promise<void>((resolve) => {
@@ -387,15 +404,23 @@ async function extractTarGz(archivePath: string, destDir: string): Promise<void>
     const isRegularFile = typeflag === '0' || typeflag === '\0';
     const isDirectory = typeflag === '5';
 
-    if (isRegularFile || isDirectory) {
-      const resolvedPath = resolveArchiveMemberPath(fullName, destDir);
+    if (!isRegularFile && !isDirectory) {
+      // Symlink ('2'), hardlink ('1'), PAX/GNU extended headers ('x'/'g'/'L'),
+      // character/block devices, etc. We do not ship any of these in release
+      // archives. Fail loudly instead of silently dropping data so a producer
+      // change cannot quietly break installs.
+      throw new Error(
+        `Unsupported tar entry type '${typeflag}' for ${fullName}. Release archives must contain only regular files and directories.`,
+      );
+    }
 
-      if (isDirectory) {
-        await mkdir(resolvedPath, { recursive: true });
-      } else {
-        await mkdir(dirname(resolvedPath), { recursive: true });
-        await writeFile(resolvedPath, decompressed.subarray(offset, offset + size));
-      }
+    const resolvedPath = resolveArchiveMemberPath(fullName, destDir);
+
+    if (isDirectory) {
+      await mkdir(resolvedPath, { recursive: true });
+    } else {
+      await mkdir(dirname(resolvedPath), { recursive: true });
+      await writeFile(resolvedPath, decompressed.subarray(offset, offset + size));
     }
 
     offset += Math.ceil(size / blockSize) * blockSize;
@@ -411,13 +436,23 @@ async function extractZip(archivePath: string, destDir: string): Promise<void> {
   }
 
   const totalEntries = archive.readUInt16LE(eocdOffset + 10);
+
+  if (totalEntries === 0xffff) {
+    throw new Error('ZIP64 archives are not supported.');
+  }
+
   let cursor = archive.readUInt32LE(eocdOffset + 16);
+
+  if (cursor === 0xffffffff) {
+    throw new Error('ZIP64 archives are not supported.');
+  }
 
   for (let entryIndex = 0; entryIndex < totalEntries; entryIndex += 1) {
     if (archive.readUInt32LE(cursor) !== 0x02014b50) {
       throw new Error(`Invalid zip central directory signature at offset ${cursor}.`);
     }
 
+    const gpFlags = archive.readUInt16LE(cursor + 8);
     const compressionMethod = archive.readUInt16LE(cursor + 10);
     const compressedSize = archive.readUInt32LE(cursor + 20);
     const fileNameLength = archive.readUInt16LE(cursor + 28);
@@ -425,6 +460,19 @@ async function extractZip(archivePath: string, destDir: string): Promise<void> {
     const fileCommentLength = archive.readUInt16LE(cursor + 32);
     const localHeaderOffset = archive.readUInt32LE(cursor + 42);
     const fileName = archive.subarray(cursor + 46, cursor + 46 + fileNameLength).toString('utf8');
+
+    // Bit 3 = sizes deferred to a post-data descriptor. We rely on sizes from
+    // the central directory; rather than trust a producer that sets this flag,
+    // fail loudly so a CI change can't silently corrupt extraction.
+    if ((gpFlags & 0x0008) !== 0) {
+      throw new Error(
+        `Zip entry ${fileName} uses data-descriptor encoding, which is not supported.`,
+      );
+    }
+
+    if (compressedSize === 0xffffffff || localHeaderOffset === 0xffffffff) {
+      throw new Error(`Zip entry ${fileName} uses ZIP64 extensions, which are not supported.`);
+    }
 
     if (archive.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
       throw new Error(`Invalid zip local header signature at offset ${localHeaderOffset}.`);

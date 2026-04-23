@@ -31,6 +31,7 @@ import {
 
 interface SettingsTabDependencies {
   getSettings: () => PluginSettings;
+  isDictationBusy: () => boolean;
   logger?: PluginLogger | undefined;
   modelInstallManager: ModelInstallManager;
   pluginVersion: string;
@@ -59,6 +60,7 @@ const SPEAKING_STYLE_OPTIONS: Array<{ label: string; value: SpeakingStyle }> = [
 
 export class LocalSttSettingTab extends PluginSettingTab {
   private disposeModelSection: (() => void) | null = null;
+  private nvidiaDriverStatus: Promise<NvidiaDriverStatus> | null = null;
 
   constructor(
     app: App,
@@ -333,6 +335,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
   private tearDown(): void {
     this.disposeModelSection?.();
     this.disposeModelSection = null;
+    this.nvidiaDriverStatus = null;
   }
 
   private buildModelInfoCallback(
@@ -480,7 +483,14 @@ export class LocalSttSettingTab extends PluginSettingTab {
     containerEl: HTMLDivElement,
     pluginDirectory: string,
   ): Promise<void> {
-    const driverStatus = await detectNvidiaDriver();
+    // Memoize the nvidia-smi probe for the tab's lifetime. display() can fire
+    // multiple times per tab open (e.g. after the accel toggle flips), and
+    // spawning a child process on each render is wasteful. Cleared in
+    // tearDown() so the driver state is re-probed next time the tab opens.
+    if (this.nvidiaDriverStatus === null) {
+      this.nvidiaDriverStatus = detectNvidiaDriver();
+    }
+    const driverStatus = await this.nvidiaDriverStatus;
     const driverReason = describeDriverStatus(driverStatus);
 
     const setting = new Setting(containerEl)
@@ -550,6 +560,11 @@ export class LocalSttSettingTab extends PluginSettingTab {
       title: string;
     },
   ): void {
+    if (this.dependencies.isDictationBusy()) {
+      new Notice('Stop dictation before installing a sidecar — the install restarts the engine.');
+      return;
+    }
+
     new SidecarInstallModal(this.app, {
       bodyText: copy.bodyText,
       logger: this.dependencies.logger,
@@ -569,8 +584,27 @@ export class LocalSttSettingTab extends PluginSettingTab {
   }
 
   private async handleUninstallCuda(pluginDirectory: string): Promise<void> {
+    if (this.dependencies.isDictationBusy()) {
+      new Notice('Stop dictation before uninstalling the CUDA sidecar.');
+      return;
+    }
+
+    // Shutdown is best-effort: Windows holds DLL handles on the live process,
+    // so skipping the await-for-exit step would EBUSY the rm -rf. But if the
+    // process already crashed, shutdown throws — in that case the directory is
+    // still safe to delete and we must reach restartSidecar() so the user
+    // isn't left with no working engine.
     try {
       await this.dependencies.sidecarConnection.shutdown();
+    } catch (error) {
+      this.dependencies.logger?.warn(
+        'installer',
+        'sidecar shutdown failed before CUDA uninstall; proceeding',
+        error,
+      );
+    }
+
+    try {
       await uninstallSidecarVariant(pluginDirectory, 'cuda');
       await this.dependencies.restartSidecar();
       new Notice('CUDA sidecar uninstalled. Running on CPU.');
