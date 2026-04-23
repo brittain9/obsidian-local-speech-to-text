@@ -155,7 +155,7 @@ args=(
   --config "host.linker=\"${CC}\""
   --config "host.rustflags=[\"-C\",\"link-arg=-fuse-ld=bfd\"]"
   --config "target.${host_triple}.linker=\"${CC}\""
-  --config "target.${host_triple}.rustflags=[\"-C\",\"link-arg=-fuse-ld=bfd\",\"-C\",\"link-arg=-Wl,-rpath,${cuda_lib}\"]"
+  --config "target.${host_triple}.rustflags=[\"-C\",\"link-arg=-fuse-ld=bfd\",\"-C\",\"link-arg=-Wl,-rpath,\$ORIGIN\"]"
 )
 [[ "$profile" == "release" ]] && args+=(--release)
 
