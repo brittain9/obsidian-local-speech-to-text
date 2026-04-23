@@ -15,11 +15,12 @@ import {
   resolvePluginSettings,
 } from './settings/plugin-settings';
 import { LocalSttSettingTab } from './settings/settings-tab';
+import { openFirstRunSetupModal } from './setup/first-run-setup-modal';
 import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
-import { resolveSidecarExecutablePath } from './sidecar/sidecar-paths';
+import { resolveSidecarExecutablePath, SidecarNotInstalledError } from './sidecar/sidecar-paths';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
 
@@ -69,6 +70,9 @@ export default class LocalSttPlugin extends Plugin {
       notice: (message) => {
         new Notice(message);
       },
+      onSidecarMissing: () => {
+        void this.openFirstRunSetup();
+      },
       setRibbonState: (state) => {
         this.ribbonController?.setState(state);
       },
@@ -78,7 +82,13 @@ export default class LocalSttPlugin extends Plugin {
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
         getSettings: () => this.settings,
+        logger: this.logger,
         modelInstallManager: this.requireModelInstallManager(),
+        pluginVersion: this.manifest.version,
+        resolvePluginDirectory: () => this.resolvePluginDirectoryPath(),
+        restartSidecar: async () => {
+          await this.requireSidecarConnection().restart(this.settings.sidecarStartupTimeoutMs);
+        },
         saveSettings: async (nextSettings) => {
           await this.updateSettings(nextSettings);
         },
@@ -95,16 +105,60 @@ export default class LocalSttPlugin extends Plugin {
       stopDictation: async () => this.requireDictationController().stopDictation(),
     });
 
+    this.app.workspace.onLayoutReady(() => {
+      void this.runPostLayoutStartup();
+    });
+
+    this.modelInstallManager?.init().catch((error: unknown) => {
+      if (error instanceof SidecarNotInstalledError) {
+        this.logger.debug('model', 'model install manager init skipped — sidecar not installed');
+        return;
+      }
+      this.logger.error('model', 'model install manager init failed', error);
+    });
+  }
+
+  private async runPostLayoutStartup(): Promise<void> {
     try {
       await this.checkSidecarHealth({ showNotice: false });
       const systemInfo = await this.requireSidecarConnection().getSystemInfo();
       logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
     } catch (error) {
+      if (error instanceof SidecarNotInstalledError) {
+        this.logger.debug('sidecar', 'sidecar not installed on startup');
+        if (!this.settings.firstRunCompleted) {
+          await this.updateSettings({ ...this.settings, firstRunCompleted: true });
+          await this.openFirstRunSetup();
+        }
+        return;
+      }
       this.logger.error('sidecar', 'initial startup check failed', error);
     }
+  }
 
-    this.modelInstallManager?.init().catch((error: unknown) => {
-      this.logger.error('model', 'model install manager init failed', error);
+  private async openFirstRunSetup(): Promise<void> {
+    let pluginDirectory: string;
+
+    try {
+      pluginDirectory = await this.resolvePluginDirectoryPath();
+    } catch (error) {
+      this.logger.error(
+        'installer',
+        'unable to resolve plugin directory for first-run setup',
+        error,
+      );
+      return;
+    }
+
+    openFirstRunSetupModal(this.app, {
+      logger: this.logger,
+      onInstalled: async () => {
+        await this.requireSidecarConnection().restart(this.settings.sidecarStartupTimeoutMs);
+        const systemInfo = await this.requireSidecarConnection().getSystemInfo();
+        logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
+      },
+      pluginDirectory,
+      version: this.manifest.version,
     });
   }
 

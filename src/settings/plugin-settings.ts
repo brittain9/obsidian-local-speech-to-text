@@ -25,6 +25,7 @@ export interface PluginSettings {
   cudaLibraryPath: string;
   developerMode: boolean;
   dictationAnchor: DictationAnchor;
+  firstRunCompleted: boolean;
   listeningMode: ListeningMode;
   modelStorePathOverride: string;
   pauseWhileProcessing: boolean;
@@ -41,6 +42,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   cudaLibraryPath: '',
   developerMode: false,
   dictationAnchor: 'at_cursor',
+  firstRunCompleted: false,
   listeningMode: 'one_sentence',
   modelStorePathOverride: '',
   pauseWhileProcessing: true,
@@ -62,6 +64,10 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
     dictationAnchor: isDictationAnchor(raw.dictationAnchor)
       ? raw.dictationAnchor
       : DEFAULT_PLUGIN_SETTINGS.dictationAnchor,
+    firstRunCompleted: readBoolean(
+      raw.firstRunCompleted,
+      DEFAULT_PLUGIN_SETTINGS.firstRunCompleted,
+    ),
     listeningMode: readListeningMode(raw.listeningMode),
     modelStorePathOverride: readString(
       raw.modelStorePathOverride,
