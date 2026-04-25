@@ -268,6 +268,50 @@ describe('installSidecar', () => {
     ).rejects.toThrow(/Refusing archive entry/);
   });
 
+  it('rejects with HTTP 404 when checksums.txt is missing for the version', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const archive = buildTarGz([
+      { content: Buffer.from('binary'), name: 'obsidian-local-stt-sidecar' },
+    ]);
+    const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
+
+    // Archive is reachable but checksums.txt is not stubbed — mock returns 404.
+    stubHttps({
+      [`https://releases.test/2026.4.21/${assetName}`]: archive,
+    });
+
+    await expect(
+      installSidecar({
+        pluginDirectory,
+        releaseBaseUrl: 'https://releases.test',
+        variant: 'cpu',
+        version: '2026.4.21',
+      }),
+    ).rejects.toThrow(/HTTP 404/);
+
+    const manifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cpu'));
+    expect(manifest).toBeNull();
+  });
+
+  it('aborts before any HTTP fetch when the signal is already aborted', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      installSidecar({
+        pluginDirectory,
+        releaseBaseUrl: 'https://releases.test',
+        signal: controller.signal,
+        variant: 'cpu',
+        version: '2026.4.21',
+      }),
+    ).rejects.toThrow(/aborted/i);
+
+    const manifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cpu'));
+    expect(manifest).toBeNull();
+  });
+
   it('extracts zip archives on Windows', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     const pluginDirectory = await createTempDirectory();

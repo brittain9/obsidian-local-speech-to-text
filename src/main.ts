@@ -15,6 +15,7 @@ import {
   resolvePluginSettings,
 } from './settings/plugin-settings';
 import { LocalSttSettingTab } from './settings/settings-tab';
+import { openFirstRunSetupIfNeeded } from './setup/first-run-gate';
 import { openFirstRunSetupModal } from './setup/first-run-setup-modal';
 import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
@@ -127,10 +128,11 @@ export default class LocalSttPlugin extends Plugin {
     } catch (error) {
       if (error instanceof SidecarNotInstalledError) {
         this.logger.debug('sidecar', 'sidecar not installed on startup');
-        if (!this.settings.firstRunCompleted) {
-          await this.updateSettings({ ...this.settings, firstRunCompleted: true });
-          await this.openFirstRunSetup();
-        }
+        await openFirstRunSetupIfNeeded({
+          openFirstRunSetup: () => this.openFirstRunSetup(),
+          settings: this.settings,
+          updateSettings: (next) => this.updateSettings(next),
+        });
         return;
       }
       this.logger.error('sidecar', 'initial startup check failed', error);
