@@ -11,6 +11,7 @@ import {
 } from '../sidecar/sidecar-installer';
 
 export interface SidecarInstallModalOptions {
+  beforeReplace?: (() => Promise<void>) | undefined;
   bodyText: string;
   logger?: PluginLogger | undefined;
   onInstalled: () => Promise<void>;
@@ -114,6 +115,7 @@ export class SidecarInstallModal extends Modal {
 
     try {
       await installSidecar({
+        beforeReplace: this.options.beforeReplace,
         logger: this.options.logger,
         onProgress: (progress) => {
           this.updateProgress(progress);

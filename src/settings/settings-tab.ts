@@ -566,6 +566,21 @@ export class LocalSttSettingTab extends PluginSettingTab {
     }
 
     new SidecarInstallModal(this.app, {
+      // Shut down the running sidecar before the installer replaces the
+      // destination directory. Windows holds DLL/exe handles on a live process
+      // and the rm(destinationDirectory) fails with EBUSY otherwise. Mirrors
+      // handleUninstallCuda. See docs/lessons.md 2026-04-22.
+      beforeReplace: async () => {
+        try {
+          await this.dependencies.sidecarConnection.shutdown();
+        } catch (error) {
+          this.dependencies.logger?.warn(
+            'installer',
+            'sidecar shutdown failed before install replace; proceeding',
+            error,
+          );
+        }
+      },
       bodyText: copy.bodyText,
       logger: this.dependencies.logger,
       onInstalled: async () => {

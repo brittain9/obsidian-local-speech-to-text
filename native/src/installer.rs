@@ -250,6 +250,19 @@ impl InstallCancellation {
     }
 }
 
+// Drop runs after all locals (open File handles, streams) are dropped, so the
+// staging directory delete does not race against a held handle on Windows.
+// See docs/lessons.md 2026-04-22.
+struct StagingGuard<'a> {
+    path: &'a Path,
+}
+
+impl Drop for StagingGuard<'_> {
+    fn drop(&mut self) {
+        cleanup_stage_dir(self.path);
+    }
+}
+
 fn run_install(
     request: InstallRequest,
     cancel_handle: Arc<InstallCancellation>,
@@ -459,6 +472,7 @@ async fn install_model_with_downloader(
     cleanup_stage_dir(&stage_dir);
     fs::create_dir_all(&stage_dir)
         .map_err(|error| fail_install(0, format!("Failed to create staging directory: {error}")))?;
+    let _stage_guard = StagingGuard { path: &stage_dir };
 
     let required_artifacts: Vec<&ModelArtifact> = request
         .model
@@ -470,12 +484,7 @@ async fn install_model_with_downloader(
     let mut downloaded_total = 0_u64;
 
     for (artifact_index, artifact) in required_artifacts.iter().enumerate() {
-        check_for_cancel(
-            cancel_handle.as_ref(),
-            reporter,
-            &stage_dir,
-            downloaded_total,
-        )?;
+        check_for_cancel(cancel_handle.as_ref(), reporter, downloaded_total)?;
 
         let artifact_path = stage_dir.join(&artifact.filename);
         let temp_path = artifact_path.with_extension("part");
@@ -505,17 +514,13 @@ async fn install_model_with_downloader(
 
         let mut stream = tokio::select! {
             _ = cancel_handle.cancelled() => {
-                return Err(cancel_install(reporter, &stage_dir, downloaded_total));
+                return Err(cancel_install(reporter, downloaded_total));
             }
             result = downloader.open(artifact) => {
-                result.map_err(|error| {
-                    cleanup_stage_dir(&stage_dir);
-                    fail_install(downloaded_total, format!("{error:#}"))
-                })?
+                result.map_err(|error| fail_install(downloaded_total, format!("{error:#}")))?
             }
         };
         let mut output = File::create(&temp_path).map_err(|error| {
-            cleanup_stage_dir(&stage_dir);
             fail_install(
                 downloaded_total,
                 format!("Failed to create {}: {error}", temp_path.display()),
@@ -529,7 +534,6 @@ async fn install_model_with_downloader(
                 _ = cancel_handle.cancelled() => {
                     return Err(cancel_install(
                         reporter,
-                        &stage_dir,
                         downloaded_total + artifact_downloaded,
                     ));
                 }
@@ -540,12 +544,10 @@ async fn install_model_with_downloader(
                 break;
             };
             let chunk = chunk.map_err(|error| {
-                cleanup_stage_dir(&stage_dir);
                 fail_install(downloaded_total + artifact_downloaded, format!("{error:#}"))
             })?;
 
             output.write_all(&chunk).map_err(|error| {
-                cleanup_stage_dir(&stage_dir);
                 fail_install(
                     downloaded_total + artifact_downloaded,
                     format!("Failed to write {}: {error}", temp_path.display()),
@@ -580,7 +582,6 @@ async fn install_model_with_downloader(
             })?;
 
         if artifact_downloaded != artifact.size_bytes {
-            cleanup_stage_dir(&stage_dir);
             return Err(fail_install(
                 downloaded_total + artifact_downloaded,
                 format!(
@@ -593,7 +594,6 @@ async fn install_model_with_downloader(
         let digest = hex_encode(&hasher.finalize());
 
         if digest != artifact.sha256 {
-            cleanup_stage_dir(&stage_dir);
             return Err(fail_install(
                 downloaded_total + artifact_downloaded,
                 format!("SHA-256 verification failed for {}.", artifact.filename),
@@ -601,7 +601,6 @@ async fn install_model_with_downloader(
         }
 
         fs::rename(&temp_path, &artifact_path).map_err(|error| {
-            cleanup_stage_dir(&stage_dir);
             fail_install(
                 downloaded_total + artifact_downloaded,
                 format!(
@@ -613,12 +612,7 @@ async fn install_model_with_downloader(
         downloaded_total += artifact_downloaded;
     }
 
-    check_for_cancel(
-        cancel_handle.as_ref(),
-        reporter,
-        &stage_dir,
-        downloaded_total,
-    )?;
+    check_for_cancel(cancel_handle.as_ref(), reporter, downloaded_total)?;
 
     let runtime_artifact = request.model.primary_artifact().ok_or_else(|| {
         fail_install(
@@ -639,7 +633,6 @@ async fn install_model_with_downloader(
         .map_err(|error| fail_install(downloaded_total, error.to_string()))?;
 
     model_probe(request.runtime_id, request.family_id, &runtime_path).map_err(|error| {
-        cleanup_stage_dir(&stage_dir);
         fail_install(
             downloaded_total,
             format!(
@@ -649,12 +642,7 @@ async fn install_model_with_downloader(
         )
     })?;
 
-    check_for_cancel(
-        cancel_handle.as_ref(),
-        reporter,
-        &stage_dir,
-        downloaded_total,
-    )?;
+    check_for_cancel(cancel_handle.as_ref(), reporter, downloaded_total)?;
 
     let metadata = create_install_metadata(
         &request.catalog,
@@ -662,27 +650,16 @@ async fn install_model_with_downloader(
         request.family_id,
         &request.model_id,
     )
-    .map_err(|error| {
-        cleanup_stage_dir(&stage_dir);
-        fail_install(downloaded_total, format!("{error:#}"))
-    })?;
-    write_install_metadata(&stage_dir, &metadata).map_err(|error| {
-        cleanup_stage_dir(&stage_dir);
-        fail_install(downloaded_total, format!("{error:#}"))
-    })?;
+    .map_err(|error| fail_install(downloaded_total, format!("{error:#}")))?;
+    write_install_metadata(&stage_dir, &metadata)
+        .map_err(|error| fail_install(downloaded_total, format!("{error:#}")))?;
 
-    check_for_cancel(
-        cancel_handle.as_ref(),
-        reporter,
-        &stage_dir,
-        downloaded_total,
-    )?;
+    check_for_cancel(cancel_handle.as_ref(), reporter, downloaded_total)?;
 
     match fs::remove_dir_all(&target_dir) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
-            cleanup_stage_dir(&stage_dir);
             return Err(fail_install(
                 downloaded_total,
                 format!(
@@ -694,7 +671,6 @@ async fn install_model_with_downloader(
     }
 
     fs::create_dir_all(&family_root).map_err(|error| {
-        cleanup_stage_dir(&stage_dir);
         fail_install(
             downloaded_total,
             format!(
@@ -704,7 +680,6 @@ async fn install_model_with_downloader(
         )
     })?;
     fs::rename(&stage_dir, &target_dir).map_err(|error| {
-        cleanup_stage_dir(&stage_dir);
         fail_install(
             downloaded_total,
             format!(
@@ -734,12 +709,7 @@ fn build_artifact_details(artifact_index: usize, artifact_count: usize) -> Optio
     Some(format!("File {} of {}", artifact_index + 1, artifact_count))
 }
 
-fn cancel_install(
-    reporter: &InstallReporter,
-    stage_dir: &Path,
-    downloaded_total: u64,
-) -> InstallError {
-    cleanup_stage_dir(stage_dir);
+fn cancel_install(reporter: &InstallReporter, downloaded_total: u64) -> InstallError {
     let _ = reporter.send(
         ModelInstallState::Cancelled,
         Some("Model install cancelled.".to_string()),
@@ -760,11 +730,10 @@ fn fail_install(downloaded_bytes: u64, message: String) -> InstallError {
 fn check_for_cancel(
     cancel_handle: &InstallCancellation,
     reporter: &InstallReporter,
-    stage_dir: &Path,
     downloaded_total: u64,
 ) -> Result<(), InstallError> {
     if cancel_handle.is_cancelled() {
-        return Err(cancel_install(reporter, stage_dir, downloaded_total));
+        return Err(cancel_install(reporter, downloaded_total));
     }
 
     Ok(())

@@ -312,6 +312,49 @@ describe('installSidecar', () => {
     expect(manifest).toBeNull();
   });
 
+  it('awaits beforeReplace while the previous install is still on disk', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const destinationDir = variantDirectoryPath(pluginDirectory, 'cpu');
+    await mkdir(destinationDir, { recursive: true });
+    const sentinelPath = join(destinationDir, 'previous-install-marker');
+    await writeFile(sentinelPath, 'old', 'utf8');
+
+    const archive = buildTarGz([
+      { content: Buffer.from('new-binary'), name: 'obsidian-local-stt-sidecar' },
+    ]);
+    const archiveSha256 = sha256Hex(archive);
+    const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
+    const checksumsText = `${archiveSha256}  ${assetName}\n`;
+    stubHttps({
+      [`https://releases.test/2026.4.21/${assetName}`]: archive,
+      'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
+    });
+
+    let sentinelVisibleDuringHook = false;
+    const beforeReplace = vi.fn(async () => {
+      try {
+        await readFile(sentinelPath);
+        sentinelVisibleDuringHook = true;
+      } catch {
+        sentinelVisibleDuringHook = false;
+      }
+    });
+
+    await installSidecar({
+      beforeReplace,
+      pluginDirectory,
+      releaseBaseUrl: 'https://releases.test',
+      variant: 'cpu',
+      version: '2026.4.21',
+    });
+
+    expect(beforeReplace).toHaveBeenCalledTimes(1);
+    expect(sentinelVisibleDuringHook).toBe(true);
+    await expect(
+      readFile(join(destinationDir, 'obsidian-local-stt-sidecar'), 'utf8'),
+    ).resolves.toBe('new-binary');
+  });
+
   it('extracts zip archives on Windows', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     const pluginDirectory = await createTempDirectory();

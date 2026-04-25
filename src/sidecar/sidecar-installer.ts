@@ -34,6 +34,11 @@ export interface InstallProgress {
 }
 
 export interface InstallSidecarOptions {
+  // Runs immediately before the destination directory is replaced. Use this to
+  // shut down a running sidecar so Windows releases its DLL/exe handles —
+  // otherwise rm(destinationDirectory) fails with EBUSY. See docs/lessons.md
+  // 2026-04-22.
+  beforeReplace?: (() => Promise<void>) | undefined;
   logger?: PluginLogger | undefined;
   onProgress?: ((progress: InstallProgress) => void) | undefined;
   pluginDirectory: string;
@@ -193,6 +198,7 @@ export async function installSidecar(
       'utf8',
     );
 
+    await options.beforeReplace?.();
     await rm(destinationDirectory, { force: true, recursive: true });
     await rename(stagingDirectory, destinationDirectory);
 
