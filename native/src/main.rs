@@ -4,9 +4,9 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use obsidian_local_stt_sidecar::app::{AppState, ControlFlow};
-use obsidian_local_stt_sidecar::catalog::ModelCatalog;
-use obsidian_local_stt_sidecar::protocol::{Event, IncomingFrame, read_frame, write_event_frame};
+use local_transcript_sidecar::app::{AppState, ControlFlow};
+use local_transcript_sidecar::catalog::ModelCatalog;
+use local_transcript_sidecar::protocol::{Event, IncomingFrame, read_frame, write_event_frame};
 use whisper_rs::install_logging_hooks;
 
 enum InputMessage {

@@ -1,16 +1,20 @@
 import { access, readFile } from 'node:fs/promises';
 
+import { listCudaArtifacts } from './lib/cuda-artifacts.mjs';
+
 const args = new Set(process.argv.slice(2));
 const profile = args.has('--release') ? 'release' : 'debug';
 const SIDECAR_BINARY_SUFFIX = process.platform === 'win32' ? '.exe' : '';
 
 const MAIN_BUNDLE_PATH = 'main.js';
-const SIDECAR_BINARY_PATH = `native/target/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
-const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
-const cudaArtifacts = JSON.parse(await readFile('native/cuda-artifacts.json', 'utf8'));
-const CUDA_PROVIDER_PATHS = (cudaArtifacts.providers[process.platform] ?? []).map(
-  (name) => `native/target-cuda/${profile}/${name}`,
-);
+const SIDECAR_BINARY_PATH = `native/target/${profile}/local-transcript-sidecar${SIDECAR_BINARY_SUFFIX}`;
+const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/local-transcript-sidecar${SIDECAR_BINARY_SUFFIX}`;
+const CUDA_PROVIDER_PATHS =
+  process.platform === 'linux' || process.platform === 'win32'
+    ? (await listCudaArtifacts('providers', process.platform)).map(
+        (name) => `native/target-cuda/${profile}/${name}`,
+      )
+    : [];
 
 async function main() {
   const mainBundle = await readFile(MAIN_BUNDLE_PATH, 'utf8');
@@ -27,9 +31,11 @@ async function main() {
     );
   }
 
-  if (!mainBundle.includes('PcmRecorderProcessor')) {
+  // Use the AudioWorklet's registered name as the canary: it's a string
+  // literal that survives minification, unlike the class symbol.
+  if (!mainBundle.includes('obsidian-local-stt-pcm-recorder')) {
     throw new Error(
-      `Build output regression: ${MAIN_BUNDLE_PATH} is missing the inlined recorder worklet source (PcmRecorderProcessor marker).`,
+      `Build output regression: ${MAIN_BUNDLE_PATH} is missing the inlined recorder worklet source (registerProcessor name marker).`,
     );
   }
 

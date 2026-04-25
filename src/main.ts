@@ -15,15 +15,15 @@ import {
   resolvePluginSettings,
 } from './settings/plugin-settings';
 import { LocalSttSettingTab } from './settings/settings-tab';
+import { openFirstRunSetupModal } from './setup/first-run-setup-modal';
 import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
-import { resolveSidecarExecutablePath } from './sidecar/sidecar-paths';
+import { formatSidecarExecutableName } from './sidecar/sidecar-executable';
+import { resolveSidecarExecutablePath, SidecarNotInstalledError } from './sidecar/sidecar-paths';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
-
-const SIDECAR_BINARY_BASENAME = 'obsidian-local-stt-sidecar';
 
 export default class LocalSttPlugin extends Plugin {
   private audioCaptureStream: AudioCaptureStream | null = null;
@@ -57,7 +57,7 @@ export default class LocalSttPlugin extends Plugin {
       sidecarConnection: this.sidecarConnection,
     });
 
-    const ribbonElement = this.addRibbonIcon('mic', 'Local STT: Click to start', () => {
+    const ribbonElement = this.addRibbonIcon('mic', 'Local Transcript: Click to start', () => {
       this.requireDictationController().handleRibbonClick();
     });
     this.ribbonController = new DictationRibbonController(ribbonElement);
@@ -69,6 +69,9 @@ export default class LocalSttPlugin extends Plugin {
       notice: (message) => {
         new Notice(message);
       },
+      onSidecarMissing: () => {
+        void this.openFirstRunSetup();
+      },
       setRibbonState: (state) => {
         this.ribbonController?.setState(state);
       },
@@ -78,7 +81,14 @@ export default class LocalSttPlugin extends Plugin {
     this.addSettingTab(
       new LocalSttSettingTab(this.app, this, {
         getSettings: () => this.settings,
+        isDictationBusy: () => this.dictationController?.isBusy() ?? false,
+        logger: this.logger,
         modelInstallManager: this.requireModelInstallManager(),
+        pluginVersion: this.manifest.version,
+        resolvePluginDirectory: () => this.resolvePluginDirectoryPath(),
+        restartSidecar: async () => {
+          await this.requireSidecarConnection().restart(this.settings.sidecarStartupTimeoutMs);
+        },
         saveSettings: async (nextSettings) => {
           await this.updateSettings(nextSettings);
         },
@@ -95,16 +105,58 @@ export default class LocalSttPlugin extends Plugin {
       stopDictation: async () => this.requireDictationController().stopDictation(),
     });
 
+    this.app.workspace.onLayoutReady(() => {
+      void this.runPostLayoutStartup();
+    });
+
+    this.modelInstallManager?.init().catch((error: unknown) => {
+      if (error instanceof SidecarNotInstalledError) {
+        this.logger.debug('model', 'model install manager init skipped — sidecar not installed');
+        return;
+      }
+      this.logger.error('model', 'model install manager init failed', error);
+    });
+  }
+
+  private async runPostLayoutStartup(): Promise<void> {
     try {
       await this.checkSidecarHealth({ showNotice: false });
       const systemInfo = await this.requireSidecarConnection().getSystemInfo();
       logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
     } catch (error) {
+      if (error instanceof SidecarNotInstalledError) {
+        this.logger.debug('sidecar', 'sidecar not installed on startup');
+        await this.openFirstRunSetup();
+        return;
+      }
       this.logger.error('sidecar', 'initial startup check failed', error);
     }
+  }
 
-    this.modelInstallManager?.init().catch((error: unknown) => {
-      this.logger.error('model', 'model install manager init failed', error);
+  private async openFirstRunSetup(): Promise<void> {
+    let pluginDirectory: string;
+
+    try {
+      pluginDirectory = await this.resolvePluginDirectoryPath();
+    } catch (error) {
+      this.logger.error(
+        'installer',
+        'unable to resolve plugin directory for first-run setup',
+        error,
+      );
+      return;
+    }
+
+    openFirstRunSetupModal(this.app, {
+      logger: this.logger,
+      onInstalled: async () => {
+        await this.requireSidecarConnection().restart(this.settings.sidecarStartupTimeoutMs);
+        const systemInfo = await this.requireSidecarConnection().getSystemInfo();
+        logAccelerationFallbacks(systemInfo, this.settings.accelerationPreference, this.logger);
+        await this.requireModelInstallManager().init();
+      },
+      pluginDirectory,
+      version: this.manifest.version,
     });
   }
 
@@ -139,7 +191,7 @@ export default class LocalSttPlugin extends Plugin {
       const health = await sidecarConnection.healthCheck(this.settings.sidecarStartupTimeoutMs);
 
       if (options.showNotice ?? true) {
-        new Notice(`Local STT sidecar is ready (${health.sidecarVersion}).`);
+        new Notice(`Local Transcript sidecar is ready (${health.sidecarVersion}).`);
       }
     } catch (error) {
       this.handleError('Sidecar health check failed', error, options.showNotice ?? true);
@@ -164,7 +216,7 @@ export default class LocalSttPlugin extends Plugin {
     try {
       const health = await sidecarConnection.restart(this.settings.sidecarStartupTimeoutMs);
 
-      new Notice(`Restarted Local STT sidecar (${health.sidecarVersion}).`);
+      new Notice(`Restarted Local Transcript sidecar (${health.sidecarVersion}).`);
     } catch (error) {
       this.handleError('Sidecar restart failed', error, true);
     }
@@ -247,7 +299,7 @@ export default class LocalSttPlugin extends Plugin {
 
   private async resolvePluginDirectoryPath(): Promise<string> {
     if (!Platform.isDesktopApp) {
-      throw new Error('Local STT requires Obsidian desktop.');
+      throw new Error('Local Transcript requires Obsidian desktop.');
     }
 
     const vaultAdapter = this.app.vault.adapter;
@@ -261,5 +313,5 @@ export default class LocalSttPlugin extends Plugin {
 }
 
 function getSidecarExecutableName(): string {
-  return Platform.isWin ? `${SIDECAR_BINARY_BASENAME}.exe` : SIDECAR_BINARY_BASENAME;
+  return formatSidecarExecutableName(Platform.isWin);
 }

@@ -26,6 +26,15 @@ function countDecorations(state: EditorState): number {
 }
 
 describe('dictationAnchorStateField', () => {
+  it('does not throw if decorations initialize before anchor state is present', () => {
+    const state = EditorState.create({
+      doc: 'hello',
+      extensions: [dictationAnchorDecorationsField],
+    });
+
+    expect(countDecorations(state)).toBe(0);
+  });
+
   it('starts with pos null and hidden mode', () => {
     const state = createState('hello');
     expect(state.field(dictationAnchorStateField)).toEqual({

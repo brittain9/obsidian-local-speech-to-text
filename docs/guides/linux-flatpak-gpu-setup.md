@@ -1,13 +1,15 @@
 # Linux Flatpak GPU Acceleration Setup
 
-This guide shows how to run the CUDA sidecar under Flatpak Obsidian on Linux. The supported path is now:
+This guide shows how to run the CUDA sidecar under Flatpak Obsidian on Linux. Published CUDA release archives bundle the CUDA runtime libraries used by Whisper CUDA; the CUDA Toolkit is needed only if you build the sidecar from source.
+
+The supported source-build path is:
 
 1. build the CUDA sidecar
 2. expose the host CUDA libraries to the Flatpak sandbox
 3. point `Sidecar path override` at the CUDA binary
 4. set `CUDA library path` so the plugin scopes `LD_LIBRARY_PATH` on the sidecar child process only
 
-The old wrapper script still exists as a deprecated fallback, but it should not be your first choice anymore.
+Wrapper scripts are not part of the supported setup. Point `Sidecar path override` directly at the CUDA binary and use `CUDA library path` for the host library directories.
 
 ## Why Flatpak Needs Extra Setup
 
@@ -19,10 +21,11 @@ Three things are different under Flatpak:
 
 ## Requirements
 
-- NVIDIA GPU and driver installed on the host
-- CUDA toolkit installed on the host
+- NVIDIA Turing-or-newer GPU and driver installed on the host
+- Published CUDA release archive, or CUDA Toolkit `12.9` with `nvcc` if building from source
+- cuDNN 9.x runtime libraries on the host if you want Cohere CUDA
 - Obsidian installed via Flatpak (`md.obsidian.Obsidian`)
-- CUDA sidecar built with `bash scripts/build-cuda.sh`
+- CUDA sidecar release archive extracted, or sidecar built with `bash scripts/build-cuda.sh`
 
 ### Cohere CUDA Runtime Requirements
 
@@ -33,7 +36,7 @@ Whisper CUDA and Cohere CUDA are not identical:
 
 Current ONNX Runtime CUDA binaries for this repo expect:
 
-- CUDA 12.x userspace libraries
+- CUDA 12.x userspace libraries bundled in the published CUDA archive
 - cuDNN 9.x userspace libraries
 
 If those libraries are missing or mismatched, the sidecar now reports that explicitly in Settings and falls back to CPU for Cohere instead of silently pretending CUDA worked.
@@ -52,11 +55,12 @@ Typical results:
 - CUDA toolkit root: `/usr/local/cuda-12.9`
 - driver library directory: `/usr/lib64` or `/usr/lib/x86_64-linux-gnu`
 
-Build the colon-separated library path you will paste into plugin settings. It usually needs:
+Build the colon-separated library path you will paste into plugin settings. For a published CUDA release archive, it usually needs the sidecar directory containing the bundled CUDA runtime files plus the driver and cuDNN library directories. For source builds, include toolkit paths as well.
 
-- toolkit target libs
-- toolkit `lib64`
+- sidecar directory with bundled CUDA runtime libraries, or toolkit target libs for source builds
+- toolkit `lib64` for source builds
 - driver library directory
+- cuDNN library directory when testing Cohere CUDA
 
 Example:
 
@@ -64,7 +68,9 @@ Example:
 /run/host/usr/local/cuda-12.9/targets/x86_64-linux/lib:/run/host/usr/local/cuda-12.9/lib64:/run/host/usr/lib64
 ```
 
-## Step 2: Build the CUDA Sidecar
+## Step 2: Build the CUDA Sidecar From Source
+
+Skip this step when using a published CUDA release archive.
 
 ```sh
 bash scripts/build-cuda.sh
@@ -74,8 +80,8 @@ bash scripts/build-cuda.sh --release
 
 Artifacts:
 
-- CPU build: `native/target/{debug|release}/obsidian-local-stt-sidecar`
-- CUDA build: `native/target-cuda/{debug|release}/obsidian-local-stt-sidecar`
+- CPU build: `native/target/{debug|release}/local-transcript-sidecar`
+- CUDA build: `native/target-cuda/{debug|release}/local-transcript-sidecar`
 
 ## Step 3: Apply Flatpak Overrides
 
@@ -114,18 +120,18 @@ For a stricter check, run `ldd` with the same library path you plan to paste int
 ```sh
 flatpak run --command=sh md.obsidian.Obsidian -c '
   export LD_LIBRARY_PATH=/run/host/usr/local/cuda-12.9/targets/x86_64-linux/lib:/run/host/usr/local/cuda-12.9/lib64:/run/host/usr/lib64
-  ldd /absolute/path/to/native/target-cuda/debug/obsidian-local-stt-sidecar | grep -E "cuda|cudnn|cublas|not found"
+  ldd /absolute/path/to/native/target-cuda/debug/local-transcript-sidecar | grep -E "cuda|cudnn|cublas|not found"
 '
 ```
 
 ## Step 5: Configure the Plugin
 
 1. Fully quit and reopen Obsidian after applying Flatpak overrides.
-2. Open `Settings -> Local STT -> Advanced: Sidecar`.
-3. The plugin auto-detects `native/target-cuda/debug` when present and falls back to `native/target/debug`, so leave `Sidecar path override` empty unless you need a custom layout.
+2. Open `Settings -> Local Transcript -> Advanced: Sidecar`.
+3. For Flatpak, set `Sidecar path override` to the CUDA sidecar binary path when the automatic plugin-local or dev-build discovery path is not visible inside the sandbox.
 4. Set `CUDA library path` to the colon-separated `/run/host/...` value you built earlier.
 5. Under `Engine options`, leave `GPU acceleration` on `Use when available` unless you intentionally want CPU only.
-6. Run `Local STT: Check Sidecar Health`.
+6. Run `Local Transcript: Check Sidecar Health`.
 
 The settings page now shows the effective backend per engine:
 
@@ -142,7 +148,8 @@ The settings page now shows the effective backend per engine:
 Check:
 
 - the Flatpak has `--filesystem=host-os`
-- the paths use the resolved toolkit directory (`cuda-12.x`), not `/usr/local/cuda`
+- release archives include their bundled CUDA runtime files next to the sidecar binary
+- source-build paths use the resolved toolkit directory (`cuda-12.x`), not `/usr/local/cuda`
 - the driver library directory is included in `CUDA library path`
 
 ### `NotReadableError: Could not start audio source`
@@ -163,7 +170,7 @@ Then use only the plugin’s `CUDA library path` setting.
 
 The sidecar successfully started, but ONNX Runtime could not register the CUDA execution provider. Common causes:
 
-- CUDA 12.x userspace libraries are not available in the sandbox
+- bundled CUDA 12.x userspace libraries are not available in the sandbox, or source-build toolkit paths are wrong
 - cuDNN 9.x is missing
 - the library path points at the wrong host directory
 - the host driver and userspace runtime do not match

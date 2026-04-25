@@ -5,6 +5,7 @@ import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import type { SessionState, SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
+import { SidecarNotInstalledError } from '../sidecar/sidecar-paths';
 
 export type DictationControllerState =
   | 'idle'
@@ -25,10 +26,16 @@ interface DictationSessionControllerDependencies {
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
   notice: (message: string) => void;
+  onSidecarMissing?: () => void;
   setRibbonState: (state: DictationControllerState) => void;
   sidecarConnection: Pick<
     SidecarConnection,
-    'cancelSession' | 'sendAudioFrame' | 'startSession' | 'stopSession' | 'subscribe'
+    | 'cancelSession'
+    | 'ensureStarted'
+    | 'sendAudioFrame'
+    | 'startSession'
+    | 'stopSession'
+    | 'subscribe'
   >;
 }
 
@@ -88,6 +95,18 @@ export class DictationSessionController {
       return;
     }
 
+    try {
+      await this.dependencies.sidecarConnection.ensureStarted();
+    } catch (error) {
+      if (error instanceof SidecarNotInstalledError) {
+        this.dependencies.logger?.debug('sidecar', 'sidecar not installed — prompting install');
+        this.dependencies.onSidecarMissing?.();
+        return;
+      }
+      this.handleError('Failed to start the dictation session', error);
+      return;
+    }
+
     const settings = this.dependencies.getSettings();
     const selectedModel = this.requireSelectedModel(settings);
     const sessionId = createSessionId();
@@ -97,16 +116,24 @@ export class DictationSessionController {
     this.applyUiState('starting');
     this.dependencies.logger?.debug('session', `starting dictation session ${sessionId}`);
 
+    let frameForwardAborted = false;
+
     try {
       await this.dependencies.captureStream.start((frameBytes) => {
-        if (this.sessionId !== sessionId) {
+        if (frameForwardAborted || this.sessionId !== sessionId) {
           return;
         }
 
         try {
           this.dependencies.sidecarConnection.sendAudioFrame(frameBytes);
         } catch (error) {
-          this.dependencies.logger?.warn('session', 'failed to forward an audio frame', error);
+          frameForwardAborted = true;
+          this.dependencies.logger?.warn(
+            'session',
+            'stopping audio capture: sidecar rejected an audio frame',
+            error,
+          );
+          void this.dependencies.captureStream.stop();
         }
       });
       this.pendingStartSessionId = sessionId;
@@ -130,6 +157,12 @@ export class DictationSessionController {
       }
     } catch (error) {
       await this.cleanupLocalSession();
+      if (error instanceof SidecarNotInstalledError) {
+        this.dependencies.logger?.debug('sidecar', 'sidecar not installed — prompting install');
+        this.applyUiState('idle');
+        this.dependencies.onSidecarMissing?.();
+        return;
+      }
       this.handleError('Failed to start the dictation session', error);
     }
   }
@@ -231,7 +264,7 @@ export class DictationSessionController {
 
     const detail = event.details ? `${event.message} (${event.details})` : event.message;
     this.applyUiState('error');
-    this.dependencies.notice(`Local STT: ${detail}`);
+    this.dependencies.notice(`Local Transcript: ${detail}`);
 
     if (event.sessionId !== undefined && event.sessionId === this.sessionId) {
       void this.abortSessionAfterError(event.sessionId);
@@ -254,7 +287,9 @@ export class DictationSessionController {
     this.applyUiState('idle');
 
     if (event.reason === 'timeout') {
-      this.dependencies.notice('Local STT: one-sentence mode timed out before speech started.');
+      this.dependencies.notice(
+        'Local Transcript: one-sentence mode timed out before speech started.',
+      );
     }
   }
 
@@ -290,7 +325,7 @@ export class DictationSessionController {
       case 'warning':
         if (event.sessionId === undefined || event.sessionId === this.sessionId) {
           const detail = event.details ? `${event.message} (${event.details})` : event.message;
-          this.dependencies.notice(`Local STT: ${detail}`);
+          this.dependencies.notice(`Local Transcript: ${detail}`);
         }
         return;
 
@@ -381,7 +416,7 @@ export class DictationSessionController {
       return settings.selectedModel;
     }
 
-    throw new Error('Select a Local STT model before starting dictation.');
+    throw new Error('Select a Local Transcript model before starting dictation.');
   }
 }
 

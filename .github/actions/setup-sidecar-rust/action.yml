@@ -1,0 +1,59 @@
+name: Setup sidecar Rust toolchain
+description: Install the pinned Rust toolchain, configure Swatinem/rust-cache, and install platform-specific native build prerequisites (Linux CMake, Windows libclang).
+
+inputs:
+  toolchain:
+    description: Rust toolchain version (e.g. 1.94.1).
+    required: true
+  components:
+    description: Comma-separated rustup components (e.g. 'rustfmt, clippy'). Empty for release builds.
+    required: false
+    default: ''
+  cache-workspaces:
+    description: Value passed to Swatinem/rust-cache 'workspaces' input.
+    required: true
+  cache-shared-key:
+    description: Value passed to Swatinem/rust-cache 'shared-key' input.
+    required: true
+  cache-env-vars:
+    description: Value passed to Swatinem/rust-cache 'env-vars' input. Default extends defaults with GGML and WHISPER so build-affecting flips bust the cache.
+    required: false
+    default: 'CARGO CC CFLAGS CXX CMAKE RUST GGML WHISPER'
+  cache-on-failure:
+    description: Value passed to Swatinem/rust-cache 'cache-on-failure' input.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Install native build dependencies (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y cmake
+
+    - name: Expose libclang (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: echo "LIBCLANG_PATH=$((Get-Command clang).Source | Split-Path -Parent)" >> $env:GITHUB_ENV
+
+    - name: Setup Rust (with components)
+      if: inputs.components != ''
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+
+    - name: Setup Rust
+      if: inputs.components == ''
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ inputs.toolchain }}
+
+    - name: Cache Rust build
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ inputs.cache-workspaces }}
+        shared-key: ${{ inputs.cache-shared-key }}
+        env-vars: ${{ inputs.cache-env-vars }}
+        cache-on-failure: ${{ inputs.cache-on-failure }}

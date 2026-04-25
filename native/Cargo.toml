@@ -1,16 +1,16 @@
 [package]
-name = "obsidian-local-stt-sidecar"
-version = "2026.4.20"
+name = "local-transcript-sidecar"
+version = "2026.4.25"
 edition = "2024"
 license = "MIT"
 rust-version = "1.94.1"
 
 [lib]
-name = "obsidian_local_stt_sidecar"
+name = "local_transcript_sidecar"
 path = "src/lib.rs"
 
 [[bin]]
-name = "obsidian-local-stt-sidecar"
+name = "local-transcript-sidecar"
 path = "src/main.rs"
 
 [dependencies]
@@ -35,3 +35,12 @@ engine-cohere-transcribe = ["half", "ort/half", "realfft"]
 gpu-metal = ["whisper-rs/metal"]
 gpu-cuda = ["whisper-rs/cuda"]
 gpu-ort-cuda = ["engine-cohere-transcribe", "ort/cuda"]
+
+# Release profile tuned for distribution size + steady-state perf. `panic`
+# stays at the implicit default (`unwind`) because worker.rs and installer.rs
+# use `catch_unwind` to isolate panics from native whisper/ort code — aborting
+# would regress that crash resilience.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

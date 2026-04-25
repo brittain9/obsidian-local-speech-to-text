@@ -1,19 +1,21 @@
 # Windows CUDA Setup
 
-This guide shows how to build and run the CUDA sidecar on native Windows. The supported path is:
+This guide shows how to run the CUDA sidecar on native Windows and, when needed, build it from source. For published release archives, normal users do not need the CUDA Toolkit.
+
+The supported source-build path is:
 
 1. install the Windows GPU prerequisites
 2. build the CUDA sidecar
 3. verify Windows can resolve the CUDA runtime
 4. start the plugin and confirm the selected engines report CUDA
 
-Windows is simpler than Linux Flatpak because there is no sandbox and no `LD_LIBRARY_PATH` scoping step. The CUDA runtime and cuDNN resolve from the normal Windows environment.
+Windows is simpler than Linux Flatpak because there is no sandbox and no `LD_LIBRARY_PATH` scoping step. The published CUDA archive bundles the CUDA runtime DLLs used by Whisper CUDA. cuDNN still resolves from the normal Windows environment when Cohere CUDA is enabled.
 
 ## Requirements
 
 - 64-bit Windows with desktop Obsidian
-- NVIDIA GPU with a driver compatible with CUDA 12.x
-- CUDA 12.x toolkit installed
+- NVIDIA Turing-or-newer GPU with a driver compatible with CUDA 12.x
+- Published CUDA release archive, or CUDA Toolkit `12.9` with `nvcc` if building from source
 - cuDNN 9.x runtime libraries if you want Cohere CUDA
 
 ### Cohere CUDA Runtime Requirements
@@ -25,20 +27,19 @@ Whisper CUDA and Cohere CUDA are not identical:
 
 Current ONNX Runtime CUDA binaries for this repo expect:
 
-- CUDA 12.x userspace libraries
+- CUDA 12.x userspace libraries bundled in the published CUDA archive
 - cuDNN 9.x userspace libraries
 
 If those libraries are missing or mismatched, the sidecar reports that explicitly in Settings and falls back to CPU for Cohere instead of silently pretending CUDA worked.
 
-CUDA 13 is not a drop-in replacement. Whisper will still use CUDA because the sidecar compiles its own kernels against whichever `nvcc` is on PATH, but Cohere needs the CUDA 12 DLLs (`cudart64_12.dll`, `cublas64_12.dll`, etc.) that ship with a 12.x toolkit. Install CUDA 12.9 alongside any newer toolkit if you want Cohere on CUDA; the two versions coexist.
+CUDA 13 is not a drop-in replacement for source builds. The release archive avoids this by shipping the CUDA 12 runtime DLLs (`cudart64_12.dll`, `cublas64_12.dll`, etc.) next to the sidecar. If you build from source, install CUDA 12.9 alongside any newer toolkit; the two versions coexist.
 
-## Step 1: Verify The Toolkit
+## Step 1: Verify Runtime Dependencies
 
-Open PowerShell and confirm the CUDA toolkit is on the normal search path:
+For a published CUDA release archive, confirm the driver is available:
 
 ```powershell
-nvcc --version
-where.exe cudart64_12.dll
+nvidia-smi
 ```
 
 If you want Cohere on CUDA as well, confirm cuDNN is resolvable:
@@ -47,9 +48,20 @@ If you want Cohere on CUDA as well, confirm cuDNN is resolvable:
 where.exe cudnn64_9.dll
 ```
 
+## Step 2: Verify The Toolkit For Source Builds
+
+Skip this step when using a published release archive. If you are building from source, open PowerShell and confirm CUDA Toolkit 12.9 is on the normal search path:
+
+```powershell
+nvcc --version
+where.exe cudart64_12.dll
+```
+
 If `nvcc` or `cudart64_12.dll` cannot be found, fix the CUDA toolkit install before you build.
 
-## Step 2: Build The CUDA Sidecar
+## Step 3: Build The CUDA Sidecar From Source
+
+Skip this step when using a published release archive.
 
 ```powershell
 npm run build:sidecar:cuda:windows
@@ -59,22 +71,22 @@ npm run build:sidecar:cuda:windows:release
 
 Artifacts:
 
-- CPU build: `native\target\{debug|release}\obsidian-local-stt-sidecar.exe`
-- CUDA build: `native\target-cuda\{debug|release}\obsidian-local-stt-sidecar.exe`
+- CPU build: `native\target\{debug|release}\local-transcript-sidecar.exe`
+- CUDA build: `native\target-cuda\{debug|release}\local-transcript-sidecar.exe`
 - ONNX Runtime CUDA providers: `onnxruntime_providers_shared.dll`, `onnxruntime_providers_cuda.dll`
 
 Keep the provider DLLs next to the CUDA executable. They are part of the sidecar build output.
 
-## Step 3: Configure The Plugin
+## Step 4: Configure The Plugin
 
 If you are testing from a repo checkout, the plugin auto-detects the CUDA debug build at `native\target-cuda\debug` when present and falls back to `native\target\debug` otherwise. No path override is required — use `Sidecar path override` only for custom layouts.
 
 Under `Engine options`, leave `GPU acceleration` on `Use when available` unless you intentionally want CPU only.
 
-## Step 4: Run And Verify
+## Step 5: Run And Verify
 
-1. Run `Local STT: Check Sidecar Health`.
-2. Open `Settings -> Local STT`.
+1. Run `Local Transcript: Check Sidecar Health`.
+2. Open `Settings -> Local Transcript`.
 3. Confirm the acceleration card reports:
 
 - `Whisper: CUDA`
@@ -88,7 +100,8 @@ The Cohere decoder still runs on CPU by design. That constraint comes from ONNX 
 
 The sidecar could not load the CUDA runtime or could not see a CUDA device. Check:
 
-- `where.exe cudart64_12.dll`
+- the CUDA release archive's runtime DLLs are still next to `local-transcript-sidecar.exe`
+- for source builds, `where.exe cudart64_12.dll`
 - `nvidia-smi`
 - that the plugin is pointed at the CUDA sidecar, not the default CPU dev build
 
@@ -97,7 +110,7 @@ The sidecar could not load the CUDA runtime or could not see a CUDA device. Chec
 The sidecar started, but ONNX Runtime could not register the CUDA execution provider. Common causes:
 
 - cuDNN 9.x is missing
-- the CUDA toolkit install is incomplete
+- the bundled CUDA runtime files are missing from the sidecar directory, or the source-build toolkit install is incomplete
 - the CUDA runtime and driver do not match closely enough for ONNX Runtime
 
 Whisper may still report CUDA in this state because its runtime dependency set is smaller than Cohere's.

@@ -23,7 +23,9 @@
       "Bash(gh pr *)",
       "Read(//tmp/**)",
       "WebFetch(domain:www.anthropic.com)",
-      "Bash(gh label *)"
+      "Bash(gh label *)",
+      "Bash(gh run *)",
+      "Bash(python3 -c 'import json, sys *)"
     ]
   }
 }

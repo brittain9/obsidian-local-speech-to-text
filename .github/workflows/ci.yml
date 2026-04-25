@@ -7,20 +7,50 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# PR push storms shouldn't fan out N parallel quality jobs against stale code.
+# Cancel any in-flight run for the same ref when a new commit lands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 24.14.1
+  RUST_TOOLCHAIN: 1.94.1
+
 jobs:
-  quality:
+  frontend-quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'true'
+          upgrade-npm: 'true'
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Run frontend quality gates
+        run: npm run check:frontend
+
+  sidecar-quality:
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            build_metal: false
             rust_cache_key: engine-cohere-transcribe
           - os: windows-latest
-            build_metal: false
             rust_cache_key: engine-cohere-transcribe-windows
           - os: macos-15
-            build_metal: true
             rust_cache_key: engine-cohere-transcribe-gpu-metal
 
     runs-on: ${{ matrix.os }}
@@ -29,43 +59,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
         with:
-          node-version: 24.14.1
-          cache: npm
-
-      - name: Upgrade npm
-        run: npm install --global npm@11.12.1
-
-      - name: Install native build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake
-
-      - name: Expose libclang (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: echo "LIBCLANG_PATH=$((Get-Command clang).Source | Split-Path -Parent)" >> $env:GITHUB_ENV
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'true'
+          upgrade-npm: 'true'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/setup-sidecar-rust
         with:
-          toolchain: 1.94.1
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native -> target
-          shared-key: ${{ matrix.rust_cache_key }}
-          cache-on-failure: true
+          cache-workspaces: native -> target
+          cache-shared-key: ${{ matrix.rust_cache_key }}
 
       - name: Install JavaScript dependencies
         run: npm ci
 
-      - name: Build macOS Metal sidecar
-        if: matrix.build_metal
+      # build:sidecar selects gpu-metal on darwin automatically, so this single
+      # step covers the macOS Metal build exactly once across the matrix.
+      - name: Build sidecar
         run: npm run build:sidecar
 
-      - name: Run quality gates
-        run: npm run check
+      - name: Run Rust quality gates
+        run: npm run check:rust

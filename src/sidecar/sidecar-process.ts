@@ -123,7 +123,7 @@ export class SidecarProcess {
 
 function assertDesktopRuntime(): void {
   if (!Platform.isDesktopApp) {
-    throw new Error('Local STT sidecar support requires Obsidian desktop.');
+    throw new Error('Local Transcript sidecar support requires Obsidian desktop.');
   }
 }
 

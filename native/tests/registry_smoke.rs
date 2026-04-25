@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use obsidian_local_stt_sidecar::engine::{
+use local_transcript_sidecar::engine::{
     AcceleratorId, EngineRegistry, ModelFamilyId, RuntimeId, missing_adapter_error,
 };
 

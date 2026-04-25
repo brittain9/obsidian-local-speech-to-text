@@ -396,10 +396,10 @@ export class ManageModelsModal extends Modal {
 
     try {
       await action();
-      new Notice(`Local STT: ${successMessage}`);
+      new Notice(`Local Transcript: ${successMessage}`);
       this.deps.onChanged();
     } catch (error) {
-      new Notice(`Local STT: ${formatErrorMessage(error)}`);
+      new Notice(`Local Transcript: ${formatErrorMessage(error)}`);
     } finally {
       this.actionInProgress = false;
       this.renderModelList();

@@ -75,6 +75,10 @@ export class SidecarConnection {
   constructor(private readonly options: SidecarConnectionOptions) {
     const handlers = {
       onExit: (code: number | null, signal: NodeJS.Signals | null) => {
+        this.options.logger?.warn(
+          'sidecar',
+          `sidecar process exited (code: ${String(code)}, signal: ${String(signal)})`,
+        );
         this.frameParser.reset();
         this.rejectPendingWaiters(
           new Error(

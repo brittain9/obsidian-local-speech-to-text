@@ -68,7 +68,7 @@ export class EditorService {
     }
     const view = this.storedView;
     if (view === null || !this.isStoredViewActive()) {
-      new Notice('Local STT: no active editor for dictation anchor; transcript dropped.');
+      new Notice('Local Transcript: no active editor for dictation anchor; transcript dropped.');
       return;
     }
 

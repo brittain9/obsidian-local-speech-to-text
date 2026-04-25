@@ -1,5 +1,5 @@
 /* ===================================================================
-   Local STT – Plugin Styles
+   Local Transcript - Plugin Styles
    All selectors prefixed with .local-stt- to avoid collisions.
    All colors use Obsidian CSS variables with fallback values.
    =================================================================== */
@@ -499,5 +499,76 @@
   }
   50% {
     opacity: 0.15;
+  }
+}
+
+/* --- Sidecar install modal ---------------------------------------- */
+
+.local-stt-sidecar-install__details {
+  margin: 8px 0 12px;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.local-stt-sidecar-install__status {
+  margin: 6px 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  min-height: 1.4em;
+}
+
+.local-stt-sidecar-install__status--info {
+  color: var(--text-muted);
+}
+
+.local-stt-sidecar-install__status--success {
+  color: var(--text-success, var(--text-normal));
+}
+
+.local-stt-sidecar-install__status--error {
+  color: var(--text-error, var(--text-normal));
+}
+
+.local-stt-sidecar-install__progress-label {
+  font-size: var(--font-smallest);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 4px;
+  min-height: 1em;
+}
+
+.local-stt-sidecar-install__progress {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--background-modifier-border-hover, rgba(128, 128, 128, 0.18));
+}
+
+.local-stt-sidecar-install__progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--interactive-accent, #7c3aed);
+  transition: width 140ms ease;
+}
+
+.local-stt-sidecar-install__progress-bar--indeterminate {
+  animation: local-stt-sidecar-install-pulse 1.2s ease-in-out infinite;
+}
+
+.local-stt-sidecar-install__buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+@keyframes local-stt-sidecar-install-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
   }
 }
