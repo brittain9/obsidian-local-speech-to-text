@@ -6,10 +6,9 @@ on:
     tags:
       - '[0-9][0-9][0-9][0-9].[0-9]+.[0-9]+'
 
+# Read-only at the top level. Each job opts in to the writes it needs.
 permissions:
-  attestations: write
-  contents: write
-  id-token: write
+  contents: read
 
 # Serialize releases for the same ref so a tag re-push or a dry-run racing a
 # tag push can't interleave artifact uploads. cancel-in-progress is false —
@@ -28,12 +27,6 @@ env:
   # Build sidecar step) sees it when computing its key, otherwise stale
   # AVX-512-compiled artifacts get restored and silently re-shipped.
   GGML_NATIVE: 'OFF'
-  # ggml's CUDA 12.9 default builds PTX/SASS for nine architecture variants,
-  # which is the dominant cost in release CUDA jobs, especially on Windows.
-  # Ship one forward-compatible Turing PTX target instead. That requires a
-  # Turing-or-newer NVIDIA GPU for CUDA acceleration; older GPUs can still
-  # use the CPU sidecar.
-  CUDA_ARCH: '75-virtual'
   NODE_VERSION: 24.14.1
   RUST_TOOLCHAIN: 1.94.1
 
@@ -47,8 +40,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -68,20 +61,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Upgrade npm
-        run: npm install --global npm@11.12.1
+          cache: 'true'
+          upgrade-npm: 'true'
 
       - name: Install JavaScript dependencies
         run: npm ci
 
-      - name: Build plugin bundle
-        run: npm run build:frontend
+      - name: Run frontend quality gates
+        run: npm run check:frontend
 
       - name: Upload plugin bundle
         uses: actions/upload-artifact@v7
@@ -92,10 +83,52 @@ jobs:
             manifest.json
             styles.css
 
-  build-sidecar-posix:
+  native-quality:
     needs: metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'true'
+          upgrade-npm: 'true'
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-sidecar-rust
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+          cache-workspaces: native -> target
+          cache-shared-key: native-quality
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build sidecar
+        run: npm run build:sidecar
+
+      - name: Run Rust quality gates
+        run: npm run check:rust
+
+  build-sidecar-posix:
+    needs:
+      - metadata
+      - native-quality
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     env:
-      CMAKE_CUDA_ARCHITECTURES: ${{ matrix.cuda && env.CUDA_ARCH || '' }}
+      # ggml's CUDA 12.9 default builds PTX/SASS for nine architecture variants,
+      # which dominates release CUDA jobs (especially on Windows). Ship one
+      # forward-compatible Turing PTX target instead. That requires a Turing-or-
+      # newer NVIDIA GPU for CUDA acceleration; older GPUs use the CPU sidecar.
+      CMAKE_CUDA_ARCHITECTURES: ${{ matrix.cuda_architectures }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,24 +136,27 @@ jobs:
           - runner: macos-15
             asset_name: sidecar-macos-arm64
             archive_name: sidecar-macos-arm64.tar.gz
-            binary_path: native/target/release/obsidian-local-stt-sidecar
+            binary_path: native/target/release/local-transcript-sidecar
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
+            cuda_architectures: ''
           - runner: ubuntu-latest
             asset_name: sidecar-linux-x86_64-cpu
             archive_name: sidecar-linux-x86_64-cpu.tar.gz
-            binary_path: native/target/release/obsidian-local-stt-sidecar
+            binary_path: native/target/release/local-transcript-sidecar
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
+            cuda_architectures: ''
           - runner: ubuntu-latest
             asset_name: sidecar-linux-x86_64-cuda
             archive_name: sidecar-linux-x86_64-cuda.tar.gz
-            binary_path: native/target-cuda/release/obsidian-local-stt-sidecar
+            binary_path: native/target-cuda/release/local-transcript-sidecar
             build_command: npm run build:sidecar:cuda:release
             cache_workspaces: native -> target-cuda
             cuda: true
+            cuda_architectures: '75-virtual'
 
     runs-on: ${{ matrix.runner }}
 
@@ -128,31 +164,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install native build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake
-
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/setup-sidecar-rust
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ${{ matrix.cache_workspaces }}
-          shared-key: ${{ matrix.asset_name }}
-          # Extend the default prefix list (CARGO CC CFLAGS CXX CMAKE RUST)
-          # with GGML and WHISPER so any future toggle of a GGML_* / WHISPER_*
-          # env (e.g. GGML_NATIVE) bumps the cache key and invalidates stale
-          # artifacts automatically.
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST GGML WHISPER
-          cache-on-failure: true
+          cache-workspaces: ${{ matrix.cache_workspaces }}
+          cache-shared-key: ${{ matrix.asset_name }}
 
       - name: Install CUDA toolkit
         if: matrix.cuda
@@ -164,7 +186,7 @@ jobs:
       - name: Build sidecar
         env:
           CARGO_TIMINGS: '1'
-          CARGO_VERBOSE: '1'
+          CMAKE_CUDA_FLAGS: '-t0'
         run: ${{ matrix.build_command }}
 
       - name: Upload cargo timings
@@ -200,25 +222,33 @@ jobs:
           path: dist/${{ matrix.archive_name }}
 
   build-sidecar-windows:
-    needs: metadata
+    needs:
+      - metadata
+      - native-quality
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     env:
-      CMAKE_CUDA_ARCHITECTURES: ${{ matrix.cuda && env.CUDA_ARCH || '' }}
+      CMAKE_CUDA_ARCHITECTURES: ${{ matrix.cuda_architectures }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - asset_name: sidecar-windows-x86_64-cpu
             archive_name: sidecar-windows-x86_64-cpu.zip
-            binary_path: native/target/release/obsidian-local-stt-sidecar.exe
+            binary_path: native/target/release/local-transcript-sidecar.exe
             build_command: npm run build:sidecar:release
             cache_workspaces: native -> target
             cuda: false
+            cuda_architectures: ''
           - asset_name: sidecar-windows-x86_64-cuda
             archive_name: sidecar-windows-x86_64-cuda.zip
-            binary_path: native/target-cuda/release/obsidian-local-stt-sidecar.exe
+            binary_path: native/target-cuda/release/local-transcript-sidecar.exe
             build_command: npm run build:sidecar:cuda:windows:release
             cache_workspaces: native -> target-cuda
             cuda: true
+            cuda_architectures: '75-virtual'
 
     runs-on: windows-latest
 
@@ -226,27 +256,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Expose libclang
-        shell: pwsh
-        run: echo "LIBCLANG_PATH=$((Get-Command clang).Source | Split-Path -Parent)" >> $env:GITHUB_ENV
-
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/setup-sidecar-rust
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ${{ matrix.cache_workspaces }}
-          shared-key: ${{ matrix.asset_name }}
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST GGML WHISPER
-          cache-on-failure: true
+          cache-workspaces: ${{ matrix.cache_workspaces }}
+          cache-shared-key: ${{ matrix.asset_name }}
 
       - name: Install CUDA toolkit
         if: matrix.cuda
@@ -260,7 +280,7 @@ jobs:
         shell: pwsh
         env:
           CARGO_TIMINGS: '1'
-          CARGO_VERBOSE: '1'
+          CMAKE_CUDA_FLAGS: '-t0'
         run: ${{ matrix.build_command }}
 
       - name: Upload cargo timings
@@ -297,9 +317,19 @@ jobs:
       - plugin-bundle
       - build-sidecar-posix
       - build-sidecar-windows
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js + npm
+        uses: ./.github/actions/setup-node-npm
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Download plugin bundle
         uses: actions/download-artifact@v5
         with:
@@ -314,18 +344,7 @@ jobs:
           merge-multiple: true
 
       - name: Assemble release files
-        run: |
-          mkdir -p dist/release
-          cp dist/plugin-bundle/main.js dist/release/main.js
-          cp dist/plugin-bundle/manifest.json dist/release/manifest.json
-          cp dist/plugin-bundle/styles.css dist/release/styles.css
-          (cd dist/release && find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%P\n' \
-            | sort \
-            | xargs sha256sum > checksums.txt)
-          test -f dist/release/main.js
-          test -f dist/release/manifest.json
-          test -f dist/release/styles.css
-          test -s dist/release/checksums.txt
+        run: node scripts/assemble-release-files.mjs
 
       - name: Upload dry-run bundle
         if: github.event_name == 'workflow_dispatch'

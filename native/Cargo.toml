@@ -1,16 +1,16 @@
 [package]
-name = "obsidian-local-stt-sidecar"
-version = "2026.4.24"
+name = "local-transcript-sidecar"
+version = "2026.4.25"
 edition = "2024"
 license = "MIT"
 rust-version = "1.94.1"
 
 [lib]
-name = "obsidian_local_stt_sidecar"
+name = "local_transcript_sidecar"
 path = "src/lib.rs"
 
 [[bin]]
-name = "obsidian-local-stt-sidecar"
+name = "local-transcript-sidecar"
 path = "src/main.rs"
 
 [dependencies]

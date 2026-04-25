@@ -13,7 +13,7 @@ The repository has two runtime boundaries:
 
 Audio crosses the boundary as 16 kHz mono PCM over stdin in a framed binary protocol; transcripts come back on stdout as JSON events. The sidecar owns everything between "audio in" and "finished text out".
 
-For the full picture — current architecture, planned post-transcript enrichment pipeline, and per-stage detail — see [docs/architecture/system-architecture.md](docs/architecture/system-architecture.md).
+For the full picture — current architecture, planned post-transcript enrichment pipeline, and per-stage detail — see [docs/system-architecture.md](docs/system-architecture.md).
 
 For repo-wide principles and the session workflow (how to use decisions, lessons, and plans), see [AGENTS.md](AGENTS.md).
 
@@ -57,9 +57,3 @@ Keep PRs small and focused. One concern per PR.
 - **Rust:** `cargo build`, `cargo fmt --check`, `cargo clippy`, `cargo test`
 
 Do not merge with failing CI.
-
-## Documentation
-
-- **User-facing behavior changes** — update [README.md](README.md).
-- **Durable decisions** — record in [docs/decisions.md](docs/decisions.md) in the same PR that changes behavior. Mark superseded decisions explicitly rather than deleting them.
-- **Execution mistakes / corrections** — add a concise preventive rule to [docs/lessons.md](docs/lessons.md). Deduplicate against existing entries.

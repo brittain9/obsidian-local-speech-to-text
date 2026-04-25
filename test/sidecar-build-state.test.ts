@@ -42,11 +42,11 @@ async function createSidecarProjectFixture(): Promise<{
   executablePath: string;
   projectDirectory: string;
 }> {
-  const rootDirectory = await mkdtemp(join(tmpdir(), 'obsidian-local-stt-sidecar-'));
+  const rootDirectory = await mkdtemp(join(tmpdir(), 'local-transcript-sidecar-'));
   const projectDirectory = join(rootDirectory, 'native', 'sidecar');
   const sourceDirectory = join(projectDirectory, 'src');
   const targetDirectory = join(projectDirectory, 'target', 'debug');
-  const executablePath = join(targetDirectory, 'obsidian-local-stt-sidecar');
+  const executablePath = join(targetDirectory, 'local-transcript-sidecar');
 
   tempDirectories.push(rootDirectory);
 

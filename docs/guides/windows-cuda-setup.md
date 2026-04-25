@@ -71,8 +71,8 @@ npm run build:sidecar:cuda:windows:release
 
 Artifacts:
 
-- CPU build: `native\target\{debug|release}\obsidian-local-stt-sidecar.exe`
-- CUDA build: `native\target-cuda\{debug|release}\obsidian-local-stt-sidecar.exe`
+- CPU build: `native\target\{debug|release}\local-transcript-sidecar.exe`
+- CUDA build: `native\target-cuda\{debug|release}\local-transcript-sidecar.exe`
 - ONNX Runtime CUDA providers: `onnxruntime_providers_shared.dll`, `onnxruntime_providers_cuda.dll`
 
 Keep the provider DLLs next to the CUDA executable. They are part of the sidecar build output.
@@ -85,8 +85,8 @@ Under `Engine options`, leave `GPU acceleration` on `Use when available` unless 
 
 ## Step 5: Run And Verify
 
-1. Run `Local STT: Check Sidecar Health`.
-2. Open `Settings -> Local STT`.
+1. Run `Local Transcript: Check Sidecar Health`.
+2. Open `Settings -> Local Transcript`.
 3. Confirm the acceleration card reports:
 
 - `Whisper: CUDA`
@@ -100,7 +100,7 @@ The Cohere decoder still runs on CPU by design. That constraint comes from ONNX 
 
 The sidecar could not load the CUDA runtime or could not see a CUDA device. Check:
 
-- the CUDA release archive's runtime DLLs are still next to `obsidian-local-stt-sidecar.exe`
+- the CUDA release archive's runtime DLLs are still next to `local-transcript-sidecar.exe`
 - for source builds, `where.exe cudart64_12.dll`
 - `nvidia-smi`
 - that the plugin is pointed at the CUDA sidecar, not the default CPU dev build

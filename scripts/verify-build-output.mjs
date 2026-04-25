@@ -7,8 +7,8 @@ const profile = args.has('--release') ? 'release' : 'debug';
 const SIDECAR_BINARY_SUFFIX = process.platform === 'win32' ? '.exe' : '';
 
 const MAIN_BUNDLE_PATH = 'main.js';
-const SIDECAR_BINARY_PATH = `native/target/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
-const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
+const SIDECAR_BINARY_PATH = `native/target/${profile}/local-transcript-sidecar${SIDECAR_BINARY_SUFFIX}`;
+const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/local-transcript-sidecar${SIDECAR_BINARY_SUFFIX}`;
 const CUDA_PROVIDER_PATHS =
   process.platform === 'linux' || process.platform === 'win32'
     ? (await listCudaArtifacts('providers', process.platform)).map(

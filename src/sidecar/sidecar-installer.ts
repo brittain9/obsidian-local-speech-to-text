@@ -247,7 +247,7 @@ async function openHttpsStream(
   }
 
   return new Promise((resolve, reject) => {
-    const requestOptions: RequestOptions = { headers: { 'user-agent': 'obsidian-local-stt' } };
+    const requestOptions: RequestOptions = { headers: { 'user-agent': 'local-transcript' } };
     const req = httpsGet(url, requestOptions, (res) => {
       const status = res.statusCode ?? 0;
       const location = res.headers.location;

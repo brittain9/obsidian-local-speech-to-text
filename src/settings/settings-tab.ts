@@ -78,7 +78,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     const settings = this.dependencies.getSettings();
 
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'Local STT' });
+    containerEl.createEl('h2', { text: 'Local Transcript' });
     containerEl.createEl('p', {
       text: 'Configure transcript placement, managed local models, listening mode, and the native sidecar.',
     });

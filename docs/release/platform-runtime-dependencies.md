@@ -16,11 +16,13 @@ The CPU flavor is the default everywhere. GPU flavors are additive — they incl
 
 ## What the Plugin And Sidecar Archives Contain
 
-The shipped plugin always includes:
+The community-plugin package includes only Obsidian's plugin files:
 
 - `main.js` — the Obsidian plugin bundle
-- `config/model-catalog.json` — model metadata
-- `assets/pcm-recorder.worklet.js` — audio capture worklet
+- `manifest.json` — plugin metadata
+- `styles.css` — plugin styles
+
+The recorder worklet is bundled into `main.js`. The model catalog is sidecar-owned and shipped with the sidecar binary, not as a separate community-plugin file.
 
 The CUDA release archive additionally stages ONNX Runtime provider libraries and the CUDA runtime libraries that the sidecar ships:
 
@@ -143,17 +145,19 @@ The `onnx_runtime` probe is stronger — it catches missing userspace libraries,
 
 ## Current CI Release Artifacts
 
-Automated release artifacts (via `workflow_dispatch`) currently cover:
+`release.yml` runs on a date-version tag push matching `manifest.version` exactly (for example, `2026.4.25`) and on `workflow_dispatch` for dry-runs. Tag-triggered runs publish a GitHub Release; `workflow_dispatch` uploads an Actions artifact `release-<version>` instead.
 
 | Artifact | Runner | Build command |
 |---|---|---|
-| `sidecar-linux-x86_64-cpu` | `ubuntu-latest` | `npm run build:sidecar:release` |
-| `sidecar-linux-x86_64-cuda` | `ubuntu-latest` | `npm run build:sidecar:cuda:release` |
-| `sidecar-windows-x86_64-cpu` | `windows-latest` | `npm run build:sidecar:release` |
-| `sidecar-windows-x86_64-cuda` | `windows-latest` | `npm run build:sidecar:cuda:windows:release` |
-| `sidecar-macos-arm64` | `macos-15` | `npm run build:sidecar:release` |
+| `sidecar-linux-x86_64-cpu.tar.gz` | `ubuntu-latest` | `npm run build:sidecar:release` |
+| `sidecar-linux-x86_64-cuda.tar.gz` | `ubuntu-latest` | `npm run build:sidecar:cuda:release` |
+| `sidecar-windows-x86_64-cpu.zip` | `windows-latest` | `npm run build:sidecar:release` |
+| `sidecar-windows-x86_64-cuda.zip` | `windows-latest` | `npm run build:sidecar:cuda:windows:release` |
+| `sidecar-macos-arm64.tar.gz` | `macos-15` | `npm run build:sidecar:release` |
 
-CUDA release jobs set `GGML_NATIVE=OFF` to avoid inheriting runner CPU SIMD and `CMAKE_CUDA_ARCHITECTURES=75-virtual` to ship one forward-compatible Turing PTX target. The CUDA archives remain one GPU archive per OS and include both Whisper CUDA and Cohere CUDA capability.
+All release jobs set `GGML_NATIVE=OFF` (workflow-level) to avoid inheriting runner CPU SIMD. CUDA release jobs additionally set `CMAKE_CUDA_ARCHITECTURES=75-virtual` to ship one forward-compatible Turing PTX target. Each CUDA archive is one GPU archive per OS and includes both Whisper CUDA and Cohere CUDA capability.
+
+Publishing is gated on `npm run check:frontend` (in the `plugin-bundle` job), `npm run check:rust` (in the `native-quality` job), every release sidecar build, exact-set validation of the five sidecar archives, and deterministic `checksums.txt` generation in `scripts/assemble-release-files.mjs`. A missing, empty, duplicated, or unexpected archive fails before upload or release publish.
 
 ## Redistribution Considerations
 

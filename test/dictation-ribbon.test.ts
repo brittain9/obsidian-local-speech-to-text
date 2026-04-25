@@ -64,15 +64,15 @@ describe('DictationRibbonController', () => {
     const controller = new DictationRibbonController(element);
 
     controller.setState('transcribing');
-    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local STT: Transcribing...');
-    expect(element.title).toBe('Local STT: Transcribing...');
+    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local Transcript: Transcribing...');
+    expect(element.title).toBe('Local Transcript: Transcribing...');
 
     controller.setState('paused');
-    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local STT: Transcribing...');
-    expect(element.title).toBe('Local STT: Transcribing...');
+    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local Transcript: Transcribing...');
+    expect(element.title).toBe('Local Transcript: Transcribing...');
 
     controller.setState('speech_ending');
-    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local STT: Hearing speech');
-    expect(element.title).toBe('Local STT: Hearing speech');
+    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local Transcript: Hearing speech');
+    expect(element.title).toBe('Local Transcript: Hearing speech');
   });
 });

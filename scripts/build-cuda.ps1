@@ -74,7 +74,7 @@ Invoke-TimedStep "Build CUDA sidecar ($buildProfile)" {
 
 $outDir = "native/target-cuda/$buildProfile"
 $providers = (& node scripts/list-cuda-artifacts.mjs providers win32) -split "`r?`n" | Where-Object { $_ -ne '' }
-$expected = @("$outDir/obsidian-local-stt-sidecar.exe") + ($providers | ForEach-Object { "$outDir/$_" })
+$expected = @("$outDir/local-transcript-sidecar.exe") + ($providers | ForEach-Object { "$outDir/$_" })
 Invoke-TimedStep "Verify CUDA sidecar artifacts" {
   foreach ($path in $expected) {
     if (-not (Test-Path $path)) {
@@ -84,4 +84,4 @@ Invoke-TimedStep "Verify CUDA sidecar artifacts" {
     Write-Host "$path $([Math]::Round($item.Length / 1MB, 2)) MiB"
   }
 }
-Write-Host "Done: $outDir/obsidian-local-stt-sidecar.exe"
+Write-Host "Done: $outDir/local-transcript-sidecar.exe"

@@ -1,4 +1,4 @@
-# Obsidian Local STT Decisions
+# Obsidian Local Transcript Decisions
 
 ## What Belongs Here
 
@@ -17,13 +17,13 @@ Durable workflow, product, and architecture decisions. Update in the same change
 - Capability seams: **inventory** (`system_info.compiledRuntimes[]` + `compiledAdapters[]` — what this binary can do at all) and **selected-model** (`model_probe_result.mergedCapabilities` — what the current selection supports). UI gating reads the merged capabilities; there is no TypeScript mirror of which engine supports what.
 - Why: Removes scattered `match EngineId` dispatch, unblocks capability-gated features (initial-prompt conditioning, per-engine GPU UI, per-adapter post-processing), and gives future adapters an OCP-friendly registration path behind a single Cargo feature flag.
 - Implication: Unsupported request fields are warn+dropped at the worker, surfaced as `RequestWarning[]` on `transcript_ready` (dev console only).
-- See: `docs/architecture/system-architecture.md` Stage 4 for layer details and capability flow.
+- See: `docs/system-architecture.md` Stage 4 for layer details and capability flow.
 
 ### D-009: Post-Transcript Enrichment Runs In The Rust Sidecar
 
 - Decision: Post-transcript processing — hallucination filter, punctuation, user rules, diarization, optional LLM, final render — runs in the Rust sidecar, not the plugin. The plugin receives final rendered text plus a `stageResults[]` report. Diarization runs in the audio pipeline alongside VAD; LLM post-processing is an experimental side branch outside the text pipeline because it may restructure text freely and destroy alignment.
 - Why: Keeps the plugin/sidecar boundary clean — audio in, final text out. The canonical transcript struct is the architectural seam between audio-domain and text-domain processing. Capability-gated features degrade gracefully without engine-specific branches in the plugin. Supersedes D-007.
-- See: `docs/architecture/system-architecture.md` for the full pipeline and protocol seams.
+- See: `docs/system-architecture.md` for the full pipeline and protocol seams.
 
 ### D-011: No Python In The Sidecar
 

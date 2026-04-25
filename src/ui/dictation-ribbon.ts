@@ -41,28 +41,28 @@ function buildRibbonState(state: DictationControllerState): {
 } {
   switch (state) {
     case 'idle':
-      return { icon: 'mic', label: 'Local STT: Click to start' };
+      return { icon: 'mic', label: 'Local Transcript: Click to start' };
 
     case 'starting':
-      return { icon: 'loader', label: 'Local STT: Starting...' };
+      return { icon: 'loader', label: 'Local Transcript: Starting...' };
 
     case 'listening':
-      return { icon: 'audio-lines', label: 'Local STT: Listening' };
+      return { icon: 'audio-lines', label: 'Local Transcript: Listening' };
 
     case 'speech_detected':
-      return { icon: 'audio-lines', label: 'Local STT: Hearing speech' };
+      return { icon: 'audio-lines', label: 'Local Transcript: Hearing speech' };
 
     case 'speech_ending':
-      return { icon: 'audio-lines', label: 'Local STT: Hearing speech' };
+      return { icon: 'audio-lines', label: 'Local Transcript: Hearing speech' };
 
     case 'transcribing':
-      return { icon: 'loader', label: 'Local STT: Transcribing...' };
+      return { icon: 'loader', label: 'Local Transcript: Transcribing...' };
 
     case 'paused':
-      return { icon: 'loader', label: 'Local STT: Transcribing...' };
+      return { icon: 'loader', label: 'Local Transcript: Transcribing...' };
 
     case 'error':
-      return { icon: 'mic-off', label: 'Local STT: Error' };
+      return { icon: 'mic-off', label: 'Local Transcript: Error' };
   }
 }
 

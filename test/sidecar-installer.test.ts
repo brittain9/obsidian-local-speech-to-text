@@ -202,7 +202,7 @@ describe('installSidecar', () => {
   it('downloads, verifies, extracts, and writes install.json last', async () => {
     const pluginDirectory = await createTempDirectory();
     const archive = buildTarGz([
-      { content: Buffer.from('#!/bin/bash\n'), name: 'obsidian-local-stt-sidecar' },
+      { content: Buffer.from('#!/bin/bash\n'), name: 'local-transcript-sidecar' },
     ]);
     const archiveSha256 = sha256Hex(archive);
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
@@ -235,7 +235,7 @@ describe('installSidecar', () => {
     expect(result.manifest.version).toBe('2026.4.21');
 
     const installedBinary = await readFile(
-      join(result.variantDirectory, 'obsidian-local-stt-sidecar'),
+      join(result.variantDirectory, 'local-transcript-sidecar'),
     );
     expect(installedBinary.toString('utf8')).toBe('#!/bin/bash\n');
 
@@ -252,10 +252,10 @@ describe('installSidecar', () => {
     const pluginDirectory = await createTempDirectory();
     const variantDir = variantDirectoryPath(pluginDirectory, 'cpu');
     await mkdir(variantDir, { recursive: true });
-    await writeFile(join(variantDir, 'obsidian-local-stt-sidecar'), 'old-binary');
+    await writeFile(join(variantDir, 'local-transcript-sidecar'), 'old-binary');
 
     const archive = buildTarGz([
-      { content: Buffer.from('new-binary'), name: 'obsidian-local-stt-sidecar' },
+      { content: Buffer.from('new-binary'), name: 'local-transcript-sidecar' },
     ]);
     const archiveSha256 = sha256Hex(archive);
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
@@ -278,7 +278,7 @@ describe('installSidecar', () => {
       }),
     ).rejects.toThrow(/cannot stop running sidecar/);
 
-    await expect(readFile(join(variantDir, 'obsidian-local-stt-sidecar'), 'utf8')).resolves.toBe(
+    await expect(readFile(join(variantDir, 'local-transcript-sidecar'), 'utf8')).resolves.toBe(
       'old-binary',
     );
   });
@@ -286,7 +286,7 @@ describe('installSidecar', () => {
   it('fails and leaves no manifest when the checksum does not match', async () => {
     const pluginDirectory = await createTempDirectory();
     const archive = buildTarGz([
-      { content: Buffer.from('binary'), name: 'obsidian-local-stt-sidecar' },
+      { content: Buffer.from('binary'), name: 'local-transcript-sidecar' },
     ]);
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
     const checksumsText = `${'0'.repeat(64)}  ${assetName}\n`;
@@ -312,7 +312,7 @@ describe('installSidecar', () => {
   it('rejects and leaves no manifest when the archive write stream fails', async () => {
     const pluginDirectory = await createTempDirectory();
     const archive = buildTarGz([
-      { content: Buffer.from('binary'), name: 'obsidian-local-stt-sidecar' },
+      { content: Buffer.from('binary'), name: 'local-transcript-sidecar' },
     ]);
     const archiveSha256 = sha256Hex(archive);
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
@@ -363,7 +363,7 @@ describe('installSidecar', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     const pluginDirectory = await createTempDirectory();
     const archive = buildZip([
-      { content: Buffer.from('windows-binary'), name: 'obsidian-local-stt-sidecar.exe' },
+      { content: Buffer.from('windows-binary'), name: 'local-transcript-sidecar.exe' },
     ]);
     const archiveSha256 = sha256Hex(archive);
     const assetName = 'sidecar-windows-x86_64-cpu.zip';
@@ -382,7 +382,7 @@ describe('installSidecar', () => {
     });
 
     const installedBinary = await readFile(
-      join(result.variantDirectory, 'obsidian-local-stt-sidecar.exe'),
+      join(result.variantDirectory, 'local-transcript-sidecar.exe'),
     );
     expect(installedBinary.toString('utf8')).toBe('windows-binary');
   });
@@ -406,7 +406,7 @@ describe('installSidecar', () => {
   it('follows HTTP redirects to the final asset URL', async () => {
     const pluginDirectory = await createTempDirectory();
     const archive = buildTarGz([
-      { content: Buffer.from('redirected-binary'), name: 'obsidian-local-stt-sidecar' },
+      { content: Buffer.from('redirected-binary'), name: 'local-transcript-sidecar' },
     ]);
     const archiveSha256 = sha256Hex(archive);
     const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
@@ -433,7 +433,7 @@ describe('installSidecar', () => {
     });
 
     const installedBinary = await readFile(
-      join(result.variantDirectory, 'obsidian-local-stt-sidecar'),
+      join(result.variantDirectory, 'local-transcript-sidecar'),
     );
     expect(installedBinary.toString('utf8')).toBe('redirected-binary');
   });
@@ -466,7 +466,7 @@ describe('installSidecar', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     const pluginDirectory = await createTempDirectory();
     const archive = buildZip([
-      { content: Buffer.from('payload'), gpFlags: 0x0008, name: 'obsidian-local-stt-sidecar.exe' },
+      { content: Buffer.from('payload'), gpFlags: 0x0008, name: 'local-transcript-sidecar.exe' },
     ]);
     const archiveSha256 = sha256Hex(archive);
     const assetName = 'sidecar-windows-x86_64-cpu.zip';
@@ -493,7 +493,7 @@ describe('uninstallSidecarVariant', () => {
     const pluginDirectory = await createTempDirectory();
     const variantDir = variantDirectoryPath(pluginDirectory, 'cuda');
     await mkdir(variantDir, { recursive: true });
-    await writeFile(join(variantDir, 'obsidian-local-stt-sidecar'), 'binary');
+    await writeFile(join(variantDir, 'local-transcript-sidecar'), 'binary');
 
     await uninstallSidecarVariant(pluginDirectory, 'cuda');
 

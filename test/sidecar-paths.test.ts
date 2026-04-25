@@ -22,7 +22,7 @@ afterEach(async () => {
 describe('resolveSidecarExecutablePath', () => {
   it('returns the override path when set', async () => {
     const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
+    const executableName = 'local-transcript-sidecar';
     const overridePath = join(pluginDirectory, 'custom-sidecar');
     await writeFile(overridePath, 'binary');
     // Installed binaries present — override must win regardless.
@@ -45,7 +45,7 @@ describe('resolveSidecarExecutablePath', () => {
 
     const rejection = resolveSidecarExecutablePath({
       accelerationPreference: 'auto',
-      executableName: 'obsidian-local-stt-sidecar',
+      executableName: 'local-transcript-sidecar',
       pluginDirectory,
       sidecarPathOverride: join(pluginDirectory, 'does-not-exist'),
       sidecarProjectDirectory: join(pluginDirectory, 'native'),
@@ -58,7 +58,7 @@ describe('resolveSidecarExecutablePath', () => {
 
   it('prefers the installed CUDA binary when auto mode can use it', async () => {
     const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar.exe';
+    const executableName = 'local-transcript-sidecar.exe';
     await writeInstalledBinary(pluginDirectory, 'cpu', executableName);
     await writeInstalledBinary(pluginDirectory, 'cuda', executableName);
 
@@ -80,7 +80,7 @@ describe('resolveSidecarExecutablePath', () => {
 
   it('picks the installed CPU binary when cpu_only is selected even if CUDA is installed', async () => {
     const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
+    const executableName = 'local-transcript-sidecar';
     await writeInstalledBinary(pluginDirectory, 'cpu', executableName);
     await writeInstalledBinary(pluginDirectory, 'cuda', executableName);
 
@@ -102,7 +102,7 @@ describe('resolveSidecarExecutablePath', () => {
 
   it('prefers an installed binary over a dev build', async () => {
     const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
+    const executableName = 'local-transcript-sidecar';
     const sidecarProjectDirectory = join(pluginDirectory, 'native');
     await writeInstalledBinary(pluginDirectory, 'cpu', executableName);
     await writeDevBinary(sidecarProjectDirectory, 'cpu', executableName);
@@ -125,7 +125,7 @@ describe('resolveSidecarExecutablePath', () => {
 
   it('falls back to the CUDA dev build when no installed binary is available', async () => {
     const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
+    const executableName = 'local-transcript-sidecar';
     const sidecarProjectDirectory = join(pluginDirectory, 'native');
     await writeDevBinary(sidecarProjectDirectory, 'cpu', executableName);
     await writeDevBinary(sidecarProjectDirectory, 'cuda', executableName);
@@ -148,7 +148,7 @@ describe('resolveSidecarExecutablePath', () => {
 
   it('falls back to the CPU dev build on macOS-style (no CUDA support)', async () => {
     const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
+    const executableName = 'local-transcript-sidecar';
     const sidecarProjectDirectory = join(pluginDirectory, 'native');
     await writeDevBinary(sidecarProjectDirectory, 'cpu', executableName);
     await writeDevBinary(sidecarProjectDirectory, 'cuda', executableName);
@@ -175,7 +175,7 @@ describe('resolveSidecarExecutablePath', () => {
 
     const rejection = resolveSidecarExecutablePath({
       accelerationPreference: 'auto',
-      executableName: 'obsidian-local-stt-sidecar',
+      executableName: 'local-transcript-sidecar',
       pluginDirectory,
       sidecarPathOverride: '',
       sidecarProjectDirectory,
@@ -188,7 +188,7 @@ describe('resolveSidecarExecutablePath', () => {
 
   it('throws when cpu_only is selected and only a CUDA dev build exists', async () => {
     const pluginDirectory = await createPluginFixture();
-    const executableName = 'obsidian-local-stt-sidecar';
+    const executableName = 'local-transcript-sidecar';
     const sidecarProjectDirectory = join(pluginDirectory, 'native');
     await writeDevBinary(sidecarProjectDirectory, 'cuda', executableName);
 

@@ -441,7 +441,7 @@ mod tests {
 
     fn tempfile_dir(prefix: &str) -> std::path::PathBuf {
         let directory = std::env::temp_dir().join(format!(
-            "obsidian-local-stt-sidecar-{prefix}-{}",
+            "local-transcript-sidecar-{prefix}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock should move forward")

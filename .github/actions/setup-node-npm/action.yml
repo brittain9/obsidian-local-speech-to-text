@@ -1,0 +1,36 @@
+name: Setup Node.js + npm
+description: Install Node.js at a pinned version and optionally cache npm and upgrade the npm CLI.
+
+inputs:
+  node-version:
+    description: Node.js version to install (e.g. 24.14.1).
+    required: true
+  cache:
+    description: Set to 'true' to enable actions/setup-node@v6 npm caching.
+    required: false
+    default: 'false'
+  upgrade-npm:
+    description: Set to 'true' to globally install npm 11.12.1 after Node setup.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js (with npm cache)
+      if: inputs.cache == 'true'
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+
+    - name: Setup Node.js (no cache)
+      if: inputs.cache != 'true'
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Upgrade npm
+      if: inputs.upgrade-npm == 'true'
+      shell: bash
+      run: npm install --global npm@11.12.1

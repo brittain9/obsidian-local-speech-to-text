@@ -22,7 +22,7 @@ const isWindows = process.platform === 'win32';
 const isLinux = process.platform === 'linux';
 
 const platformKey = isWindows ? 'win32' : 'linux';
-const binaryName = isWindows ? 'obsidian-local-stt-sidecar.exe' : 'obsidian-local-stt-sidecar';
+const binaryName = isWindows ? 'local-transcript-sidecar.exe' : 'local-transcript-sidecar';
 const distDir = 'dist';
 const artifactDir = join(distDir, assetName);
 const buildDir = dirname(binaryPath);

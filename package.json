@@ -1,7 +1,7 @@
 {
   "name": "local-transcript",
-  "version": "2026.4.24",
-  "description": "Desktop-only local speech-to-text for Obsidian with a Rust sidecar.",
+  "version": "2026.4.25",
+  "description": "Local speech-to-text for Obsidian",
   "private": true,
   "license": "MIT",
   "main": "main.js",
@@ -28,7 +28,8 @@
     "install:dev": "node scripts/install-dev-plugin.mjs",
     "verify:build-output": "node scripts/verify-build-output.mjs",
     "verify:build-output:release": "node scripts/verify-build-output.mjs --release",
-    "check:js": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "check:frontend": "npm run typecheck && npm run lint && npm run test && npm run build:frontend",
+    "check:js": "npm run check:frontend && npm run build:sidecar && npm run verify:build-output",
     "check:rust": "node scripts/check-rust.mjs",
     "check": "npm run check:js && npm run check:rust"
   },

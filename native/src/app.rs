@@ -1498,7 +1498,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should move forward")
             .as_nanos();
-        let directory = temp_dir().join(format!("obsidian-local-stt-sidecar-tests-{unique}"));
+        let directory = temp_dir().join(format!("local-transcript-sidecar-tests-{unique}"));
         create_dir_all(&directory).expect("temp dir should create");
         let path = directory.join("model.bin");
         write(&path, b"model").expect("model file should write");

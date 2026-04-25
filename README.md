@@ -31,7 +31,7 @@ Linux and Windows CUDA acceleration requires an NVIDIA Turing-generation or newe
 
 Use an NVIDIA driver compatible with CUDA 12.9. NVIDIA's CUDA 12.9 release notes list Linux driver 575.51.03+ and Windows driver 576.02+ as the toolkit release baseline. Cohere CUDA additionally requires cuDNN 9 runtime libraries; when cuDNN is not available, Cohere falls back to CPU with an explicit runtime status.
 
-For the full platform contract, see [Platform Runtime Dependencies](docs/architecture/platform-runtime-dependencies.md). NVIDIA references: [CUDA 12.9 release notes](https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/index.html) and [CUDA GPU compute capability](https://developer.nvidia.com/cuda-gpus).
+For the full platform contract, see [Platform Runtime Dependencies](docs/release/platform-runtime-dependencies.md). NVIDIA references: [CUDA 12.9 release notes](https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/index.html) and [CUDA GPU compute capability](https://developer.nvidia.com/cuda-gpus).
 
 ## Quick Start
 
@@ -103,7 +103,7 @@ npm run build:sidecar
 npm run install:dev -- --vault ~/Documents/test-vault-stt --sidecars --enable
 ```
 
-This installs the built `main.js`, `manifest.json`, and `styles.css` into the vault. With `--sidecars`, it also copies locally built sidecars into the same `bin/cpu` and `bin/cuda` layout that release downloads use. That lets you test the installed-plugin path without publishing a GitHub Release first.
+This installs the built `main.js`, `manifest.json`, and `styles.css` into the vault. With `--sidecars`, it also copies locally built sidecars into the plugin-local `bin/cpu` and `bin/cuda` layout. That lets you test the installed-plugin path without publishing a GitHub Release first.
 
 For Linux CUDA testing:
 

@@ -54,10 +54,10 @@ export class ExternalModelFileModal extends Modal {
           try {
             await this.dependencies.manager.validateAndSelectExternalFile(nextPath);
             await this.dependencies.onChanged();
-            new Notice('Local STT: External model file validated and selected.');
+            new Notice('Local Transcript: External model file validated and selected.');
             this.close();
           } catch (error) {
-            new Notice(`Local STT: ${formatErrorMessage(error)}`);
+            new Notice(`Local Transcript: ${formatErrorMessage(error)}`);
           }
         });
     });

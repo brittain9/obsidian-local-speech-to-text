@@ -9,7 +9,7 @@ The supported source-build path is:
 3. point `Sidecar path override` at the CUDA binary
 4. set `CUDA library path` so the plugin scopes `LD_LIBRARY_PATH` on the sidecar child process only
 
-The old wrapper script still exists as a deprecated fallback, but it should not be your first choice anymore.
+Wrapper scripts are not part of the supported setup. Point `Sidecar path override` directly at the CUDA binary and use `CUDA library path` for the host library directories.
 
 ## Why Flatpak Needs Extra Setup
 
@@ -80,8 +80,8 @@ bash scripts/build-cuda.sh --release
 
 Artifacts:
 
-- CPU build: `native/target/{debug|release}/obsidian-local-stt-sidecar`
-- CUDA build: `native/target-cuda/{debug|release}/obsidian-local-stt-sidecar`
+- CPU build: `native/target/{debug|release}/local-transcript-sidecar`
+- CUDA build: `native/target-cuda/{debug|release}/local-transcript-sidecar`
 
 ## Step 3: Apply Flatpak Overrides
 
@@ -120,18 +120,18 @@ For a stricter check, run `ldd` with the same library path you plan to paste int
 ```sh
 flatpak run --command=sh md.obsidian.Obsidian -c '
   export LD_LIBRARY_PATH=/run/host/usr/local/cuda-12.9/targets/x86_64-linux/lib:/run/host/usr/local/cuda-12.9/lib64:/run/host/usr/lib64
-  ldd /absolute/path/to/native/target-cuda/debug/obsidian-local-stt-sidecar | grep -E "cuda|cudnn|cublas|not found"
+  ldd /absolute/path/to/native/target-cuda/debug/local-transcript-sidecar | grep -E "cuda|cudnn|cublas|not found"
 '
 ```
 
 ## Step 5: Configure the Plugin
 
 1. Fully quit and reopen Obsidian after applying Flatpak overrides.
-2. Open `Settings -> Local STT -> Advanced: Sidecar`.
-3. The plugin auto-detects `native/target-cuda/debug` when present and falls back to `native/target/debug`, so leave `Sidecar path override` empty unless you need a custom layout.
+2. Open `Settings -> Local Transcript -> Advanced: Sidecar`.
+3. For Flatpak, set `Sidecar path override` to the CUDA sidecar binary path when the automatic plugin-local or dev-build discovery path is not visible inside the sandbox.
 4. Set `CUDA library path` to the colon-separated `/run/host/...` value you built earlier.
 5. Under `Engine options`, leave `GPU acceleration` on `Use when available` unless you intentionally want CPU only.
-6. Run `Local STT: Check Sidecar Health`.
+6. Run `Local Transcript: Check Sidecar Health`.
 
 The settings page now shows the effective backend per engine:
 
