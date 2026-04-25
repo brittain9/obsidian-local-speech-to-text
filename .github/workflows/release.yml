@@ -11,6 +11,18 @@ permissions:
   contents: write
   id-token: write
 
+# Workflow-level env trims CI log volume. The bulk of the noise was cargo's
+# per-crate "Compiling …" lines and npm's audit/fund/info chatter; warnings
+# and errors still surface.
+env:
+  CARGO_TERM_QUIET: 'true'
+  CARGO_TERM_PROGRESS_WHEN: never
+  NPM_CONFIG_LOGLEVEL: error
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_AUDIT: 'false'
+  NPM_CONFIG_PROGRESS: 'false'
+  DEBIAN_FRONTEND: noninteractive
+
 jobs:
   metadata:
     runs-on: ubuntu-latest
@@ -68,14 +80,8 @@ jobs:
 
   build-sidecar-posix:
     needs: metadata
-    # GGML_NATIVE=OFF forces a portable CPU feature baseline (falls back to
-    # GGML_AVX2). Without this, ggml's cmake probes the runner's CPU and bakes
-    # in whatever SIMD it supports (AVX-512 on current Azure ubuntu-latest /
-    # windows-latest runners), which crashes with STATUS_ILLEGAL_INSTRUCTION
-    # on consumer CPUs that don't execute AVX-512 (e.g. Alder Lake / Raptor
-    # Lake). Set at job scope so Swatinem/rust-cache — which runs before the
-    # Build sidecar step — sees it when computing its key, otherwise stale
-    # AVX-512-compiled artifacts get restored and silently re-shipped.
+    # GGML_NATIVE=OFF at job scope — prevents AVX-512 bake-in on CI runners and
+    # ensures rust-cache key includes it before the build step runs (lessons 2026-04-21).
     env:
       GGML_NATIVE: 'OFF'
     strategy:
@@ -117,7 +123,7 @@ jobs:
 
       - name: Install native build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake
+        run: sudo apt-get -qq update && sudo apt-get install -qq -y cmake
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -129,10 +135,7 @@ jobs:
         with:
           workspaces: ${{ matrix.cache_workspaces }}
           shared-key: ${{ matrix.asset_name }}
-          # Extend the default prefix list (CARGO CC CFLAGS CXX CMAKE RUST)
-          # with GGML and WHISPER so any future toggle of a GGML_* / WHISPER_*
-          # env (e.g. GGML_NATIVE) bumps the cache key and invalidates stale
-          # artifacts automatically.
+          # GGML and WHISPER added so future GGML_*/WHISPER_* toggles bust the cache key (lessons 2026-04-21).
           env-vars: CARGO CC CFLAGS CXX CMAKE RUST GGML WHISPER
           cache-on-failure: true
 
@@ -164,28 +167,17 @@ jobs:
           if [[ "$CUDA" == "true" ]]; then
             while IFS= read -r extra_file; do
               cp "$(dirname "$BINARY_PATH")/$extra_file" "$artifact_dir/$extra_file"
-              # Strip unneeded ELF symbols from provider shared libs to trim
-              # the release archive. strip --strip-unneeded keeps dynamic
-              # symbols that runtime dlopen/dlsym chains need. Linux-only —
-              # macOS CUDA is not a target and its strip flags differ.
+              # strip --strip-unneeded keeps dynamic symbols; Linux-only (macOS CUDA not a target).
               strip --strip-unneeded "$artifact_dir/$extra_file"
             done < <(node scripts/list-cuda-artifacts.mjs providers linux)
-            # CUDA runtime libs aren't provided by the user's system in a
-            # version-compatible form (cudart is major-versioned and not
-            # forward-compatible), so ship them next to the binary. cp -L
-            # dereferences the symlinks into real files. Derive the lib
-            # directory the same way scripts/build-cuda.sh does so there's
-            # one source of truth.
+            # Bundle CUDA runtime libs — major-versioned, not forward-compatible (lessons 2026-04-21).
+            # cp -L dereferences symlinks. Lib path mirrors scripts/build-cuda.sh.
             cuda_lib="$(dirname "$(dirname "$(which nvcc)")")/targets/$(uname -m)-linux/lib"
             while IFS= read -r runtime_file; do
               cp -L "$cuda_lib/$runtime_file" "$artifact_dir/$runtime_file"
             done < <(node scripts/list-cuda-artifacts.mjs runtime linux)
           fi
-          # Linux-only: strip the sidecar ELF. The Rust release profile
-          # strips Rust-owned symbols, but bundled C++/CUDA objects (ggml,
-          # whisper.cpp, ORT kernels) can still carry debug sections.
-          # macOS binaries are ad-hoc codesigned in the previous step; do
-          # not strip them (both the signature and `strip` semantics differ).
+          # Linux-only: strip bundled C++/CUDA debug sections. Skip macOS — binary is already codesigned.
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             strip --strip-unneeded "$artifact_dir/obsidian-local-stt-sidecar"
           fi
@@ -205,8 +197,7 @@ jobs:
 
   build-sidecar-windows:
     needs: metadata
-    # See build-sidecar-posix for rationale. Must be at job scope so
-    # Swatinem/rust-cache's key-computation sees it.
+    # GGML_NATIVE=OFF at job scope — same rationale as build-sidecar-posix (lessons 2026-04-21).
     env:
       GGML_NATIVE: 'OFF'
     strategy:
@@ -279,16 +270,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
           Copy-Item $env:BINARY_PATH "$artifactDir/obsidian-local-stt-sidecar.exe"
           if ($env:CUDA -eq 'true') {
-            # Copy only the ORT provider DLLs we actually register (not a
-            # blanket *.dll glob, which scoops up unused providers like
-            # DirectML and TensorRT that ort's copy-dylibs drops alongside).
+            # Explicit provider list — not a blanket *.dll glob (lessons 2026-04-21).
             $providerFiles = (& node scripts/list-cuda-artifacts.mjs providers win32) -split "`r?`n" | Where-Object { $_ -ne '' }
             foreach ($providerFile in $providerFiles) {
               Copy-Item (Join-Path $binaryDir $providerFile) (Join-Path $artifactDir $providerFile)
             }
-            # Ship the CUDA runtime DLLs we directly import. Windows DLL search
-            # order checks the exe's own directory first, so this bundled copy
-            # wins over any mismatched system-installed CUDA the user may have.
+            # Bundle CUDA runtime DLLs — major-versioned, exe dir wins DLL search order (lessons 2026-04-21).
             $runtimeFiles = (& node scripts/list-cuda-artifacts.mjs runtime win32) -split "`r?`n" | Where-Object { $_ -ne '' }
             foreach ($runtimeFile in $runtimeFiles) {
               $source = Join-Path $env:CUDA_PATH "bin/$runtimeFile"
