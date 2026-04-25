@@ -86,9 +86,9 @@ export const dictationAnchorDecorationsField = StateField.define<DecorationSet>(
 });
 
 function decorationsFor(state: EditorState): DecorationSet {
-  const anchor = state.field(dictationAnchorStateField);
+  const anchor = state.field(dictationAnchorStateField, false);
 
-  if (anchor.pos === null || anchor.mode === 'hidden') {
+  if (anchor === undefined || anchor.pos === null || anchor.mode === 'hidden') {
     return EMPTY_DECORATIONS;
   }
 

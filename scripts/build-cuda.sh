@@ -22,6 +22,8 @@ Environment overrides:
   CUDAHOSTCXX    nvcc host compiler    (default: $CXX)
   CUDACXX        CUDA compiler         (default: /usr/local/cuda/bin/nvcc)
   CUDA_LIB_PATH  Library dir for RPATH (auto-detected from CUDACXX)
+  CARGO_TIMINGS  Set to 1 to emit cargo timing HTML.
+  CARGO_VERBOSE  Set to 1 for verbose cargo/rustc/CMake output.
   MIN_FREE_GB    Min free disk in GiB  (default: 10)
 EOF
 }
@@ -131,6 +133,9 @@ printf '  cc:       %s\n' "$CC"
 printf '  nvcc:     %s\n' "$CUDACXX"
 printf '  cuda lib: %s\n' "$cuda_lib"
 printf '  target:   %s\n' "$target_dir"
+printf '  arch:     %s\n' "${CMAKE_CUDA_ARCHITECTURES:-<default>}"
+printf '  timings:  %s\n' "${CARGO_TIMINGS:-0}"
+printf '  verbose:  %s\n' "${CARGO_VERBOSE:-0}"
 printf '\n'
 
 # ---------------------------------------------------------------------------
@@ -148,6 +153,7 @@ fi
 
 args=(
   build
+  --locked
   --manifest-path "$MANIFEST"
   --target-dir "$target_dir"
   --features gpu-cuda,gpu-ort-cuda
@@ -158,8 +164,12 @@ args=(
   --config "target.${host_triple}.rustflags=[\"-C\",\"link-arg=-fuse-ld=bfd\",\"-C\",\"link-arg=-Wl,-rpath,\$ORIGIN\"]"
 )
 [[ "$profile" == "release" ]] && args+=(--release)
+[[ "${CARGO_TIMINGS:-}" == "1" ]] && args+=(--timings)
+[[ "${CARGO_VERBOSE:-}" == "1" ]] && args+=(-vv)
 
 printf 'Building CUDA sidecar (%s)...\n' "$profile"
+printf 'cargo %q ' "${args[@]}"
+printf '\n'
 cargo "${args[@]}"
 
 binary="$target_dir/$profile/obsidian-local-stt-sidecar"

@@ -1,6 +1,7 @@
 import type { App } from 'obsidian';
 
 import type { PluginLogger } from '../shared/plugin-logger';
+import { getInstallCopy } from './sidecar-install-copy';
 import { SidecarInstallModal } from './sidecar-install-modal';
 
 export interface FirstRunSetupOptions {
@@ -12,14 +13,10 @@ export interface FirstRunSetupOptions {
 
 export function openFirstRunSetupModal(app: App, options: FirstRunSetupOptions): void {
   new SidecarInstallModal(app, {
-    bodyText:
-      'Local Transcript needs a one-time download of the CPU speech-to-text sidecar. Transcription stays local on your machine after this completes.',
+    copy: getInstallCopy('cpu', 'first-run'),
     logger: options.logger,
     onInstalled: options.onInstalled,
     pluginDirectory: options.pluginDirectory,
-    primaryButtonText: 'Download CPU sidecar',
-    successNotice: 'Local Transcript sidecar installed and started.',
-    title: 'Finish setting up Local Transcript',
     variant: 'cpu',
     version: options.version,
   }).open();

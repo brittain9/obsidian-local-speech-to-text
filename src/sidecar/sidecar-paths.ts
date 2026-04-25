@@ -2,6 +2,7 @@ import { join } from 'node:path';
 
 import { assertAbsoluteExistingFilePath, getExistingPathKind } from '../filesystem/path-validation';
 import type { AccelerationPreference } from './protocol';
+import { variantDirectoryPath } from './sidecar-installer';
 
 export class SidecarNotInstalledError extends Error {
   override readonly name = 'SidecarNotInstalledError';
@@ -39,8 +40,14 @@ export async function resolveSidecarExecutablePath(
     return { path: resolvedOverride, source: 'override', variant: null };
   }
 
-  const installedCpuPath = join(options.pluginDirectory, 'bin', 'cpu', options.executableName);
-  const installedCudaPath = join(options.pluginDirectory, 'bin', 'cuda', options.executableName);
+  const installedCpuPath = join(
+    variantDirectoryPath(options.pluginDirectory, 'cpu'),
+    options.executableName,
+  );
+  const installedCudaPath = join(
+    variantDirectoryPath(options.pluginDirectory, 'cuda'),
+    options.executableName,
+  );
 
   const installed = await pickExistingVariant({
     accelerationPreference: options.accelerationPreference,

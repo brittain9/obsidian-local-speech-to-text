@@ -1,5 +1,5 @@
 import { createHash, type Hash } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, type WriteStream } from 'node:fs';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
 import { get as httpsGet, type RequestOptions } from 'node:https';
@@ -8,6 +8,7 @@ import { gunzipSync, inflateRawSync } from 'node:zlib';
 
 import { asError } from '../shared/error-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
+import { formatSidecarExecutableName } from './sidecar-executable';
 
 export type SidecarInstallVariant = 'cpu' | 'cuda';
 export type ArchiveKind = 'tar.gz' | 'zip';
@@ -34,6 +35,7 @@ export interface InstallProgress {
 }
 
 export interface InstallSidecarOptions {
+  beforeReplace?: (() => Promise<void>) | undefined;
   logger?: PluginLogger | undefined;
   onProgress?: ((progress: InstallProgress) => void) | undefined;
   pluginDirectory: string;
@@ -51,7 +53,6 @@ export interface InstallSidecarResult {
 export const DEFAULT_RELEASE_BASE_URL =
   'https://github.com/brittain9/obsidian-local-speech-to-text/releases/download';
 
-const SIDECAR_EXECUTABLE_BASENAME = 'obsidian-local-stt-sidecar';
 const INSTALL_MANIFEST_FILENAME = 'install.json';
 
 export function detectPlatformAsset(
@@ -193,6 +194,7 @@ export async function installSidecar(
       'utf8',
     );
 
+    await options.beforeReplace?.();
     await rm(destinationDirectory, { force: true, recursive: true });
     await rename(stagingDirectory, destinationDirectory);
 
@@ -313,6 +315,7 @@ async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
 
 const PROGRESS_REPORT_BYTE_DELTA = 256 * 1024;
 const PROGRESS_REPORT_INTERVAL_MS = 100;
+const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
 
 async function downloadToFile(
   url: string,
@@ -329,12 +332,44 @@ async function downloadToFile(
 
   const fileStream = createWriteStream(destPath);
   const hash: Hash = createHash('sha256');
+  let writeError: Error | null = null;
   let bytesDownloaded = 0;
   let lastReportedBytes = 0;
   let lastReportedAt = 0;
 
+  let idleTimer: NodeJS.Timeout | null = null;
+  const armIdleTimer = (): void => {
+    if (idleTimer !== null) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      stream.destroy(
+        new Error(
+          `Download stalled: no data received from ${url} for ${String(DOWNLOAD_IDLE_TIMEOUT_MS)}ms.`,
+        ),
+      );
+    }, DOWNLOAD_IDLE_TIMEOUT_MS);
+  };
+  const clearIdleTimer = (): void => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const throwIfWriteFailed = (): void => {
+    if (writeError !== null) throw writeError;
+  };
+  const onWriteError = (error: Error): void => {
+    writeError ??= error;
+    stream.destroy(error);
+  };
+  fileStream.on('error', onWriteError);
+
+  armIdleTimer();
+
   try {
     for await (const chunk of stream) {
+      armIdleTimer();
+      throwIfWriteFailed();
       const buffer = chunk as Buffer;
       bytesDownloaded += buffer.length;
       hash.update(buffer);
@@ -350,19 +385,22 @@ async function downloadToFile(
       }
 
       if (!fileStream.write(buffer)) {
-        await new Promise<void>((resolve) => fileStream.once('drain', resolve));
+        await waitForFileStreamEvent(fileStream, 'drain');
       }
+      throwIfWriteFailed();
     }
     if (bytesDownloaded !== lastReportedBytes) {
       onProgress(bytesDownloaded, totalBytes);
     }
   } finally {
-    await new Promise<void>((resolve) => {
-      fileStream.end(() => {
-        resolve();
-      });
-    });
+    clearIdleTimer();
+    try {
+      await finishFileStream(fileStream);
+    } finally {
+      fileStream.off('error', onWriteError);
+    }
   }
+  throwIfWriteFailed();
 
   return hash.digest('hex');
 }
@@ -372,10 +410,38 @@ async function markExecutable(path: string): Promise<void> {
   await chmod(path, 0o755);
 }
 
+async function finishFileStream(fileStream: WriteStream): Promise<void> {
+  if (fileStream.destroyed) return;
+  const finished = waitForFileStreamEvent(fileStream, 'finish');
+  fileStream.end();
+  await finished;
+}
+
+function waitForFileStreamEvent(
+  fileStream: WriteStream,
+  eventName: 'drain' | 'finish',
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      fileStream.off(eventName, onEvent);
+      fileStream.off('error', onError);
+    };
+    const onEvent = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+
+    fileStream.once(eventName, onEvent);
+    fileStream.once('error', onError);
+  });
+}
+
 function resolveSidecarExecutableName(): string {
-  return process.platform === 'win32'
-    ? `${SIDECAR_EXECUTABLE_BASENAME}.exe`
-    : SIDECAR_EXECUTABLE_BASENAME;
+  return formatSidecarExecutableName(process.platform === 'win32');
 }
 
 async function extractTarGz(archivePath: string, destDir: string): Promise<void> {
@@ -403,6 +469,11 @@ async function extractTarGz(archivePath: string, destDir: string): Promise<void>
     const fullName = prefix.length > 0 ? `${prefix}/${name}` : name;
     const isRegularFile = typeflag === '0' || typeflag === '\0';
     const isDirectory = typeflag === '5';
+    const dataEnd = offset + size;
+
+    if (dataEnd > decompressed.length) {
+      throw new Error(`Tar entry ${fullName} is truncated.`);
+    }
 
     if (!isRegularFile && !isDirectory) {
       // Symlink ('2'), hardlink ('1'), PAX/GNU extended headers ('x'/'g'/'L'),
@@ -420,7 +491,7 @@ async function extractTarGz(archivePath: string, destDir: string): Promise<void>
       await mkdir(resolvedPath, { recursive: true });
     } else {
       await mkdir(dirname(resolvedPath), { recursive: true });
-      await writeFile(resolvedPath, decompressed.subarray(offset, offset + size));
+      await writeFile(resolvedPath, decompressed.subarray(offset, dataEnd));
     }
 
     offset += Math.ceil(size / blockSize) * blockSize;

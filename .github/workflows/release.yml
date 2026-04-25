@@ -4,12 +4,38 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - '[0-9][0-9][0-9][0-9].*.*'
+      - '[0-9][0-9][0-9][0-9].[0-9]+.[0-9]+'
 
 permissions:
   attestations: write
   contents: write
   id-token: write
+
+# Serialize releases for the same ref so a tag re-push or a dry-run racing a
+# tag push can't interleave artifact uploads. cancel-in-progress is false —
+# half-finished publishes are worse than queueing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # GGML_NATIVE=OFF forces a portable CPU feature baseline (falls back to
+  # GGML_AVX2). Without this, ggml's cmake probes the runner's CPU and bakes
+  # in whatever SIMD it supports (AVX-512 on current Azure ubuntu-latest /
+  # windows-latest runners), which crashes with STATUS_ILLEGAL_INSTRUCTION on
+  # consumer CPUs that don't execute AVX-512 (e.g. Alder Lake / Raptor Lake).
+  # Inherited by every job env so Swatinem/rust-cache (which runs before the
+  # Build sidecar step) sees it when computing its key, otherwise stale
+  # AVX-512-compiled artifacts get restored and silently re-shipped.
+  GGML_NATIVE: 'OFF'
+  # ggml's CUDA 12.9 default builds PTX/SASS for nine architecture variants,
+  # which is the dominant cost in release CUDA jobs, especially on Windows.
+  # Ship one forward-compatible Turing PTX target instead. That requires a
+  # Turing-or-newer NVIDIA GPU for CUDA acceleration; older GPUs can still
+  # use the CPU sidecar.
+  CUDA_ARCH: '75-virtual'
+  NODE_VERSION: 24.14.1
+  RUST_TOOLCHAIN: 1.94.1
 
 jobs:
   metadata:
@@ -24,7 +50,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24.14.1
+          node-version: ${{ env.NODE_VERSION }}
 
       - id: version
         name: Resolve release version
@@ -45,7 +71,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24.14.1
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Upgrade npm
@@ -68,16 +94,8 @@ jobs:
 
   build-sidecar-posix:
     needs: metadata
-    # GGML_NATIVE=OFF forces a portable CPU feature baseline (falls back to
-    # GGML_AVX2). Without this, ggml's cmake probes the runner's CPU and bakes
-    # in whatever SIMD it supports (AVX-512 on current Azure ubuntu-latest /
-    # windows-latest runners), which crashes with STATUS_ILLEGAL_INSTRUCTION
-    # on consumer CPUs that don't execute AVX-512 (e.g. Alder Lake / Raptor
-    # Lake). Set at job scope so Swatinem/rust-cache — which runs before the
-    # Build sidecar step — sees it when computing its key, otherwise stale
-    # AVX-512-compiled artifacts get restored and silently re-shipped.
     env:
-      GGML_NATIVE: 'OFF'
+      CMAKE_CUDA_ARCHITECTURES: ${{ matrix.cuda && env.CUDA_ARCH || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -113,7 +131,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24.14.1
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install native build dependencies
         if: runner.os == 'Linux'
@@ -122,7 +140,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -144,52 +162,30 @@ jobs:
           method: network
 
       - name: Build sidecar
+        env:
+          CARGO_TIMINGS: '1'
+          CARGO_VERBOSE: '1'
         run: ${{ matrix.build_command }}
+
+      - name: Upload cargo timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-${{ matrix.asset_name }}
+          path: native/target*/cargo-timings/*.html
+          if-no-files-found: ignore
 
       - name: Ad-hoc sign macOS binary
         if: runner.os == 'macOS'
         run: codesign --force --sign - ${{ matrix.binary_path }}
 
       - name: Package release archive
-        shell: bash
         env:
           ARCHIVE_NAME: ${{ matrix.archive_name }}
           ASSET_NAME: ${{ matrix.asset_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
           CUDA: ${{ matrix.cuda }}
-        run: |
-          artifact_dir="dist/${ASSET_NAME}"
-          mkdir -p "$artifact_dir"
-          cp "$BINARY_PATH" "$artifact_dir/obsidian-local-stt-sidecar"
-          if [[ "$CUDA" == "true" ]]; then
-            while IFS= read -r extra_file; do
-              cp "$(dirname "$BINARY_PATH")/$extra_file" "$artifact_dir/$extra_file"
-              # Strip unneeded ELF symbols from provider shared libs to trim
-              # the release archive. strip --strip-unneeded keeps dynamic
-              # symbols that runtime dlopen/dlsym chains need. Linux-only —
-              # macOS CUDA is not a target and its strip flags differ.
-              strip --strip-unneeded "$artifact_dir/$extra_file"
-            done < <(node scripts/list-cuda-artifacts.mjs providers linux)
-            # CUDA runtime libs aren't provided by the user's system in a
-            # version-compatible form (cudart is major-versioned and not
-            # forward-compatible), so ship them next to the binary. cp -L
-            # dereferences the symlinks into real files. Derive the lib
-            # directory the same way scripts/build-cuda.sh does so there's
-            # one source of truth.
-            cuda_lib="$(dirname "$(dirname "$(which nvcc)")")/targets/$(uname -m)-linux/lib"
-            while IFS= read -r runtime_file; do
-              cp -L "$cuda_lib/$runtime_file" "$artifact_dir/$runtime_file"
-            done < <(node scripts/list-cuda-artifacts.mjs runtime linux)
-          fi
-          # Linux-only: strip the sidecar ELF. The Rust release profile
-          # strips Rust-owned symbols, but bundled C++/CUDA objects (ggml,
-          # whisper.cpp, ORT kernels) can still carry debug sections.
-          # macOS binaries are ad-hoc codesigned in the previous step; do
-          # not strip them (both the signature and `strip` semantics differ).
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            strip --strip-unneeded "$artifact_dir/obsidian-local-stt-sidecar"
-          fi
-          tar -czf "dist/${ARCHIVE_NAME}" -C "$artifact_dir" .
+        run: node scripts/package-sidecar-archive.mjs
 
       - name: Attest build provenance
         if: github.event_name == 'push'
@@ -205,10 +201,8 @@ jobs:
 
   build-sidecar-windows:
     needs: metadata
-    # See build-sidecar-posix for rationale. Must be at job scope so
-    # Swatinem/rust-cache's key-computation sees it.
     env:
-      GGML_NATIVE: 'OFF'
+      CMAKE_CUDA_ARCHITECTURES: ${{ matrix.cuda && env.CUDA_ARCH || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -235,7 +229,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24.14.1
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Expose libclang
         shell: pwsh
@@ -244,7 +238,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.1
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -264,38 +258,26 @@ jobs:
 
       - name: Build sidecar
         shell: pwsh
+        env:
+          CARGO_TIMINGS: '1'
+          CARGO_VERBOSE: '1'
         run: ${{ matrix.build_command }}
 
+      - name: Upload cargo timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-${{ matrix.asset_name }}
+          path: native/target*/cargo-timings/*.html
+          if-no-files-found: ignore
+
       - name: Package release archive
-        shell: pwsh
         env:
           ARCHIVE_NAME: ${{ matrix.archive_name }}
           ASSET_NAME: ${{ matrix.asset_name }}
           BINARY_PATH: ${{ matrix.binary_path }}
           CUDA: ${{ matrix.cuda }}
-        run: |
-          $artifactDir = "dist/$env:ASSET_NAME"
-          $binaryDir = Split-Path $env:BINARY_PATH -Parent
-          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-          Copy-Item $env:BINARY_PATH "$artifactDir/obsidian-local-stt-sidecar.exe"
-          if ($env:CUDA -eq 'true') {
-            # Copy only the ORT provider DLLs we actually register (not a
-            # blanket *.dll glob, which scoops up unused providers like
-            # DirectML and TensorRT that ort's copy-dylibs drops alongside).
-            $providerFiles = (& node scripts/list-cuda-artifacts.mjs providers win32) -split "`r?`n" | Where-Object { $_ -ne '' }
-            foreach ($providerFile in $providerFiles) {
-              Copy-Item (Join-Path $binaryDir $providerFile) (Join-Path $artifactDir $providerFile)
-            }
-            # Ship the CUDA runtime DLLs we directly import. Windows DLL search
-            # order checks the exe's own directory first, so this bundled copy
-            # wins over any mismatched system-installed CUDA the user may have.
-            $runtimeFiles = (& node scripts/list-cuda-artifacts.mjs runtime win32) -split "`r?`n" | Where-Object { $_ -ne '' }
-            foreach ($runtimeFile in $runtimeFiles) {
-              $source = Join-Path $env:CUDA_PATH "bin/$runtimeFile"
-              Copy-Item $source (Join-Path $artifactDir $runtimeFile)
-            }
-          }
-          Compress-Archive -Path "$artifactDir/*" -DestinationPath "dist/$env:ARCHIVE_NAME" -Force
+        run: node scripts/package-sidecar-archive.mjs
 
       - name: Attest build provenance
         if: github.event_name == 'push'

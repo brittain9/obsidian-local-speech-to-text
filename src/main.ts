@@ -20,11 +20,10 @@ import { formatErrorMessage } from './shared/format-utils';
 import { createPluginLogger, type PluginLogger } from './shared/plugin-logger';
 import { assertSidecarExecutableIsFresh } from './sidecar/sidecar-build-state';
 import { SidecarConnection } from './sidecar/sidecar-connection';
+import { formatSidecarExecutableName } from './sidecar/sidecar-executable';
 import { resolveSidecarExecutablePath, SidecarNotInstalledError } from './sidecar/sidecar-paths';
 import type { SidecarLaunchSpec } from './sidecar/sidecar-process';
 import { DictationRibbonController } from './ui/dictation-ribbon';
-
-const SIDECAR_BINARY_BASENAME = 'obsidian-local-stt-sidecar';
 
 export default class LocalSttPlugin extends Plugin {
   private audioCaptureStream: AudioCaptureStream | null = null;
@@ -127,10 +126,7 @@ export default class LocalSttPlugin extends Plugin {
     } catch (error) {
       if (error instanceof SidecarNotInstalledError) {
         this.logger.debug('sidecar', 'sidecar not installed on startup');
-        if (!this.settings.firstRunCompleted) {
-          await this.updateSettings({ ...this.settings, firstRunCompleted: true });
-          await this.openFirstRunSetup();
-        }
+        await this.openFirstRunSetup();
         return;
       }
       this.logger.error('sidecar', 'initial startup check failed', error);
@@ -317,5 +313,5 @@ export default class LocalSttPlugin extends Plugin {
 }
 
 function getSidecarExecutableName(): string {
-  return Platform.isWin ? `${SIDECAR_BINARY_BASENAME}.exe` : SIDECAR_BINARY_BASENAME;
+  return formatSidecarExecutableName(Platform.isWin);
 }

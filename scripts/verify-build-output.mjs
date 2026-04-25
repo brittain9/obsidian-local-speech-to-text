@@ -1,5 +1,7 @@
 import { access, readFile } from 'node:fs/promises';
 
+import { listCudaArtifacts } from './lib/cuda-artifacts.mjs';
+
 const args = new Set(process.argv.slice(2));
 const profile = args.has('--release') ? 'release' : 'debug';
 const SIDECAR_BINARY_SUFFIX = process.platform === 'win32' ? '.exe' : '';
@@ -7,10 +9,12 @@ const SIDECAR_BINARY_SUFFIX = process.platform === 'win32' ? '.exe' : '';
 const MAIN_BUNDLE_PATH = 'main.js';
 const SIDECAR_BINARY_PATH = `native/target/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
 const CUDA_SIDECAR_BINARY_PATH = `native/target-cuda/${profile}/obsidian-local-stt-sidecar${SIDECAR_BINARY_SUFFIX}`;
-const cudaArtifacts = JSON.parse(await readFile('native/cuda-artifacts.json', 'utf8'));
-const CUDA_PROVIDER_PATHS = (cudaArtifacts.providers[process.platform] ?? []).map(
-  (name) => `native/target-cuda/${profile}/${name}`,
-);
+const CUDA_PROVIDER_PATHS =
+  process.platform === 'linux' || process.platform === 'win32'
+    ? (await listCudaArtifacts('providers', process.platform)).map(
+        (name) => `native/target-cuda/${profile}/${name}`,
+      )
+    : [];
 
 async function main() {
   const mainBundle = await readFile(MAIN_BUNDLE_PATH, 'utf8');

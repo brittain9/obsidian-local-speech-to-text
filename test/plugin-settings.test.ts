@@ -33,7 +33,6 @@ describe('resolvePluginSettings', () => {
       cudaLibraryPath: '/run/host/usr/lib64',
       developerMode: false,
       dictationAnchor: 'end_of_note',
-      firstRunCompleted: false,
       listeningMode: 'always_on',
       modelStorePathOverride: '/tmp/models',
       pauseWhileProcessing: false,

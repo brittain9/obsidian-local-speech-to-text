@@ -9,15 +9,14 @@ import {
   installSidecar,
   type SidecarInstallVariant,
 } from '../sidecar/sidecar-installer';
+import type { InstallCopy } from './sidecar-install-copy';
 
 export interface SidecarInstallModalOptions {
-  bodyText: string;
+  beforeReplace?: (() => Promise<void>) | undefined;
+  copy: InstallCopy;
   logger?: PluginLogger | undefined;
   onInstalled: () => Promise<void>;
   pluginDirectory: string;
-  primaryButtonText: string;
-  successNotice: string;
-  title: string;
   variant: SidecarInstallVariant;
   version: string;
 }
@@ -43,12 +42,12 @@ export class SidecarInstallModal extends Modal {
 
   override onOpen(): void {
     this.modalEl.addClass('local-stt-sidecar-install');
-    this.titleEl.setText(this.options.title);
+    this.titleEl.setText(this.options.copy.title);
     this.contentEl.empty();
 
     const asset = detectPlatformAssetForCurrentEnv(this.options.variant);
 
-    this.contentEl.createEl('p', { text: this.options.bodyText });
+    this.contentEl.createEl('p', { text: this.options.copy.bodyText });
 
     const details = this.contentEl.createEl('ul', { cls: 'local-stt-sidecar-install__details' });
     details.createEl('li', { text: `Archive: ${asset.assetName}` });
@@ -70,7 +69,7 @@ export class SidecarInstallModal extends Modal {
     this.secondaryButtonEl = buttons.createEl('button', { text: 'Later' });
     this.primaryButtonEl = buttons.createEl('button', {
       cls: 'mod-cta',
-      text: this.options.primaryButtonText,
+      text: this.options.copy.primaryButtonText,
     });
 
     this.secondaryButtonEl.addEventListener('click', () => {
@@ -114,6 +113,7 @@ export class SidecarInstallModal extends Modal {
 
     try {
       await installSidecar({
+        beforeReplace: this.options.beforeReplace,
         logger: this.options.logger,
         onProgress: (progress) => {
           this.updateProgress(progress);
@@ -126,7 +126,7 @@ export class SidecarInstallModal extends Modal {
 
       this.setStatus('Sidecar installed. Starting…', 'success');
       await this.options.onInstalled();
-      new Notice(this.options.successNotice);
+      new Notice(this.options.copy.successNotice);
       this.close();
     } catch (error) {
       this.options.logger?.error('installer', 'sidecar install failed', error);
@@ -149,13 +149,15 @@ export class SidecarInstallModal extends Modal {
   private updateProgress(progress: InstallProgress): void {
     if (progress.phase === 'verify') {
       this.setStatus('Verifying checksum…', 'info');
-      this.setProgressPercent(100);
+      this.progressLabelEl?.setText('');
+      this.setProgressPercent(null);
       return;
     }
 
     if (progress.phase === 'extract') {
       this.setStatus('Extracting archive…', 'info');
-      this.setProgressPercent(100);
+      this.progressLabelEl?.setText('');
+      this.setProgressPercent(null);
       return;
     }
 

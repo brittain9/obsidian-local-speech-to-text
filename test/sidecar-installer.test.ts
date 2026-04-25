@@ -7,9 +7,39 @@ import { deflateRawSync, gzipSync } from 'node:zlib';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { httpsResponses } = vi.hoisted(() => ({
-  httpsResponses: new Map<string, Buffer>(),
+interface StubResponse {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+const { fsMockState, httpsResponses } = vi.hoisted(() => ({
+  fsMockState: {
+    nextWriteStreamError: null as Error | null,
+  },
+  httpsResponses: new Map<string, StubResponse>(),
 }));
+
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+
+  return {
+    ...actual,
+    createWriteStream: (...args: Parameters<typeof actual.createWriteStream>) => {
+      const stream = actual.createWriteStream(...args);
+      const writeStreamError = fsMockState.nextWriteStreamError;
+
+      if (writeStreamError !== null) {
+        fsMockState.nextWriteStreamError = null;
+        queueMicrotask(() => {
+          stream.emit('error', writeStreamError);
+        });
+      }
+
+      return stream;
+    },
+  };
+});
 
 vi.mock('node:https', async () => {
   const { EventEmitter } = await import('node:events');
@@ -27,20 +57,17 @@ vi.mock('node:https', async () => {
       };
 
       queueMicrotask(() => {
-        const body = httpsResponses.get(urlString);
+        const stub = httpsResponses.get(urlString);
 
-        if (body === undefined) {
+        if (stub === undefined) {
           const res = Readable.from(Buffer.alloc(0));
           Object.assign(res, { headers: {}, statusCode: 404 });
           callback?.(res);
           return;
         }
 
-        const res = Readable.from([body]);
-        Object.assign(res, {
-          headers: { 'content-length': String(body.length) },
-          statusCode: 200,
-        });
+        const res = Readable.from([stub.body]);
+        Object.assign(res, { headers: stub.headers, statusCode: stub.statusCode });
         callback?.(res);
       });
 
@@ -66,6 +93,7 @@ afterEach(async () => {
       .splice(0)
       .map((directoryPath) => rm(directoryPath, { force: true, recursive: true })),
   );
+  fsMockState.nextWriteStreamError = null;
   httpsResponses.clear();
 });
 
@@ -220,6 +248,41 @@ describe('installSidecar', () => {
     expect(progressEvents.some((entry) => entry.phase === 'extract')).toBe(true);
   });
 
+  it('keeps the previous install when the pre-replace hook fails', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const variantDir = variantDirectoryPath(pluginDirectory, 'cpu');
+    await mkdir(variantDir, { recursive: true });
+    await writeFile(join(variantDir, 'obsidian-local-stt-sidecar'), 'old-binary');
+
+    const archive = buildTarGz([
+      { content: Buffer.from('new-binary'), name: 'obsidian-local-stt-sidecar' },
+    ]);
+    const archiveSha256 = sha256Hex(archive);
+    const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
+    const checksumsText = `${archiveSha256}  ${assetName}\n`;
+
+    stubHttps({
+      [`https://releases.test/2026.4.21/${assetName}`]: archive,
+      'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
+    });
+
+    await expect(
+      installSidecar({
+        beforeReplace: async () => {
+          throw new Error('cannot stop running sidecar');
+        },
+        pluginDirectory,
+        releaseBaseUrl: 'https://releases.test',
+        variant: 'cpu',
+        version: '2026.4.21',
+      }),
+    ).rejects.toThrow(/cannot stop running sidecar/);
+
+    await expect(readFile(join(variantDir, 'obsidian-local-stt-sidecar'), 'utf8')).resolves.toBe(
+      'old-binary',
+    );
+  });
+
   it('fails and leaves no manifest when the checksum does not match', async () => {
     const pluginDirectory = await createTempDirectory();
     const archive = buildTarGz([
@@ -241,6 +304,34 @@ describe('installSidecar', () => {
         version: '2026.4.21',
       }),
     ).rejects.toThrow(/Checksum mismatch/);
+
+    const manifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cpu'));
+    expect(manifest).toBeNull();
+  });
+
+  it('rejects and leaves no manifest when the archive write stream fails', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const archive = buildTarGz([
+      { content: Buffer.from('binary'), name: 'obsidian-local-stt-sidecar' },
+    ]);
+    const archiveSha256 = sha256Hex(archive);
+    const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
+    const checksumsText = `${archiveSha256}  ${assetName}\n`;
+
+    stubHttps({
+      [`https://releases.test/2026.4.21/${assetName}`]: archive,
+      'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
+    });
+    fsMockState.nextWriteStreamError = new Error('disk full');
+
+    await expect(
+      installSidecar({
+        pluginDirectory,
+        releaseBaseUrl: 'https://releases.test',
+        variant: 'cpu',
+        version: '2026.4.21',
+      }),
+    ).rejects.toThrow(/disk full/);
 
     const manifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cpu'));
     expect(manifest).toBeNull();
@@ -295,6 +386,106 @@ describe('installSidecar', () => {
     );
     expect(installedBinary.toString('utf8')).toBe('windows-binary');
   });
+
+  it('rejects immediately when the abort signal is already aborted', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      installSidecar({
+        pluginDirectory,
+        releaseBaseUrl: 'https://releases.test',
+        signal: controller.signal,
+        variant: 'cpu',
+        version: '2026.4.21',
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('follows HTTP redirects to the final asset URL', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const archive = buildTarGz([
+      { content: Buffer.from('redirected-binary'), name: 'obsidian-local-stt-sidecar' },
+    ]);
+    const archiveSha256 = sha256Hex(archive);
+    const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
+    const checksumsText = `${archiveSha256}  ${assetName}\n`;
+
+    stubHttps({
+      'https://releases.test/2026.4.21/checksums.txt': {
+        headers: { location: 'https://cdn.test/checksums.txt' },
+        statusCode: 302,
+      },
+      'https://cdn.test/checksums.txt': Buffer.from(checksumsText),
+      [`https://releases.test/2026.4.21/${assetName}`]: {
+        headers: { location: `/cdn/${assetName}` },
+        statusCode: 301,
+      },
+      [`https://releases.test/cdn/${assetName}`]: archive,
+    });
+
+    const result = await installSidecar({
+      pluginDirectory,
+      releaseBaseUrl: 'https://releases.test',
+      variant: 'cpu',
+      version: '2026.4.21',
+    });
+
+    const installedBinary = await readFile(
+      join(result.variantDirectory, 'obsidian-local-stt-sidecar'),
+    );
+    expect(installedBinary.toString('utf8')).toBe('redirected-binary');
+  });
+
+  it('rejects tar archives containing unsupported entry types', async () => {
+    const pluginDirectory = await createTempDirectory();
+    const archive = buildTarGz([
+      { content: Buffer.alloc(0), name: 'malicious-link', typeflag: '2' },
+    ]);
+    const archiveSha256 = sha256Hex(archive);
+    const assetName = 'sidecar-linux-x86_64-cpu.tar.gz';
+    const checksumsText = `${archiveSha256}  ${assetName}\n`;
+
+    stubHttps({
+      [`https://releases.test/2026.4.21/${assetName}`]: archive,
+      'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
+    });
+
+    await expect(
+      installSidecar({
+        pluginDirectory,
+        releaseBaseUrl: 'https://releases.test',
+        variant: 'cpu',
+        version: '2026.4.21',
+      }),
+    ).rejects.toThrow(/Unsupported tar entry type/);
+  });
+
+  it('rejects zip archives that use data-descriptor encoding', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const pluginDirectory = await createTempDirectory();
+    const archive = buildZip([
+      { content: Buffer.from('payload'), gpFlags: 0x0008, name: 'obsidian-local-stt-sidecar.exe' },
+    ]);
+    const archiveSha256 = sha256Hex(archive);
+    const assetName = 'sidecar-windows-x86_64-cpu.zip';
+    const checksumsText = `${archiveSha256}  ${assetName}\n`;
+
+    stubHttps({
+      [`https://releases.test/2026.4.21/${assetName}`]: archive,
+      'https://releases.test/2026.4.21/checksums.txt': Buffer.from(checksumsText),
+    });
+
+    await expect(
+      installSidecar({
+        pluginDirectory,
+        releaseBaseUrl: 'https://releases.test',
+        variant: 'cpu',
+        version: '2026.4.21',
+      }),
+    ).rejects.toThrow(/data-descriptor encoding/);
+  });
 });
 
 describe('uninstallSidecarVariant', () => {
@@ -325,18 +516,47 @@ function sha256Hex(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
-function stubHttps(responseMap: Record<string, Buffer>): void {
+type StubResponseLike =
+  | Buffer
+  | { statusCode?: number; headers?: Record<string, string>; body?: Buffer };
+
+function stubHttps(responseMap: Record<string, StubResponseLike>): void {
   httpsResponses.clear();
-  for (const [url, body] of Object.entries(responseMap)) {
-    httpsResponses.set(url, body);
+  for (const [url, value] of Object.entries(responseMap)) {
+    httpsResponses.set(url, normalizeStub(value));
   }
 }
 
-function buildTarGz(entries: Array<{ name: string; content: Buffer }>): Buffer {
+function normalizeStub(value: StubResponseLike): StubResponse {
+  if (Buffer.isBuffer(value)) {
+    return {
+      body: value,
+      headers: { 'content-length': String(value.length) },
+      statusCode: 200,
+    };
+  }
+
+  const body = value.body ?? Buffer.alloc(0);
+  const headers = value.headers ?? {};
+  const withContentLength =
+    headers['content-length'] === undefined && body.length > 0
+      ? { ...headers, 'content-length': String(body.length) }
+      : headers;
+
+  return { body, headers: withContentLength, statusCode: value.statusCode ?? 200 };
+}
+
+interface TarEntry {
+  name: string;
+  content: Buffer;
+  typeflag?: string;
+}
+
+function buildTarGz(entries: TarEntry[]): Buffer {
   const blocks: Buffer[] = [];
 
   for (const entry of entries) {
-    blocks.push(buildTarHeader(entry.name, entry.content.length));
+    blocks.push(buildTarHeader(entry.name, entry.content.length, entry.typeflag ?? '0'));
     blocks.push(padToBlock(entry.content));
   }
 
@@ -344,7 +564,7 @@ function buildTarGz(entries: Array<{ name: string; content: Buffer }>): Buffer {
   return gzipSync(Buffer.concat(blocks));
 }
 
-function buildTarHeader(name: string, size: number): Buffer {
+function buildTarHeader(name: string, size: number, typeflag: string): Buffer {
   const header = Buffer.alloc(512);
   header.write(name, 0, 100, 'utf8');
   header.write('0000755\0', 100, 8, 'utf8');
@@ -353,7 +573,7 @@ function buildTarHeader(name: string, size: number): Buffer {
   header.write(`${size.toString(8).padStart(11, '0')}\0`, 124, 12, 'utf8');
   header.write('00000000000\0', 136, 12, 'utf8');
   header.write('        ', 148, 8, 'utf8');
-  header.write('0', 156, 1, 'utf8');
+  header.write(typeflag, 156, 1, 'utf8');
   header.write('ustar\0', 257, 6, 'utf8');
   header.write('00', 263, 2, 'utf8');
 
@@ -371,7 +591,13 @@ function padToBlock(content: Buffer): Buffer {
   return Buffer.concat([content, Buffer.alloc(512 - remainder)]);
 }
 
-function buildZip(entries: Array<{ name: string; content: Buffer }>): Buffer {
+interface ZipEntry {
+  name: string;
+  content: Buffer;
+  gpFlags?: number;
+}
+
+function buildZip(entries: ZipEntry[]): Buffer {
   const localRecords: Buffer[] = [];
   const centralRecords: Buffer[] = [];
   let cursor = 0;
@@ -379,11 +605,12 @@ function buildZip(entries: Array<{ name: string; content: Buffer }>): Buffer {
   for (const entry of entries) {
     const deflated = deflateRawSync(entry.content);
     const nameBytes = Buffer.from(entry.name, 'utf8');
+    const gpFlags = entry.gpFlags ?? 0;
 
     const local = Buffer.alloc(30 + nameBytes.length);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(gpFlags, 6);
     local.writeUInt16LE(8, 8);
     local.writeUInt16LE(0, 10);
     local.writeUInt16LE(0, 12);
@@ -404,7 +631,7 @@ function buildZip(entries: Array<{ name: string; content: Buffer }>): Buffer {
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(gpFlags, 8);
     central.writeUInt16LE(8, 10);
     central.writeUInt16LE(0, 12);
     central.writeUInt16LE(0, 14);

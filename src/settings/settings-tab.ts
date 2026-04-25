@@ -5,6 +5,7 @@ import { ManageModelsModal } from '../models/manage-models-modal';
 import type { ModelInstallManager } from '../models/model-install-manager';
 import { ExternalModelFileModal, ModelDetailsModal } from '../models/model-management-modals';
 import { matchesModelTriple } from '../models/model-management-types';
+import { getInstallCopy, type InstallIntent } from '../setup/sidecar-install-copy';
 import { SidecarInstallModal } from '../setup/sidecar-install-modal';
 import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
@@ -215,6 +216,8 @@ export class LocalSttSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Engine options').setHeading();
     const engineSection = containerEl.createDiv();
     void this.renderEngineOptions(engineSection);
+    const gpuSection = containerEl.createDiv();
+    void this.renderGpuSidecarControls(gpuSection);
 
     // --- Advanced: Sidecar (collapsible) ---
     const advancedDetails = containerEl.createEl('details', { cls: 'local-stt-advanced' });
@@ -406,8 +409,6 @@ export class LocalSttSettingTab extends PluginSettingTab {
           void this.renderEngineOptions(containerEl, systemInfo);
         });
       });
-
-    await this.renderGpuSidecarControls(containerEl);
   }
 
   private async renderGpuSidecarControls(containerEl: HTMLDivElement): Promise<void> {
@@ -415,8 +416,10 @@ export class LocalSttSettingTab extends PluginSettingTab {
 
     if (pluginDirectory === null) return;
 
-    const cpuManifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cpu'));
-    const cudaManifest = await readInstallManifest(variantDirectoryPath(pluginDirectory, 'cuda'));
+    const [cpuManifest, cudaManifest] = await Promise.all([
+      readInstallManifest(variantDirectoryPath(pluginDirectory, 'cpu')),
+      readInstallManifest(variantDirectoryPath(pluginDirectory, 'cuda')),
+    ]);
 
     this.renderInstalledStatus(containerEl, cpuManifest, cudaManifest);
     this.renderCpuInstallRow(containerEl, pluginDirectory, cpuManifest);
@@ -454,16 +457,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       button.setButtonText(isInstalled ? 'Reinstall' : 'Download CPU sidecar');
       if (!isInstalled) button.setCta();
       button.onClick(() => {
-        this.openInstallModal(pluginDirectory, 'cpu', {
-          bodyText: isInstalled
-            ? 'Re-download the CPU speech-to-text sidecar from GitHub releases. This replaces the current CPU install.'
-            : 'Download the CPU speech-to-text sidecar from GitHub releases. Transcription stays local on your machine after this completes.',
-          primaryButtonText: isInstalled ? 'Redownload CPU sidecar' : 'Download CPU sidecar',
-          successNotice: isInstalled
-            ? 'CPU sidecar reinstalled and restarted.'
-            : 'CPU sidecar installed and started.',
-          title: isInstalled ? 'Reinstall CPU sidecar' : 'Install CPU sidecar',
-        });
+        this.openInstallModal(pluginDirectory, 'cpu', isInstalled ? 'reinstall' : 'install');
       });
     });
   }
@@ -534,31 +528,19 @@ export class LocalSttSettingTab extends PluginSettingTab {
   }
 
   private openCudaInstallModal(pluginDirectory: string): void {
-    this.openInstallModal(pluginDirectory, 'cuda', {
-      bodyText:
-        'Download the CUDA-accelerated sidecar for NVIDIA GPUs. This replaces the CPU sidecar while active. The CPU sidecar remains installed as a fallback.',
-      onInstalled: async () => {
-        await this.persistSettings({
-          ...this.dependencies.getSettings(),
-          accelerationPreference: 'auto',
-        });
-      },
-      primaryButtonText: 'Download CUDA sidecar',
-      successNotice: 'CUDA sidecar installed and started.',
-      title: 'Install CUDA acceleration',
+    this.openInstallModal(pluginDirectory, 'cuda', 'install', async () => {
+      await this.persistSettings({
+        ...this.dependencies.getSettings(),
+        accelerationPreference: 'auto',
+      });
     });
   }
 
   private openInstallModal(
     pluginDirectory: string,
     variant: SidecarInstallVariant,
-    copy: {
-      bodyText: string;
-      onInstalled?: () => Promise<void>;
-      primaryButtonText: string;
-      successNotice: string;
-      title: string;
-    },
+    intent: InstallIntent,
+    onInstalled?: () => Promise<void>,
   ): void {
     if (this.dependencies.isDictationBusy()) {
       new Notice('Stop dictation before installing a sidecar — the install restarts the engine.');
@@ -566,18 +548,18 @@ export class LocalSttSettingTab extends PluginSettingTab {
     }
 
     new SidecarInstallModal(this.app, {
-      bodyText: copy.bodyText,
+      beforeReplace: async () => {
+        await this.shutdownSidecarBeforeFileMutation(`${variant} install`);
+      },
+      copy: getInstallCopy(variant, intent),
       logger: this.dependencies.logger,
       onInstalled: async () => {
-        await copy.onInstalled?.();
+        await onInstalled?.();
         await this.dependencies.restartSidecar();
         await this.dependencies.modelInstallManager.init();
         this.display();
       },
       pluginDirectory,
-      primaryButtonText: copy.primaryButtonText,
-      successNotice: copy.successNotice,
-      title: copy.title,
       variant,
       version: this.dependencies.pluginVersion,
     }).open();
@@ -589,20 +571,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       return;
     }
 
-    // Shutdown is best-effort: Windows holds DLL handles on the live process,
-    // so skipping the await-for-exit step would EBUSY the rm -rf. But if the
-    // process already crashed, shutdown throws — in that case the directory is
-    // still safe to delete and we must reach restartSidecar() so the user
-    // isn't left with no working engine.
-    try {
-      await this.dependencies.sidecarConnection.shutdown();
-    } catch (error) {
-      this.dependencies.logger?.warn(
-        'installer',
-        'sidecar shutdown failed before CUDA uninstall; proceeding',
-        error,
-      );
-    }
+    await this.shutdownSidecarBeforeFileMutation('CUDA uninstall');
 
     try {
       await uninstallSidecarVariant(pluginDirectory, 'cuda');
@@ -612,6 +581,20 @@ export class LocalSttSettingTab extends PluginSettingTab {
     } catch (error) {
       this.dependencies.logger?.error('installer', 'failed to uninstall CUDA sidecar', error);
       new Notice(`Failed to uninstall CUDA sidecar: ${formatErrorMessage(error)}`);
+    }
+  }
+
+  private async shutdownSidecarBeforeFileMutation(reason: string): Promise<void> {
+    // Windows holds DLL handles on the live sidecar process, so install and
+    // uninstall paths must stop it before removing or replacing bin/*.
+    try {
+      await this.dependencies.sidecarConnection.shutdown();
+    } catch (error) {
+      this.dependencies.logger?.warn(
+        'installer',
+        `sidecar shutdown failed before ${reason}; proceeding`,
+        error,
+      );
     }
   }
 
