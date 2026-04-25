@@ -54,21 +54,17 @@ When the user updates the plugin to a new version with a pinned sidecar hash, th
 
 ## Binary Storage Location
 
-**Decision:** Store the sidecar and its provider libraries under `app.getPath('userData')/local-transcript/bin/<version>/`, not inside the plugin folder.
-
-Rationale:
-- Survives plugin uninstall/reinstall. A multi-hundred-MB CUDA download should not be wasted on a UI disable/re-enable.
-- Shared across vaults on the same user account.
-- Keeps the vault clean and backup-friendly.
-
-Trade-off: `process.platform === 'darwin'` uses `~/Library/Application Support/obsidian/local-transcript/`, Linux uses `~/.config/obsidian/local-transcript/`, Windows uses `%APPDATA%\obsidian\local-transcript\`. Document these in the README for users who need to clean up.
+**Implemented:** Store the sidecar and its provider libraries inside the plugin folder at `<vault>/.obsidian/plugins/local-transcript/bin/<variant>/` (where `<variant>` is `cpu` or `cuda`). An `install.json` manifest written alongside the binary records the installed version, variant, and SHA-256.
 
 Resolution order in `resolveSidecarExecutablePath()`:
 1. `sidecarPathOverride` (advanced setting, unchanged)
-2. `userData/local-transcript/bin/<manifest.version>/<binary-name>`
-3. Dev-mode `native/target/{debug,release}/` (unchanged)
+2. `<pluginDirectory>/bin/cuda/<binary-name>` (when CUDA is preferred and present)
+3. `<pluginDirectory>/bin/cpu/<binary-name>`
+4. Dev-mode `native/target[-cuda]/{debug,release}/` (unchanged)
 
-If (2) is missing, the plugin shows a blocking setup modal that triggers the download flow.
+If no installed binary is found, the plugin shows a setup modal on first activation or triggers download from ribbon click.
+
+Note: The earlier plan proposed `userData/local-transcript/bin/<version>/` to survive plugin reinstalls and share across vaults. That was not implemented — binaries live in the plugin folder and do not include a version subdirectory. Revisit if the vault-cleanup concern becomes real user feedback.
 
 ## GPU Variant UX
 

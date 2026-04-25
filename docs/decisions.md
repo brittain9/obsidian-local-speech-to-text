@@ -32,5 +32,5 @@ Durable workflow, product, and architecture decisions. Update in the same change
 
 ### D-012: No Cloud, No Telemetry, No Accounts
 
-- Decision: After model setup, the plugin operates fully offline. No network calls for transcription, no analytics or telemetry, no account or login flow. Model downloads from HuggingFace (user-initiated) are the only sanctioned outbound traffic.
+- Decision: After setup, the plugin operates fully offline. No network calls for transcription, no analytics or telemetry, no account or login flow. Two categories of user-initiated downloads are sanctioned: sidecar binaries from GitHub Releases (on first run and explicit reinstall) and model files from HuggingFace. All other outbound traffic is prohibited.
 - Why: Privacy is the product. Anything that calls home or requires an account changes the value proposition fundamentally — even an anonymous "crash report" defaults users into trust they didn't grant. Treat this as a hard constraint when evaluating new features.

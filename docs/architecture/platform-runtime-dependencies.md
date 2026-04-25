@@ -16,21 +16,22 @@ The CPU flavor is the default everywhere. GPU flavors are additive — they incl
 
 ## What the Plugin Bundle Contains
 
-The shipped plugin always includes:
+The shipped plugin contains only:
 
 - `main.js` — the Obsidian plugin bundle
-- `config/model-catalog.json` — model metadata
-- `assets/pcm-recorder.worklet.js` — audio capture worklet
-- A single sidecar binary for the target platform
+- `manifest.json` — plugin metadata
+- `styles.css` — plugin styles
 
-The CUDA build additionally stages ONNX Runtime provider libraries next to the sidecar:
+The sidecar binary is **not** bundled. The plugin downloads it on demand from the matching GitHub Release at first activation (CPU flavor, ~150 MB). The CUDA variant is a separate opt-in download triggered from Settings.
+
+On download, the CPU sidecar lands at `<vault>/.obsidian/plugins/local-transcript/bin/cpu/` and the CUDA variant at `<vault>/.obsidian/plugins/local-transcript/bin/cuda/`. The CUDA archive additionally contains ONNX Runtime provider libraries next to the sidecar binary:
 
 | Platform | Provider libraries |
 |---|---|
 | Linux | `libonnxruntime_providers_shared.so`, `libonnxruntime_providers_cuda.so` |
 | Windows | `onnxruntime_providers_shared.dll`, `onnxruntime_providers_cuda.dll` |
 
-These are sidecar-owned artifacts produced during the build. They travel with the binary and do not need to be installed separately.
+These are sidecar-owned artifacts that travel with the binary and do not need to be installed separately.
 
 ## Platform Matrix
 
@@ -38,7 +39,7 @@ These are sidecar-owned artifacts produced during the build. They travel with th
 
 | Component | Requirement |
 |---|---|
-| **Shipped sidecar** | Metal flavor (Whisper GPU + Cohere CPU) |
+| **Downloaded sidecar** | Metal flavor (Whisper GPU + Cohere CPU) |
 | **GPU driver** | None — Metal is a system framework |
 | **GPU libraries** | None — linked at build time |
 | **CUDA / cuDNN** | Not applicable — no CUDA on macOS |
@@ -52,7 +53,7 @@ Cohere is CPU-only on macOS. The ONNX Runtime CUDA execution provider is Linux/W
 
 | Component | Requirement |
 |---|---|
-| **Shipped sidecar** | CUDA flavor (when GPU is desired) or CPU flavor |
+| **Downloaded sidecar** | CPU flavor (default); CUDA flavor available as opt-in download |
 | **GPU driver** | NVIDIA display driver (Game Ready or Studio) |
 | **CUDA userspace** | CUDA 12.x runtime libraries |
 | **cuDNN** | cuDNN 9.x runtime libraries (for Cohere CUDA) |
@@ -60,13 +61,13 @@ Cohere is CPU-only on macOS. The ONNX Runtime CUDA execution provider is Linux/W
 
 Windows has no sandbox. The sidecar inherits the host environment directly, so CUDA and cuDNN libraries found on `PATH` or in standard install locations resolve without manual path configuration.
 
-The intended packaging model bundles the sidecar-owned ONNX provider DLLs next to the executable. Users should not need to hand-edit paths. See [Windows CUDA setup](../guides/windows-cuda-setup.md) for the supported Windows CUDA setup flow.
+The CUDA archive includes the sidecar-owned ONNX provider DLLs alongside the executable. After the plugin downloads and extracts the CUDA variant, the DLLs land next to the binary and no manual path configuration is needed. See [Windows CUDA setup](../guides/windows-cuda-setup.md) for the supported Windows CUDA setup flow.
 
 ### Linux (native install)
 
 | Component | Requirement |
 |---|---|
-| **Shipped sidecar** | CPU flavor (default) or CUDA flavor (opt-in) |
+| **Downloaded sidecar** | CPU flavor (default); CUDA flavor available as opt-in download |
 | **GPU driver** | NVIDIA kernel driver + `libcuda.so.1` in the standard library path |
 | **CUDA userspace** | CUDA 12.x toolkit (`libcudart.so`, `libcublas.so`, etc.) |
 | **cuDNN** | cuDNN 9.x (`libcudnn.so.9`) for Cohere CUDA |
@@ -80,7 +81,7 @@ The `CUDA library path` plugin setting exists for non-standard installations but
 
 | Component | Requirement |
 |---|---|
-| **Shipped sidecar** | CPU flavor (default). CUDA requires manual override |
+| **Downloaded sidecar** | CPU flavor (default). CUDA requires manual override |
 | **GPU driver** | NVIDIA kernel driver on the host |
 | **CUDA userspace** | CUDA 12.x on the host, exposed via `--filesystem=host-os` |
 | **cuDNN** | cuDNN 9.x on the host, exposed via `--filesystem=host-os` |
@@ -143,16 +144,16 @@ The `onnx_runtime` probe is stronger — it catches missing userspace libraries,
 
 ## Current CI Release Artifacts
 
-Automated release artifacts (via `workflow_dispatch`) currently cover:
+Release artifacts are published to GitHub Releases (triggered by version tag). The plugin fetches these at install time:
 
 | Artifact | Runner | Build command |
 |---|---|---|
-| `sidecar-linux-x86_64` | `ubuntu-latest` | `npm run build:sidecar:release` |
-| `sidecar-windows-x86_64` | `windows-latest` | `npm run build:sidecar:release` |
-| `sidecar-windows-x86_64-cuda` | `windows-latest` | `npm run build:sidecar:cuda:windows:release` |
-| `sidecar-macos-arm64` | `macos-15` | `npm run build:sidecar:release` |
-
-Linux CUDA release artifacts are still manual. The automated CUDA release lane currently covers Windows only.
+| `sidecar-macos-arm64.tar.gz` | `macos-15` | `npm run build:sidecar:release` |
+| `sidecar-linux-x86_64-cpu.tar.gz` | `ubuntu-latest` | `npm run build:sidecar:release` |
+| `sidecar-linux-x86_64-cuda.tar.gz` | `ubuntu-latest` | `npm run build:sidecar:cuda:release` |
+| `sidecar-windows-x86_64-cpu.zip` | `windows-latest` | `npm run build:sidecar:release` |
+| `sidecar-windows-x86_64-cuda.zip` | `windows-latest` | `npm run build:sidecar:cuda:windows:release` |
+| `checksums.txt` | — | generated at release time |
 
 ## Redistribution Considerations
 

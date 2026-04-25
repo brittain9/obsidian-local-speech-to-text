@@ -12,7 +12,7 @@ Run cutting-edge local transcription directly in Obsidian. Choose between Cohere
 - **Obsidian-native experience** — integrates cleanly with the app through native settings, commands, and interface elements.
 - **English-first** — optimized for English; other languages supported where engines allow
 - **Privacy-first** — transcription happens locally, with no cloud processing, no telemetry, and no account required for model downloads.
-- **Offline after setup** — only model downloads require a network connection
+- **Offline after setup** — only the initial sidecar download and model downloads require a network connection
 
 ## Platform Support
 
@@ -25,7 +25,7 @@ Run cutting-edge local transcription directly in Obsidian. Choose between Cohere
 
 ## Quick Start
 
-1. Clone this repo into `<vault>/.obsidian/plugins/local-transcript` and enable it in Obsidian's community plugins settings.
+1. Install the plugin from the Obsidian community plugin store (or via BRAT) and enable it. On first activation, a setup modal downloads the CPU sidecar (~150 MB).
 2. Open `Settings -> Local Transcript`.
 3. Click `Manage models` and install a model.
 4. Open a note, click the microphone ribbon button or run `Local Transcript: Start Dictation Session`.
