@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::protocol::{StageOutcome, TranscriptSegment};
+use crate::protocol::{ContextWindow, StageOutcome, TranscriptSegment};
 
 pub(crate) const SUPPORTED_LANGUAGE: &str = "en";
 
@@ -18,10 +18,13 @@ pub struct TranscriptionRequest {
     pub gpu_config: GpuConfig,
     pub language: String,
     pub model_file_path: PathBuf,
-    /// Optional context string fed to adapters that support prompt
-    /// conditioning. Worker drops this field (with a `RequestWarning`) when the
-    /// target adapter's capabilities set `supports_initial_prompt = false`.
-    pub initial_prompt: Option<String>,
+    /// Structured context window (per D-017) the plugin assembled for this
+    /// utterance. Adapters that support prompt conditioning extract `text`;
+    /// adapters that do not are gated upstream by `apply_capability_gates`,
+    /// which clears this field and emits a `RequestWarning`. Sources are
+    /// preserved so future stages (e.g. summarisation, source-attribution
+    /// telemetry) can inspect them without a second wire round-trip.
+    pub context: Option<ContextWindow>,
 }
 
 /// What an adapter returns from `transcribe`. Adapters own only the engine
@@ -56,6 +59,21 @@ impl Transcript {
             }
         }
         pieces.join(" ")
+    }
+
+    /// Read the engine stage's `isFinal` flag. Per D-015 the engine stage's
+    /// payload is the canonical record of whether a revision is a finalized
+    /// engine pass (`true`) or a speculative partial (`false`). Returns
+    /// `false` if the engine stage or flag is absent — that is a contract
+    /// violation by the producer, but treating it as a partial is the safer
+    /// default than auto-finalizing into the journal.
+    pub fn is_final(&self) -> bool {
+        self.stage_history
+            .first()
+            .and_then(|stage| stage.payload.as_ref())
+            .and_then(|payload| payload.get("isFinal"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
     }
 }
 

@@ -79,8 +79,8 @@ impl LoadedModel for LoadedWhisperModel {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
-        if let Some(prompt) = request.initial_prompt.as_deref() {
-            params.set_initial_prompt(prompt);
+        if let Some(context) = request.context.as_ref() {
+            params.set_initial_prompt(&context.text);
         }
 
         state

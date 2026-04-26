@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::engine::capabilities::{ModelFamilyId, RequestWarning, RuntimeId};
 use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_adapter_error};
 use crate::engine::traits::LoadedModel;
-use crate::protocol::{StageId, StageOutcome, StageStatus};
+use crate::protocol::{ContextWindow, StageId, StageOutcome, StageStatus};
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
 };
@@ -33,8 +33,8 @@ pub enum WorkerCommand {
     },
     Shutdown,
     TranscribeUtterance {
+        context: Option<ContextWindow>,
         duration_ms: u64,
-        initial_prompt: Option<String>,
         samples: Vec<i16>,
         session_id: String,
         utterance_id: Uuid,
@@ -51,7 +51,6 @@ pub enum WorkerEvent {
         utterance_id: Option<Uuid>,
     },
     TranscriptReady {
-        is_final: bool,
         processing_duration_ms: u64,
         session_id: String,
         transcript: Transcript,
@@ -82,6 +81,11 @@ impl TranscriptionWorker {
         self.event_rx.try_recv().ok()
     }
 
+    // SendError wraps the rejected command, which contains an audio buffer
+    // and an optional ContextWindow. We never inspect the rejected value
+    // (an Err here means the worker thread is gone — a fatal condition),
+    // so the size warning does not represent a real cost.
+    #[allow(clippy::result_large_err)]
     pub fn send(&self, command: WorkerCommand) -> Result<(), mpsc::SendError<WorkerCommand>> {
         self.command_tx.send(command)
     }
@@ -168,8 +172,8 @@ fn worker_main(
             }
             WorkerCommand::Shutdown => break,
             WorkerCommand::TranscribeUtterance {
+                context,
                 duration_ms,
-                initial_prompt,
                 samples,
                 session_id,
                 utterance_id,
@@ -192,7 +196,7 @@ fn worker_main(
                     gpu_config: session.metadata.gpu_config,
                     language: session.metadata.language.clone(),
                     model_file_path: session.metadata.model_file_path.clone(),
-                    initial_prompt,
+                    context,
                 };
 
                 let warnings = registry
@@ -211,7 +215,6 @@ fn worker_main(
                         let transcript =
                             assemble_transcript(utterance_id, engine_output, engine_duration_ms);
                         let _ = event_tx.send(WorkerEvent::TranscriptReady {
-                            is_final: true,
                             processing_duration_ms: started_at.elapsed().as_millis() as u64,
                             session_id,
                             transcript,
@@ -252,33 +255,50 @@ fn worker_main(
 /// status `ok` plus three skipped stubs (hallucination_filter, punctuation,
 /// user_rules) so consumers can rely on stage history shape now and the stages
 /// can be implemented later without changing the transcript contract.
+///
+/// The engine stage's payload carries `isFinal` per D-015 — this is the
+/// canonical record of whether a revision is a finalized engine pass. Today
+/// every assembled transcript is final; speculative-partial support will set
+/// the same field to `false` without touching the wire shape.
+///
+/// Revision numbering uses a single mutable counter that future stages bump
+/// on success and leave alone on skip/fail. PR4 emits revision 0 from the
+/// engine stage and skips the rest, so the final transcript revision stays at
+/// 0; once a post-engine stage actually rewrites segments it should push its
+/// `StageOutcome` and then bump the counter so subsequent stages observe the
+/// new revision.
 fn assemble_transcript(
     utterance_id: Uuid,
     engine_output: EngineTranscriptOutput,
     engine_duration_ms: u64,
 ) -> Transcript {
-    const REVISION: u32 = 0;
-    let stage_history = vec![
-        StageOutcome {
-            duration_ms: engine_duration_ms,
-            payload: None,
-            revision_in: REVISION,
-            revision_out: Some(REVISION),
-            stage_id: StageId::Engine,
-            status: StageStatus::Ok,
-        },
-        skipped_stage(
-            StageId::HallucinationFilter,
-            REVISION,
+    let current_revision: u32 = 0;
+    let mut stage_history: Vec<StageOutcome> = Vec::with_capacity(4);
+
+    stage_history.push(StageOutcome {
+        duration_ms: engine_duration_ms,
+        payload: Some(serde_json::json!({ "isFinal": true })),
+        revision_in: current_revision,
+        revision_out: Some(current_revision),
+        stage_id: StageId::Engine,
+        status: StageStatus::Ok,
+    });
+
+    for stage_id in [
+        StageId::HallucinationFilter,
+        StageId::Punctuation,
+        StageId::UserRules,
+    ] {
+        stage_history.push(skipped_stage(
+            stage_id,
+            current_revision,
             "stage not yet implemented",
-        ),
-        skipped_stage(StageId::Punctuation, REVISION, "stage not yet implemented"),
-        skipped_stage(StageId::UserRules, REVISION, "stage not yet implemented"),
-    ];
+        ));
+    }
 
     Transcript {
         utterance_id,
-        revision: REVISION,
+        revision: current_revision,
         segments: engine_output.segments,
         stage_history,
     }

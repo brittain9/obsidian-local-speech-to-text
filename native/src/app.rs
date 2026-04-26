@@ -680,7 +680,6 @@ impl AppState {
                 self.emit_state_if_changed(events);
             }
             WorkerEvent::TranscriptReady {
-                is_final,
                 processing_duration_ms,
                 session_id,
                 transcript,
@@ -699,6 +698,7 @@ impl AppState {
                     advance_transcription_queue(active_session);
                 }
 
+                let is_final = transcript.is_final();
                 let text = transcript.joined_text();
                 events.push(Event::TranscriptReady {
                     is_final,
@@ -806,8 +806,7 @@ impl AppState {
         };
 
         let pending = active_session.pending_context_requests.remove(index);
-        let initial_prompt = context.map(|window| window.text);
-        self.dispatch_pending(pending, initial_prompt, events);
+        self.dispatch_pending(pending, context, events);
     }
 
     /// Dispatch any pending context requests whose deadline has elapsed.
@@ -838,14 +837,14 @@ impl AppState {
     fn dispatch_pending(
         &mut self,
         pending: PendingContextRequest,
-        initial_prompt: Option<String>,
+        context: Option<ContextWindow>,
         events: &mut Vec<Event>,
     ) {
         let send_result = self
             .transcription_worker
             .send(WorkerCommand::TranscribeUtterance {
+                context,
                 duration_ms: pending.duration_ms,
-                initial_prompt,
                 samples: pending.samples,
                 session_id: pending.session_id.clone(),
                 utterance_id: pending.utterance_id,
