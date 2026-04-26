@@ -7,7 +7,10 @@ import {
 } from '@codemirror/state';
 import type { EditorView, ViewUpdate } from '@codemirror/view';
 import { describe, expect, it } from 'vitest';
-
+import {
+  dictationAnchorExtension,
+  dictationAnchorStateField,
+} from '../src/editor/dictation-anchor-extension';
 import { NoteSurface } from '../src/editor/note-surface';
 import type { DictationAnchor, PhraseSeparator } from '../src/settings/plugin-settings';
 
@@ -42,15 +45,17 @@ class FakeEditorView {
 function createSurface({
   anchor = 'at_cursor',
   doc = '',
+  extensions = [],
   selectionHead = 0,
   separator = 'space',
 }: {
   anchor?: DictationAnchor;
   doc?: string;
+  extensions?: Extension;
   selectionHead?: number;
   separator?: PhraseSeparator;
 } = {}): { surface: NoteSurface; view: FakeEditorView } {
-  const view = new FakeEditorView(doc, selectionHead);
+  const view = new FakeEditorView(doc, selectionHead, extensions);
   const surface = new NoteSurface(view as unknown as EditorView, { anchor, separator });
 
   return { surface, view };
@@ -86,6 +91,21 @@ describe('NoteSurface', () => {
     surface.trimPendingTrailingContent();
 
     expect(doc(view)).toBe('first\n\nsecond');
+  });
+
+  it('keeps the visible anchor marker on the locked note surface', () => {
+    const { surface, view } = createSurface({ extensions: dictationAnchorExtension() });
+
+    expect(view.state.field(dictationAnchorStateField)).toEqual({ mode: 'hidden', pos: 0 });
+
+    surface.setAnchorMode('visible');
+    expect(view.state.field(dictationAnchorStateField)).toEqual({ mode: 'visible', pos: 0 });
+
+    surface.append('u1', 'first');
+    expect(view.state.field(dictationAnchorStateField)).toEqual({ mode: 'visible', pos: 5 });
+
+    surface.dispose();
+    expect(view.state.field(dictationAnchorStateField)).toEqual({ mode: 'hidden', pos: null });
   });
 
   it('applies and trims the eager end-of-note first phrase prefix', () => {

@@ -4,6 +4,12 @@ import { EditorView, type ViewUpdate } from '@codemirror/view';
 
 import type { UtteranceId } from '../session/session-journal';
 import type { DictationAnchor, PhraseSeparator } from '../settings/plugin-settings';
+import {
+  clearAnchorEffect,
+  type DictationAnchorMode,
+  setAnchorEffect,
+  setAnchorModeEffect,
+} from './dictation-anchor-extension';
 import { computeFirstPhrasePrefix, computePhraseSeparators } from './transcript-placement';
 
 export interface NotePlacementOptions {
@@ -90,6 +96,7 @@ export class NoteSurface {
   ) {
     this.initialAnchorPos = this.computePinPosition();
     this.insertInitialPrefix();
+    this.view.dispatch({ effects: setAnchorEffect.of(this.initialAnchorPos) });
     setActiveNoteSurface(this);
   }
 
@@ -140,7 +147,7 @@ export class NoteSurface {
 
     this.view.dispatch({
       changes: { from, insert: insertedText },
-      effects: EditorView.scrollIntoView(to, { y: 'nearest' }),
+      effects: [setAnchorEffect.of(to), EditorView.scrollIntoView(to, { y: 'nearest' })],
     });
 
     const span: ProjectedSpan = {
@@ -187,7 +194,10 @@ export class NoteSurface {
 
     this.view.dispatch({
       changes: { from: span.textStart, to: span.textEnd, insert: newText },
-      effects: EditorView.scrollIntoView(span.textStart + newText.length, { y: 'nearest' }),
+      effects: [
+        setAnchorEffect.of(span.textStart + newText.length),
+        EditorView.scrollIntoView(span.textStart + newText.length, { y: 'nearest' }),
+      ],
     });
 
     const delta = newText.length - span.projectedText.length;
@@ -266,6 +276,12 @@ export class NoteSurface {
     }
   }
 
+  setAnchorMode(mode: DictationAnchorMode): void {
+    if (!this.disposed) {
+      this.view.dispatch({ effects: setAnchorModeEffect.of(mode) });
+    }
+  }
+
   trimPendingTrailingContent(): void {
     if (this.disposed || this.pendingTrailingContent.length === 0) {
       return;
@@ -290,6 +306,7 @@ export class NoteSurface {
 
   dispose(): void {
     this.trimPendingTrailingContent();
+    this.view.dispatch({ effects: clearAnchorEffect.of(null) });
     this.disposed = true;
 
     if (activeNoteSurface === this) {
