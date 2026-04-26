@@ -7,6 +7,7 @@ import { registerCommands } from './commands/register-commands';
 import { DictationSessionController } from './dictation/dictation-session-controller';
 import { dictationAnchorExtension } from './editor/dictation-anchor-extension';
 import { EditorService } from './editor/editor-service';
+import { noteSurfaceUpdateListenerExtension } from './editor/note-surface';
 import { ModelInstallManager } from './models/model-install-manager';
 import { logAccelerationFallbacks } from './settings/acceleration-info';
 import {
@@ -39,6 +40,7 @@ export default class LocalSttPlugin extends Plugin {
     this.settings = resolvePluginSettings(await this.loadData());
 
     this.registerEditorExtension(dictationAnchorExtension());
+    this.registerEditorExtension(noteSurfaceUpdateListenerExtension());
     this.editorService = new EditorService(this.app, this);
     this.sidecarConnection = new SidecarConnection({
       getRequestTimeoutMs: () => this.settings.sidecarRequestTimeoutMs,
