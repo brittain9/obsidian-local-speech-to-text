@@ -183,7 +183,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{Transcript, validate_audio_samples, validate_language, validate_model_path};
-    use crate::protocol::TranscriptSegment;
+    use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
 
     #[test]
     fn validate_language_rejects_non_english() {
@@ -265,5 +265,66 @@ mod tests {
         };
 
         assert_eq!(transcript.joined_text(), "");
+    }
+
+    fn engine_stage_with_payload(payload: Option<serde_json::Value>) -> StageOutcome {
+        StageOutcome {
+            duration_ms: 0,
+            payload,
+            revision_in: 0,
+            revision_out: Some(0),
+            stage_id: StageId::Engine,
+            status: StageStatus::Ok,
+        }
+    }
+
+    fn transcript_with_stages(stage_history: Vec<StageOutcome>) -> Transcript {
+        Transcript {
+            utterance_id: Uuid::nil(),
+            revision: 0,
+            segments: Vec::new(),
+            stage_history,
+        }
+    }
+
+    #[test]
+    fn is_final_reads_true_from_engine_stage_payload() {
+        let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
+            serde_json::json!({ "isFinal": true }),
+        ))]);
+
+        assert!(transcript.is_final());
+    }
+
+    #[test]
+    fn is_final_reads_false_from_engine_stage_payload() {
+        let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
+            serde_json::json!({ "isFinal": false }),
+        ))]);
+
+        assert!(!transcript.is_final());
+    }
+
+    #[test]
+    fn is_final_returns_false_when_engine_stage_payload_missing() {
+        let transcript = transcript_with_stages(vec![engine_stage_with_payload(None)]);
+
+        assert!(!transcript.is_final());
+    }
+
+    #[test]
+    fn is_final_returns_false_when_payload_lacks_is_final_key() {
+        let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
+            serde_json::json!({ "other": "value" }),
+        ))]);
+
+        assert!(!transcript.is_final());
+    }
+
+    #[test]
+    fn is_final_returns_false_when_stage_history_empty() {
+        let transcript = transcript_with_stages(Vec::new());
+
+        assert!(!transcript.is_final());
     }
 }
