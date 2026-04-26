@@ -3,7 +3,9 @@ use std::path::Path;
 use crate::engine::capabilities::{
     ModelFamilyCapabilities, ModelFamilyId, RuntimeCapabilities, RuntimeId,
 };
-use crate::transcription::{GpuConfig, Transcript, TranscriptionError, TranscriptionRequest};
+use crate::transcription::{
+    EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
+};
 
 /// Execution-framework layer. Owns accelerator registration/probe and the
 /// model-file formats it understands.
@@ -25,10 +27,12 @@ pub trait ModelFamilyAdapter: Send + Sync {
 }
 
 /// Per-session inference state. Holds session/context/tokenizer whatever the
-/// adapter needs; only `transcribe` is contract.
+/// adapter needs; only `transcribe` is contract. Adapters return raw engine
+/// output (segments only); the worker wraps the output into a canonical
+/// `Transcript` with stage history and identity.
 pub trait LoadedModel: Send {
     fn transcribe(
         &mut self,
         request: &TranscriptionRequest,
-    ) -> Result<Transcript, TranscriptionError>;
+    ) -> Result<EngineTranscriptOutput, TranscriptionError>;
 }

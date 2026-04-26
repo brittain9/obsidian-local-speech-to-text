@@ -8,8 +8,8 @@ use crate::engine::capabilities::{
 use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
 use crate::protocol::TranscriptSegment;
 use crate::transcription::{
-    GpuConfig, Transcript, TranscriptionError, TranscriptionRequest, validate_audio_samples,
-    validate_language, validate_model_path,
+    EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
+    validate_audio_samples, validate_language, validate_model_path,
 };
 
 #[derive(Default)]
@@ -62,7 +62,7 @@ impl LoadedModel for LoadedWhisperModel {
     fn transcribe(
         &mut self,
         request: &TranscriptionRequest,
-    ) -> Result<Transcript, TranscriptionError> {
+    ) -> Result<EngineTranscriptOutput, TranscriptionError> {
         validate_language(&request.language)?;
         validate_audio_samples(&request.audio_samples)?;
 
@@ -89,12 +89,10 @@ impl LoadedModel for LoadedWhisperModel {
                 TranscriptionError::transcription_failure("failed to run whisper model", error)
             })?;
 
-        let mut text = String::new();
         let mut segments = Vec::new();
 
         for segment in state.as_iter() {
             let segment_text = segment.to_string();
-            text.push_str(&segment_text);
             segments.push(TranscriptSegment {
                 end_ms: whisper_timestamp_to_millis(segment.end_timestamp()),
                 start_ms: whisper_timestamp_to_millis(segment.start_timestamp()),
@@ -102,10 +100,7 @@ impl LoadedModel for LoadedWhisperModel {
             });
         }
 
-        Ok(Transcript {
-            segments,
-            text: text.trim().to_string(),
-        })
+        Ok(EngineTranscriptOutput { segments })
     }
 }
 

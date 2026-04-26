@@ -5,17 +5,21 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
+use uuid::Uuid;
+
 use crate::engine::capabilities::{ModelFamilyId, RequestWarning, RuntimeId};
 use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_adapter_error};
 use crate::engine::traits::LoadedModel;
-use crate::transcription::{GpuConfig, Transcript, TranscriptionError, TranscriptionRequest};
+use crate::protocol::{StageId, StageOutcome, StageStatus};
+use crate::transcription::{
+    EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMetadata {
     pub runtime_id: RuntimeId,
     pub family_id: ModelFamilyId,
     pub gpu_config: GpuConfig,
-    pub initial_prompt: Option<String>,
     pub language: String,
     pub model_file_path: PathBuf,
     pub session_id: String,
@@ -30,20 +34,24 @@ pub enum WorkerCommand {
     Shutdown,
     TranscribeUtterance {
         duration_ms: u64,
+        initial_prompt: Option<String>,
         samples: Vec<i16>,
         session_id: String,
+        utterance_id: Uuid,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WorkerEvent {
     SessionError {
         code: String,
         details: Option<String>,
         message: String,
         session_id: String,
+        utterance_id: Option<Uuid>,
     },
     TranscriptReady {
+        is_final: bool,
         processing_duration_ms: u64,
         session_id: String,
         transcript: Transcript,
@@ -131,6 +139,7 @@ fn worker_main(
                             details: error.details,
                             message: error.message.to_string(),
                             session_id: metadata.session_id,
+                            utterance_id: None,
                         });
                         active = None;
                     }
@@ -142,6 +151,7 @@ fn worker_main(
                             details: None,
                             message,
                             session_id: metadata.session_id,
+                            utterance_id: None,
                         });
                         active = None;
                     }
@@ -159,8 +169,10 @@ fn worker_main(
             WorkerCommand::Shutdown => break,
             WorkerCommand::TranscribeUtterance {
                 duration_ms,
+                initial_prompt,
                 samples,
                 session_id,
+                utterance_id,
             } => {
                 let Some(session) = active.as_mut() else {
                     continue;
@@ -180,7 +192,7 @@ fn worker_main(
                     gpu_config: session.metadata.gpu_config,
                     language: session.metadata.language.clone(),
                     model_file_path: session.metadata.model_file_path.clone(),
-                    initial_prompt: session.metadata.initial_prompt.clone(),
+                    initial_prompt,
                 };
 
                 let warnings = registry
@@ -192,10 +204,14 @@ fn worker_main(
                 let result = panic::catch_unwind(AssertUnwindSafe(|| {
                     session.loaded_model.transcribe(&request)
                 }));
+                let engine_duration_ms = started_at.elapsed().as_millis() as u64;
 
                 match result {
-                    Ok(Ok(transcript)) => {
+                    Ok(Ok(engine_output)) => {
+                        let transcript =
+                            assemble_transcript(utterance_id, engine_output, engine_duration_ms);
                         let _ = event_tx.send(WorkerEvent::TranscriptReady {
+                            is_final: true,
                             processing_duration_ms: started_at.elapsed().as_millis() as u64,
                             session_id,
                             transcript,
@@ -209,6 +225,7 @@ fn worker_main(
                             details: error.details,
                             message: error.message.to_string(),
                             session_id,
+                            utterance_id: Some(utterance_id),
                         });
                     }
                     Err(payload) => {
@@ -221,10 +238,61 @@ fn worker_main(
                             details: None,
                             message,
                             session_id,
+                            utterance_id: Some(utterance_id),
                         });
                     }
                 }
             }
         }
+    }
+}
+
+/// Wrap raw engine output into a canonical `Transcript` with the post-engine
+/// stage pipeline. PR4 emits one final revision per utterance with engine
+/// status `ok` plus three skipped stubs (hallucination_filter, punctuation,
+/// user_rules) so consumers can rely on stage history shape now and the stages
+/// can be implemented later without changing the transcript contract.
+fn assemble_transcript(
+    utterance_id: Uuid,
+    engine_output: EngineTranscriptOutput,
+    engine_duration_ms: u64,
+) -> Transcript {
+    const REVISION: u32 = 0;
+    let stage_history = vec![
+        StageOutcome {
+            duration_ms: engine_duration_ms,
+            payload: None,
+            revision_in: REVISION,
+            revision_out: Some(REVISION),
+            stage_id: StageId::Engine,
+            status: StageStatus::Ok,
+        },
+        skipped_stage(
+            StageId::HallucinationFilter,
+            REVISION,
+            "stage not yet implemented",
+        ),
+        skipped_stage(StageId::Punctuation, REVISION, "stage not yet implemented"),
+        skipped_stage(StageId::UserRules, REVISION, "stage not yet implemented"),
+    ];
+
+    Transcript {
+        utterance_id,
+        revision: REVISION,
+        segments: engine_output.segments,
+        stage_history,
+    }
+}
+
+fn skipped_stage(stage_id: StageId, revision: u32, reason: &str) -> StageOutcome {
+    StageOutcome {
+        duration_ms: 0,
+        payload: None,
+        revision_in: revision,
+        revision_out: None,
+        stage_id,
+        status: StageStatus::Skipped {
+            reason: reason.to_string(),
+        },
     }
 }

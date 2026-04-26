@@ -1,7 +1,9 @@
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
-use crate::protocol::TranscriptSegment;
+use uuid::Uuid;
+
+use crate::protocol::{StageOutcome, TranscriptSegment};
 
 pub(crate) const SUPPORTED_LANGUAGE: &str = "en";
 
@@ -22,10 +24,39 @@ pub struct TranscriptionRequest {
     pub initial_prompt: Option<String>,
 }
 
+/// What an adapter returns from `transcribe`. Adapters own only the engine
+/// inference output; revisioning, stage history, and identity are added by
+/// the worker as it wraps this into the canonical `Transcript`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Transcript {
+pub struct EngineTranscriptOutput {
     pub segments: Vec<TranscriptSegment>,
-    pub text: String,
+}
+
+/// Canonical transcript revision. Segments are the source of truth; joined
+/// plaintext is derived via `joined_text()`. `stage_history` is append-only
+/// across the post-engine pipeline (engine + post-engine stages).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcript {
+    pub utterance_id: Uuid,
+    pub revision: u32,
+    pub segments: Vec<TranscriptSegment>,
+    pub stage_history: Vec<StageOutcome>,
+}
+
+impl Transcript {
+    /// Derive plaintext from segments. Trims each segment, drops empties, and
+    /// joins with single spaces. Idempotent with respect to leading/trailing
+    /// whitespace inside any individual segment.
+    pub fn joined_text(&self) -> String {
+        let mut pieces = Vec::with_capacity(self.segments.len());
+        for segment in &self.segments {
+            let trimmed = segment.text.trim();
+            if !trimmed.is_empty() {
+                pieces.push(trimmed);
+            }
+        }
+        pieces.join(" ")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +162,10 @@ impl TranscriptionError {
 mod tests {
     use std::path::Path;
 
-    use super::{validate_audio_samples, validate_language, validate_model_path};
+    use uuid::Uuid;
+
+    use super::{Transcript, validate_audio_samples, validate_language, validate_model_path};
+    use crate::protocol::TranscriptSegment;
 
     #[test]
     fn validate_language_rejects_non_english() {
@@ -150,5 +184,68 @@ mod tests {
         let error = validate_model_path(Path::new("/tmp/definitely-missing-model.bin"))
             .expect_err("missing file must be rejected");
         assert_eq!(error.code, "missing_model_file");
+    }
+
+    #[test]
+    fn joined_text_joins_trimmed_segments_with_single_spaces() {
+        let transcript = Transcript {
+            utterance_id: Uuid::nil(),
+            revision: 0,
+            segments: vec![
+                TranscriptSegment {
+                    end_ms: 0,
+                    start_ms: 0,
+                    text: " Hello".to_string(),
+                },
+                TranscriptSegment {
+                    end_ms: 0,
+                    start_ms: 0,
+                    text: "world ".to_string(),
+                },
+            ],
+            stage_history: Vec::new(),
+        };
+
+        assert_eq!(transcript.joined_text(), "Hello world");
+    }
+
+    #[test]
+    fn joined_text_skips_empty_segments() {
+        let transcript = Transcript {
+            utterance_id: Uuid::nil(),
+            revision: 0,
+            segments: vec![
+                TranscriptSegment {
+                    end_ms: 0,
+                    start_ms: 0,
+                    text: "Hello".to_string(),
+                },
+                TranscriptSegment {
+                    end_ms: 0,
+                    start_ms: 0,
+                    text: "   ".to_string(),
+                },
+                TranscriptSegment {
+                    end_ms: 0,
+                    start_ms: 0,
+                    text: "world".to_string(),
+                },
+            ],
+            stage_history: Vec::new(),
+        };
+
+        assert_eq!(transcript.joined_text(), "Hello world");
+    }
+
+    #[test]
+    fn joined_text_returns_empty_string_when_no_segments() {
+        let transcript = Transcript {
+            utterance_id: Uuid::nil(),
+            revision: 0,
+            segments: Vec::new(),
+            stage_history: Vec::new(),
+        };
+
+        assert_eq!(transcript.joined_text(), "");
     }
 }

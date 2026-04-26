@@ -2,6 +2,7 @@ use std::io::{ErrorKind, Read, Write};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::catalog::{
     CatalogModel, ModelCollection, ModelFamilyDescriptor, ModelRuntimeDescriptor,
@@ -136,6 +137,64 @@ pub struct TranscriptSegment {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageId {
+    Engine,
+    HallucinationFilter,
+    Punctuation,
+    UserRules,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StageStatus {
+    Ok,
+    Skipped { reason: String },
+    Failed { error: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StageOutcome {
+    #[serde(rename = "durationMs")]
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    #[serde(rename = "revisionIn")]
+    pub revision_in: u32,
+    #[serde(
+        rename = "revisionOut",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub revision_out: Option<u32>,
+    #[serde(rename = "stageId")]
+    pub stage_id: StageId,
+    pub status: StageStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContextWindowSource {
+    SessionUtterance {
+        #[serde(rename = "endRevision")]
+        end_revision: u32,
+        text: String,
+        truncated: bool,
+        #[serde(rename = "utteranceId")]
+        utterance_id: Uuid,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextWindow {
+    #[serde(rename = "budgetChars")]
+    pub budget_chars: u32,
+    pub sources: Vec<ContextWindowSource>,
+    pub text: String,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompiledRuntimeInfo {
     #[serde(rename = "runtimeId")]
@@ -171,8 +230,6 @@ pub enum Command {
     StartSession {
         #[serde(rename = "accelerationPreference", default)]
         acceleration_preference: AccelerationPreference,
-        #[serde(rename = "initialPrompt", default)]
-        initial_prompt: Option<String>,
         language: String,
         mode: ListeningMode,
         #[serde(rename = "modelSelection")]
@@ -185,6 +242,11 @@ pub enum Command {
         session_id: String,
         #[serde(rename = "speakingStyle", default)]
         speaking_style: SpeakingStyle,
+    },
+    ContextResponse {
+        #[serde(rename = "correlationId")]
+        correlation_id: Uuid,
+        context: Option<ContextWindow>,
     },
     GetSystemInfo,
     GetModelStore {
@@ -337,16 +399,33 @@ pub enum Event {
         state: SessionState,
     },
     TranscriptReady {
+        #[serde(rename = "isFinal")]
+        is_final: bool,
         #[serde(rename = "processingDurationMs")]
         processing_duration_ms: u64,
+        revision: u32,
         segments: Vec<TranscriptSegment>,
         #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(rename = "stageResults")]
+        stage_results: Vec<StageOutcome>,
         text: String,
         #[serde(rename = "utteranceDurationMs")]
         utterance_duration_ms: u64,
+        #[serde(rename = "utteranceId")]
+        utterance_id: Uuid,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<RequestWarning>,
+    },
+    ContextRequest {
+        #[serde(rename = "budgetChars")]
+        budget_chars: u32,
+        #[serde(rename = "correlationId")]
+        correlation_id: Uuid,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "utteranceId")]
+        utterance_id: Uuid,
     },
     Warning {
         code: String,
@@ -512,7 +591,6 @@ mod tests {
             parsed,
             IncomingFrame::Command(Command::StartSession {
                 acceleration_preference: AccelerationPreference::Auto,
-                initial_prompt: None,
                 language: "en".to_string(),
                 mode: ListeningMode::AlwaysOn,
                 model_selection: SelectedModel::ExternalFile {

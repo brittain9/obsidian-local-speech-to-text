@@ -31,6 +31,7 @@ fn run_stdio(catalog: ModelCatalog, app_version: String) -> Result<()> {
 
     loop {
         write_events(&mut writer, app_state.drain_worker_events())?;
+        write_events(&mut writer, app_state.tick())?;
 
         match input_rx.recv_timeout(Duration::from_millis(10)) {
             Ok(InputMessage::Frame(frame)) => {
