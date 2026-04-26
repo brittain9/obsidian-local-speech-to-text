@@ -6,9 +6,9 @@ import { AudioCaptureStream } from './audio/audio-capture-stream';
 import { registerCommands } from './commands/register-commands';
 import { DictationSessionController } from './dictation/dictation-session-controller';
 import { dictationAnchorExtension } from './editor/dictation-anchor-extension';
-import { EditorService } from './editor/editor-service';
 import { noteSurfaceUpdateListenerExtension } from './editor/note-surface';
 import { ModelInstallManager } from './models/model-install-manager';
+import { Session } from './session/session';
 import { logAccelerationFallbacks } from './settings/acceleration-info';
 import {
   DEFAULT_PLUGIN_SETTINGS,
@@ -29,7 +29,6 @@ import { DictationRibbonController } from './ui/dictation-ribbon';
 export default class LocalSttPlugin extends Plugin {
   private audioCaptureStream: AudioCaptureStream | null = null;
   private dictationController: DictationSessionController | null = null;
-  private editorService: EditorService | null = null;
   private logger: PluginLogger = createPluginLogger(() => this.settings.developerMode);
   private modelInstallManager: ModelInstallManager | null = null;
   private ribbonController: DictationRibbonController | null = null;
@@ -41,7 +40,6 @@ export default class LocalSttPlugin extends Plugin {
 
     this.registerEditorExtension(dictationAnchorExtension());
     this.registerEditorExtension(noteSurfaceUpdateListenerExtension());
-    this.editorService = new EditorService(this.app, this);
     this.sidecarConnection = new SidecarConnection({
       getRequestTimeoutMs: () => this.settings.sidecarRequestTimeoutMs,
       logger: this.logger,
@@ -65,7 +63,13 @@ export default class LocalSttPlugin extends Plugin {
     this.ribbonController = new DictationRibbonController(ribbonElement);
     this.dictationController = new DictationSessionController({
       captureStream: this.audioCaptureStream,
-      editorService: this.editorService,
+      createSession: ({ callbacks, placement, sessionId }) =>
+        Session.createFromActiveEditor(this.app, {
+          callbacks,
+          logger: this.logger,
+          placement,
+          sessionId,
+        }),
       getSettings: () => this.settings,
       logger: this.logger,
       notice: (message) => {
