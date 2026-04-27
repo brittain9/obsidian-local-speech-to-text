@@ -287,12 +287,24 @@ describe('NoteSurface', () => {
 
     it('extracts hyphenated, underscored, and dotted identifiers', () => {
       const { surface } = createSurface({
-        doc: 'Files: note-surface, set_initial_prompt, whisper.cpp.',
+        doc: 'Files: note-surface, set_initial_prompt, whisper.cpp, Object.keys.',
         selectionHead: 0,
       });
 
       expect(surface.readNoteGlossary(384)).toEqual({
-        text: 'Glossary: note-surface, set_initial_prompt, whisper.cpp',
+        text: 'Glossary: note-surface, set_initial_prompt, whisper.cpp, Object.keys',
+        truncated: false,
+      });
+    });
+
+    it('rejects Title.Title tokens fused at a sentence boundary', () => {
+      const { surface } = createSurface({
+        doc: 'We discussed Operations.One of the problems was Sidecar.',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: Sidecar',
         truncated: false,
       });
     });

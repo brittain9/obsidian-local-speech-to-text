@@ -467,6 +467,15 @@ function isGlossaryWorthy(token: string, noteText: string, offset: number): bool
     return true;
   }
 
+  // Whisper sometimes emits sentence-final punctuation without a trailing
+  // space ("Operations.One of..."), and the dotted-identifier rule glues
+  // the two sides into one token. Title.Title with no other distinguishing
+  // signal (digits, multiple dots, underscores, hyphens) is far more likely
+  // to be sentence-glue than an identifier in dictated note prose.
+  if (/^[A-Z][a-z]+\.[A-Z][a-z]+$/u.test(token)) {
+    return false;
+  }
+
   if (/[._-]/u.test(token)) {
     return true;
   }
