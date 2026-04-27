@@ -14,7 +14,7 @@ class FakeSurface {
     utteranceId: string;
   }> = [];
   public readonly dispose = vi.fn();
-  public readonly readContextBefore = vi.fn(
+  public readonly readNoteGlossary = vi.fn(
     (_maxChars: number): { text: string; truncated: boolean } | null => null,
   );
   public readonly setAnchorMode = vi.fn();
@@ -182,10 +182,16 @@ describe('Session', () => {
 
   it('proxies readNoteContext to the active surface', () => {
     const { session, surface } = createSessionHarness();
-    surface.readContextBefore.mockReturnValueOnce({ text: 'before cursor', truncated: true });
+    surface.readNoteGlossary.mockReturnValueOnce({
+      text: 'Glossary: NVIDIA',
+      truncated: true,
+    });
 
-    expect(session.readNoteContext(256)).toEqual({ text: 'before cursor', truncated: true });
-    expect(surface.readContextBefore).toHaveBeenCalledWith(256);
+    expect(session.readNoteContext(256)).toEqual({
+      text: 'Glossary: NVIDIA',
+      truncated: true,
+    });
+    expect(surface.readNoteGlossary).toHaveBeenCalledWith(256);
   });
 
   it('returns null from readNoteContext when the surface is detached', async () => {

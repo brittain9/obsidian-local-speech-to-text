@@ -368,7 +368,7 @@ mod tests {
 
     fn sample_context() -> ContextWindow {
         ContextWindow {
-            budget_chars: 1024,
+            budget_chars: 384,
             sources: Vec::new(),
             text: "lorem ipsum".to_string(),
             truncated: false,

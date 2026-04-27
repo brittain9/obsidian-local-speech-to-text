@@ -426,7 +426,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName('Use note as context')
         .setDesc(
-          'Send recent note text as the engine’s initial prompt to improve continuity. Only used by engines that support initial prompts.',
+          'Send a glossary of distinctive terms from the note as the engine’s prompt. Helps spell proper nouns and technical terms. Only used by engines that support initial prompts.',
         )
         .addToggle((toggle) => {
           toggle.setValue(settings.useNoteAsContext);

@@ -396,6 +396,13 @@ export class DictationSessionController {
             truncated: note.truncated,
           };
 
+    if (note !== null) {
+      this.dependencies.logger?.debug(
+        'session',
+        `context_request: ${note.text} (${note.text.length}/${event.budgetChars} chars, truncated=${note.truncated})`,
+      );
+    }
+
     try {
       this.dependencies.sidecarConnection.sendContextResponse(event.correlationId, context);
     } catch (error) {

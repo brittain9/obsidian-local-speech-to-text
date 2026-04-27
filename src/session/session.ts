@@ -54,7 +54,7 @@ export interface SessionDependencies {
 interface NoteSurfaceLike {
   append(utteranceId: string, text: string): AppendResult;
   dispose(): void;
-  readContextBefore(maxChars: number): { text: string; truncated: boolean } | null;
+  readNoteGlossary(maxChars: number): { text: string; truncated: boolean } | null;
   replaceAnchor(utteranceId: string, newText: string, expectedOldText: string): ReplaceResult;
   setAnchorMode(mode: DictationAnchorMode): void;
   validateExternalModification(): void;
@@ -126,7 +126,7 @@ export class Session {
   }
 
   readNoteContext(maxChars: number): { text: string; truncated: boolean } | null {
-    return this.surface?.readContextBefore(maxChars) ?? null;
+    return this.surface?.readNoteGlossary(maxChars) ?? null;
   }
 
   setAnchorMode(mode: DictationAnchorMode): void {

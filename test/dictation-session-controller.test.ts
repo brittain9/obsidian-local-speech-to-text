@@ -456,16 +456,16 @@ describe('DictationSessionController', () => {
     const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
 
     sidecarConnection.emit({
-      budgetChars: 1024,
+      budgetChars: 384,
       correlationId: 'corr-1',
       sessionId,
       type: 'context_request',
       utteranceId: 'utt-next',
     });
 
-    expect(session.readNoteContext).toHaveBeenCalledWith(1024);
+    expect(session.readNoteContext).toHaveBeenCalledWith(384);
     const expected: ContextWindow = {
-      budgetChars: 1024,
+      budgetChars: 384,
       sources: [],
       text: 'prior text',
       truncated: false,
@@ -487,7 +487,7 @@ describe('DictationSessionController', () => {
     const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
 
     sidecarConnection.emit({
-      budgetChars: 1024,
+      budgetChars: 384,
       correlationId: 'corr-empty',
       sessionId,
       type: 'context_request',
@@ -516,7 +516,7 @@ describe('DictationSessionController', () => {
     const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
 
     sidecarConnection.emit({
-      budgetChars: 1024,
+      budgetChars: 384,
       correlationId: 'corr-off',
       sessionId,
       type: 'context_request',
@@ -547,7 +547,7 @@ describe('DictationSessionController', () => {
     const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
 
     sidecarConnection.emit({
-      budgetChars: 1024,
+      budgetChars: 384,
       correlationId: 'corr-on',
       sessionId,
       type: 'context_request',
@@ -557,7 +557,7 @@ describe('DictationSessionController', () => {
     useNoteAsContext = false;
 
     sidecarConnection.emit({
-      budgetChars: 1024,
+      budgetChars: 384,
       correlationId: 'corr-off',
       sessionId,
       type: 'context_request',
@@ -565,7 +565,7 @@ describe('DictationSessionController', () => {
     });
 
     expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(1, 'corr-on', {
-      budgetChars: 1024,
+      budgetChars: 384,
       sources: [],
       text: 'note text',
       truncated: false,
@@ -586,7 +586,7 @@ describe('DictationSessionController', () => {
     await controller.startDictation();
 
     sidecarConnection.emit({
-      budgetChars: 1024,
+      budgetChars: 384,
       correlationId: 'corr-stale',
       sessionId: 'session-from-elsewhere',
       type: 'context_request',

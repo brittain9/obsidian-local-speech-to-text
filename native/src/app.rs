@@ -25,7 +25,12 @@ use crate::transcription::GpuConfig;
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
-const CONTEXT_BUDGET_CHARS: u32 = 1024;
+// Whisper's `initial_prompt` is hard-capped at 224 tokens (silently truncated
+// to the final 224 — see OpenAI's Whisper Prompting Guide). 384 chars of
+// glossary content (mostly short identifiers) lands comfortably under that
+// cap with headroom for tokenizer variance, while still fitting roughly
+// 30-60 distinct terms.
+const CONTEXT_BUDGET_CHARS: u32 = 384;
 const CONTEXT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 type SessionFactory = fn(SessionConfig) -> Result<ListeningSession, SessionInitError>;
 
@@ -1596,7 +1601,7 @@ mod tests {
                 session_id,
                 utterance_id,
             } => {
-                assert_eq!(*budget_chars, 1024);
+                assert_eq!(*budget_chars, 384);
                 assert_eq!(session_id, "session-1");
                 (*correlation_id, *utterance_id)
             }
@@ -1630,7 +1635,7 @@ mod tests {
         };
 
         let context_window = ContextWindow {
-            budget_chars: 1024,
+            budget_chars: 384,
             sources: vec![ContextWindowSource::SessionUtterance {
                 end_revision: 0,
                 text: "previous note text".to_string(),

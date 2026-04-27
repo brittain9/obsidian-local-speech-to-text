@@ -319,23 +319,17 @@ export class NoteSurface {
     return span === undefined ? undefined : cloneSpan(span);
   }
 
-  readContextBefore(maxChars: number): { text: string; truncated: boolean } | null {
+  // Whisper's `initial_prompt` is style-imitative — "Transcripts follow the
+  // style of the prompt" (OpenAI Whisper Prompting Guide). Feeding raw note
+  // prose causes whisper to continue in that voice instead of transcribing.
+  // A `Glossary: t1, t2, ...` shape has no narrative voice to imitate; it
+  // only nudges spelling for proper nouns and uncommon terms.
+  readNoteGlossary(maxChars: number): { text: string; truncated: boolean } | null {
     if (this.disposed || maxChars <= 0) {
       return null;
     }
 
-    const tail = this.writingRegionTail();
-    const rawStart = Math.max(0, tail - maxChars);
-    const raw = this.view.state.doc.sliceString(rawStart, tail);
-    const cutFromStart = rawStart > 0;
-
-    const text = cutFromStart ? trimLeadingPartialWord(raw) : raw.trimStart();
-
-    if (text.length === 0) {
-      return null;
-    }
-
-    return { text, truncated: cutFromStart };
+    return buildGlossary(this.view.state.doc.toString(), maxChars);
   }
 
   private insertInitialPrefix(): void {
@@ -453,16 +447,104 @@ function cloneSpan(span: ProjectedSpan): ProjectedSpan {
   return { ...span };
 }
 
-function trimLeadingPartialWord(text: string): string {
-  if (text.length === 0) {
-    return text;
+// Tokens are split on whitespace and sentence punctuation, but `_`, `-`, and
+// `.` between alphanumerics are kept *inside* tokens. This preserves
+// identifiers that benefit from prompt-conditioning: `whisper.cpp`,
+// `set_initial_prompt`, `note-surface`, etc.
+const GLOSSARY_TOKEN_PATTERN = /[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*/gu;
+
+// `Capitalized` words like `Bob` or `See` could be proper nouns OR ordinary
+// English at a sentence boundary. We disambiguate by *position*: accept them
+// only when not at a sentence start. "Bob arrived" mid-sentence is
+// unambiguously a name; "Bob arrived." at sentence start is indistinguishable
+// from any other capitalized opener.
+function isGlossaryWorthy(token: string, noteText: string, offset: number): boolean {
+  if (/^[A-Z]{2,}$/u.test(token)) {
+    return true;
   }
 
-  if (/\s/u.test(text.charAt(0))) {
-    return text.trimStart();
+  if (/^[A-Za-z]+$/u.test(token) && /[A-Z]/u.test(token.slice(1))) {
+    return true;
   }
 
-  const match = text.search(/\s/u);
+  if (/[._-]/u.test(token)) {
+    return true;
+  }
 
-  return match === -1 ? '' : text.slice(match).trimStart();
+  if (/^[A-Z][a-z]+$/u.test(token)) {
+    return !isAtSentenceStart(noteText, offset);
+  }
+
+  return false;
+}
+
+// A sentence start is document start or immediately following `.`, `!`, or
+// `?` (skipping whitespace). Bare newlines are *not* sentence boundaries —
+// list items and headings start on new lines without closing punctuation;
+// otherwise every list-of-names note would lose every name.
+function isAtSentenceStart(noteText: string, offset: number): boolean {
+  let cursor = offset - 1;
+
+  while (cursor >= 0 && /\s/u.test(noteText.charAt(cursor))) {
+    cursor -= 1;
+  }
+
+  if (cursor < 0) {
+    return true;
+  }
+
+  const previous = noteText.charAt(cursor);
+  return previous === '.' || previous === '!' || previous === '?';
+}
+
+// Build `Glossary: t1, t2, ...` from the note in a single pass, deduped
+// case-insensitively (first-seen casing wins) and bounded by `maxChars`.
+// Stops scanning at the first token that would overflow the budget.
+function buildGlossary(
+  noteText: string,
+  maxChars: number,
+): { text: string; truncated: boolean } | null {
+  const prefix = 'Glossary: ';
+
+  if (prefix.length >= maxChars) {
+    return null;
+  }
+
+  const seen = new Set<string>();
+  let text = prefix;
+  let appended = 0;
+  let truncated = false;
+
+  for (const match of noteText.matchAll(GLOSSARY_TOKEN_PATTERN)) {
+    const token = match[0];
+    const offset = match.index ?? 0;
+
+    if (!isGlossaryWorthy(token, noteText, offset)) {
+      continue;
+    }
+
+    const key = token.toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    const candidate = appended === 0 ? `${text}${token}` : `${text}, ${token}`;
+
+    if (candidate.length > maxChars) {
+      truncated = true;
+      break;
+    }
+
+    text = candidate;
+    appended += 1;
+  }
+
+  if (appended === 0) {
+    return null;
+  }
+
+  return { text, truncated };
 }
