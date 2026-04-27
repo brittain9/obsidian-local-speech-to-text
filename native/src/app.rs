@@ -40,6 +40,13 @@ pub enum ControlFlow {
     Shutdown,
 }
 
+/// Top-level sidecar state machine. Owns the worker channel, model
+/// registry, and pending-context queue.
+///
+/// Hosts must drive this on a loop: handle each incoming command/audio
+/// frame, then call `drain_pending_outputs` to flush worker events and
+/// any expired context-request dispatches before blocking on the next
+/// read.
 pub struct AppState {
     active_session: Option<ActiveSession>,
     catalog: Arc<ModelCatalog>,
@@ -119,7 +126,19 @@ impl AppState {
         }
     }
 
-    pub fn drain_worker_events(&mut self) -> Vec<Event> {
+    /// Drain all pending outputs the host should write before its next
+    /// blocking read: queued worker events plus any context-request
+    /// dispatches whose deadline has elapsed. Hosts driving `AppState`
+    /// MUST call this each iteration of their main loop — context-request
+    /// timeouts only fire from here, and skipping a tick will eventually
+    /// wedge the worker queue.
+    pub fn drain_pending_outputs(&mut self) -> Vec<Event> {
+        let mut events = self.drain_worker_events();
+        events.extend(self.tick());
+        events
+    }
+
+    pub(crate) fn drain_worker_events(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
 
         while let Some(worker_event) = self.transcription_worker.poll_event() {
@@ -815,7 +834,7 @@ impl AppState {
     }
 
     /// Dispatch any pending context requests whose deadline has elapsed.
-    pub fn tick(&mut self) -> Vec<Event> {
+    pub(crate) fn tick(&mut self) -> Vec<Event> {
         let Some(active_session) = self.active_session.as_mut() else {
             return Vec::new();
         };
