@@ -130,7 +130,7 @@ pub fn missing_adapter_error(
 ///
 /// Scope: this function only handles *soft* capability mismatches — fields the
 /// caller may omit without changing the meaning of the request (e.g.
-/// `initial_prompt`). Hard mismatches (unsupported language, audio exceeding
+/// `context`). Hard mismatches (unsupported language, audio exceeding
 /// `max_audio_duration_secs`, unsupported model format) must reject the
 /// request with a structured error and are enforced inside the adapter's
 /// `transcribe` implementation rather than here.
@@ -140,12 +140,13 @@ pub fn apply_capability_gates(
 ) -> Vec<RequestWarning> {
     let mut warnings = Vec::new();
 
-    if request.initial_prompt.is_some() && !adapter_capabilities.supports_initial_prompt {
+    if request.context.is_some() && !adapter_capabilities.supports_initial_prompt {
         warnings.push(RequestWarning {
-            field: "initial_prompt".to_string(),
-            reason: "adapter does not support initial-prompt conditioning".to_string(),
+            field: "context".to_string(),
+            reason: "context dropped because adapter does not advertise supports_initial_prompt"
+                .to_string(),
         });
-        request.initial_prompt = None;
+        request.context = None;
     }
 
     warnings
@@ -162,6 +163,7 @@ mod tests {
         ModelFamilyId, ModelFormat, RuntimeCapabilities, RuntimeId,
     };
     use crate::engine::traits::{LoadedModel, ModelFamilyAdapter, Runtime};
+    use crate::protocol::ContextWindow;
     use crate::transcription::{GpuConfig, TranscriptionError, TranscriptionRequest};
 
     struct FakeRuntime {
@@ -355,52 +357,69 @@ mod tests {
         }
     }
 
-    fn request_with_prompt(prompt: Option<&str>) -> TranscriptionRequest {
+    fn request_with_context(context: Option<ContextWindow>) -> TranscriptionRequest {
         TranscriptionRequest {
             audio_samples: vec![0.0; 16_000],
             gpu_config: GpuConfig::default(),
             language: "en".to_string(),
             model_file_path: PathBuf::from("/tmp/model.bin"),
-            initial_prompt: prompt.map(str::to_string),
+            context,
+        }
+    }
+
+    fn sample_context() -> ContextWindow {
+        ContextWindow {
+            budget_chars: 384,
+            sources: Vec::new(),
+            text: "lorem ipsum".to_string(),
+            truncated: false,
         }
     }
 
     #[test]
-    fn drops_initial_prompt_and_emits_warning_when_adapter_does_not_support_it() {
+    fn drops_context_and_emits_warning_when_adapter_does_not_support_initial_prompt() {
         let caps = capabilities(false);
-        let mut request = request_with_prompt(Some("lorem ipsum"));
+        let mut request = request_with_context(Some(sample_context()));
 
         let warnings = apply_capability_gates(&caps, &mut request);
 
-        assert!(request.initial_prompt.is_none());
+        assert!(request.context.is_none());
         assert_eq!(
             warnings,
             vec![RequestWarning {
-                field: "initial_prompt".to_string(),
-                reason: "adapter does not support initial-prompt conditioning".to_string(),
+                field: "context".to_string(),
+                reason:
+                    "context dropped because adapter does not advertise supports_initial_prompt"
+                        .to_string(),
             }]
         );
     }
 
     #[test]
-    fn preserves_initial_prompt_when_adapter_supports_it() {
+    fn preserves_context_when_adapter_supports_initial_prompt() {
         let caps = capabilities(true);
-        let mut request = request_with_prompt(Some("lorem ipsum"));
+        let mut request = request_with_context(Some(sample_context()));
 
         let warnings = apply_capability_gates(&caps, &mut request);
 
-        assert_eq!(request.initial_prompt.as_deref(), Some("lorem ipsum"));
+        assert_eq!(
+            request
+                .context
+                .as_ref()
+                .map(|context| context.text.as_str()),
+            Some("lorem ipsum"),
+        );
         assert!(warnings.is_empty());
     }
 
     #[test]
-    fn emits_no_warning_when_no_initial_prompt_is_set() {
+    fn emits_no_warning_when_no_context_is_set() {
         let caps = capabilities(false);
-        let mut request = request_with_prompt(None);
+        let mut request = request_with_context(None);
 
         let warnings = apply_capability_gates(&caps, &mut request);
 
-        assert!(request.initial_prompt.is_none());
+        assert!(request.context.is_none());
         assert!(warnings.is_empty());
     }
 }

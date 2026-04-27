@@ -27,6 +27,7 @@ describe('resolvePluginSettings', () => {
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
         speakingStyle: 'patient',
+        useNoteAsContext: false,
       }),
     ).toEqual({
       accelerationPreference: 'cpu_only',
@@ -47,6 +48,7 @@ describe('resolvePluginSettings', () => {
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
       speakingStyle: 'patient',
+      useNoteAsContext: false,
     });
   });
 
@@ -84,6 +86,7 @@ describe('resolvePluginSettings', () => {
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,
         sidecarStartupTimeoutMs: 'fast',
+        useNoteAsContext: 'yes',
       }),
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);
   });

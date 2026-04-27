@@ -3,7 +3,7 @@ import { DictationSessionController } from '../src/dictation/dictation-session-c
 import type { NotePlacementOptions } from '../src/editor/note-surface';
 import type { TranscriptRevision } from '../src/session/session-journal';
 import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from '../src/settings/plugin-settings';
-import type { SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
+import type { ContextWindow, SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
 import { SidecarNotInstalledError } from '../src/sidecar/sidecar-paths';
 
 class FakeCaptureStream {
@@ -27,6 +27,9 @@ class FakeSession {
   public readonly acceptTranscript = vi.fn((_revision: TranscriptRevision) => ({
     kind: 'accepted' as const,
   }));
+  public readonly readNoteContext = vi.fn(
+    (_maxChars: number): { text: string; truncated: boolean } | null => null,
+  );
   public readonly dispose = vi.fn(async (_options?: { deleteRecovery: boolean }) => {});
   public readonly modeCalls: string[] = [];
 
@@ -52,6 +55,9 @@ class FakeSidecarConnection {
   public listeners = new Set<(event: SidecarEvent) => void>();
   public lastSessionId: string | null = null;
   public sendAudioFrame = vi.fn(() => {});
+  public sendContextResponse = vi.fn(
+    (_correlationId: string, _context: ContextWindow | null) => {},
+  );
   public startSession = vi.fn(async (payload: Omit<StartSessionCommand, 'type'>) => {
     this.lastSessionId = payload.sessionId;
     this.emit({
@@ -326,22 +332,20 @@ describe('DictationSessionController', () => {
       vi.advanceTimersByTime(1000);
       sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
       vi.advanceTimersByTime(1000);
-      sidecarConnection.emit({
-        processingDurationMs: 200,
-        segments: [],
-        sessionId,
-        text: 'hello',
-        type: 'transcript_ready',
-        utteranceDurationMs: 500,
-        warnings: [],
-      });
+      sidecarConnection.emit(
+        transcriptReadyEvent({
+          processingDurationMs: 200,
+          sessionId,
+          text: 'hello',
+          utteranceDurationMs: 500,
+          utteranceId: 'utt-anchor',
+        }),
+      );
       vi.advanceTimersByTime(499);
 
       vi.advanceTimersByTime(1);
       expect(controller.getState()).toBe('transcribing');
       expect(session.modeCalls.at(-1)).toBe('visible');
-
-      void controller;
     } finally {
       vi.useRealTimers();
     }
@@ -374,8 +378,6 @@ describe('DictationSessionController', () => {
 
       expect(controller.getState()).toBe('listening');
       expect(session.modeCalls).toEqual(['hidden', 'hidden']);
-
-      void controller;
     } finally {
       vi.useRealTimers();
     }
@@ -417,15 +419,13 @@ describe('DictationSessionController', () => {
 
     await controller.startDictation();
 
-    sidecarConnection.emit({
-      processingDurationMs: 75,
-      segments: [],
-      sessionId: sidecarConnection.lastSessionId ?? 'session-1',
-      text: 'hello obsidian',
-      type: 'transcript_ready',
-      utteranceDurationMs: 700,
-      warnings: [],
-    });
+    sidecarConnection.emit(
+      transcriptReadyEvent({
+        sessionId: sidecarConnection.lastSessionId ?? 'session-1',
+        text: 'hello obsidian',
+        utteranceId: 'utt-from-sidecar',
+      }),
+    );
 
     expect(session.acceptTranscript).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -433,9 +433,160 @@ describe('DictationSessionController', () => {
         revision: 0,
         sessionId: sidecarConnection.lastSessionId,
         text: 'hello obsidian',
-        utteranceId: 'utterance-0',
+        utteranceId: 'utt-from-sidecar',
       }),
     );
+  });
+
+  it('replies to context_request with note text wrapped as a context window', async () => {
+    const session = new FakeSession();
+    session.readNoteContext.mockReturnValueOnce({ text: 'prior text', truncated: false });
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      budgetChars: 384,
+      correlationId: 'corr-1',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-next',
+    });
+
+    expect(session.readNoteContext).toHaveBeenCalledWith(384);
+    const expected: ContextWindow = {
+      budgetChars: 384,
+      sources: [],
+      text: 'prior text',
+      truncated: false,
+    };
+    expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-1', expected);
+  });
+
+  it('replies with null when the session returns no note context', async () => {
+    const session = new FakeSession();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      budgetChars: 384,
+      correlationId: 'corr-empty',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-first',
+    });
+
+    expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-empty', null);
+  });
+
+  it('replies with null when useNoteAsContext is disabled, without consulting the session', async () => {
+    const session = new FakeSession();
+    session.readNoteContext.mockReturnValueOnce({ text: 'should be ignored', truncated: false });
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () =>
+        createSettings({
+          selectedModel: createExternalModelSelection(),
+          useNoteAsContext: false,
+        }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      budgetChars: 384,
+      correlationId: 'corr-off',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-off',
+    });
+
+    expect(session.readNoteContext).not.toHaveBeenCalled();
+    expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-off', null);
+  });
+
+  it('honors live changes to useNoteAsContext between context_request events', async () => {
+    const session = new FakeSession();
+    session.readNoteContext.mockReturnValue({ text: 'note text', truncated: false });
+    const sidecarConnection = new FakeSidecarConnection();
+    let useNoteAsContext = true;
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () =>
+        createSettings({
+          selectedModel: createExternalModelSelection(),
+          useNoteAsContext,
+        }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      budgetChars: 384,
+      correlationId: 'corr-on',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-on',
+    });
+
+    useNoteAsContext = false;
+
+    sidecarConnection.emit({
+      budgetChars: 384,
+      correlationId: 'corr-off',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-off',
+    });
+
+    expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(1, 'corr-on', {
+      budgetChars: 384,
+      sources: [],
+      text: 'note text',
+      truncated: false,
+    });
+    expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(2, 'corr-off', null);
+  });
+
+  it('ignores context_request for an unrelated session', async () => {
+    const session = new FakeSession();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    sidecarConnection.emit({
+      budgetChars: 384,
+      correlationId: 'corr-stale',
+      sessionId: 'session-from-elsewhere',
+      type: 'context_request',
+      utteranceId: 'utt-foreign',
+    });
+
+    expect(session.readNoteContext).not.toHaveBeenCalled();
+    expect(sidecarConnection.sendContextResponse).not.toHaveBeenCalled();
   });
 
   it('silently discards an empty transcript and continues the session', async () => {
@@ -449,15 +600,13 @@ describe('DictationSessionController', () => {
 
     await controller.startDictation();
 
-    sidecarConnection.emit({
-      processingDurationMs: 75,
-      segments: [],
-      sessionId: sidecarConnection.lastSessionId ?? 'session-1',
-      text: '   ',
-      type: 'transcript_ready',
-      utteranceDurationMs: 700,
-      warnings: [],
-    });
+    sidecarConnection.emit(
+      transcriptReadyEvent({
+        sessionId: sidecarConnection.lastSessionId ?? 'session-1',
+        text: '   ',
+        utteranceId: 'utt-empty',
+      }),
+    );
 
     await vi.waitFor(() => {
       expect(notice).not.toHaveBeenCalled();
@@ -486,15 +635,13 @@ describe('DictationSessionController', () => {
     const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
     await controller.stopDictation();
 
-    sidecarConnection.emit({
-      processingDurationMs: 75,
-      segments: [],
-      sessionId,
-      text: 'drained transcript',
-      type: 'transcript_ready',
-      utteranceDurationMs: 700,
-      warnings: [],
-    });
+    sidecarConnection.emit(
+      transcriptReadyEvent({
+        sessionId,
+        text: 'drained transcript',
+        utteranceId: 'utt-drained',
+      }),
+    );
 
     expect(captureStream.stop).toHaveBeenCalledTimes(1);
     expect(session.acceptTranscript).toHaveBeenCalledWith(
@@ -726,6 +873,39 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
   return {
     ...DEFAULT_PLUGIN_SETTINGS,
     ...overrides,
+  };
+}
+
+function okEngineStage(durationMs: number): TranscriptRevision['stageResults'][number] {
+  return {
+    durationMs,
+    revisionIn: 0,
+    revisionOut: 0,
+    stageId: 'engine',
+    status: { kind: 'ok' },
+  };
+}
+
+function transcriptReadyEvent(args: {
+  processingDurationMs?: number;
+  sessionId: string;
+  text: string;
+  utteranceDurationMs?: number;
+  utteranceId: string;
+}): Extract<SidecarEvent, { type: 'transcript_ready' }> {
+  const processingDurationMs = args.processingDurationMs ?? 75;
+  return {
+    isFinal: true,
+    processingDurationMs,
+    revision: 0,
+    segments: [],
+    sessionId: args.sessionId,
+    stageResults: [okEngineStage(processingDurationMs)],
+    text: args.text,
+    type: 'transcript_ready',
+    utteranceDurationMs: args.utteranceDurationMs ?? 700,
+    utteranceId: args.utteranceId,
+    warnings: [],
   };
 }
 

@@ -26,7 +26,8 @@ export const dictationAnchorStateField = StateField.define<DictationAnchorState>
 
     let next: DictationAnchorState = value;
     if (value.pos !== null && !tr.changes.empty) {
-      const mapped = tr.changes.mapPos(value.pos, -1);
+      // Tail bias: insertions at the anchor extend the writing region (D-014).
+      const mapped = tr.changes.mapPos(value.pos, 1);
       if (mapped !== value.pos) {
         next = { ...next, pos: mapped };
       }

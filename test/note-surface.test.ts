@@ -66,6 +66,21 @@ function doc(view: FakeEditorView): string {
 }
 
 describe('NoteSurface', () => {
+  it('extends the writing-region tail past user text typed at the initial anchor before any utterance', () => {
+    const { surface, view } = createSurface();
+
+    surface.observeTransaction(
+      view.apply({
+        annotations: Transaction.userEvent.of('input.type'),
+        changes: { from: 0, insert: 'hello' },
+      }),
+    );
+
+    expect(surface.append('u1', 'first').kind).toBe('appended');
+
+    expect(doc(view)).toBe('hello first');
+  });
+
   it('appends dictated text at the writing-region tail after user text typed at the old anchor', () => {
     const { surface, view } = createSurface({ doc: 'start ', selectionHead: 6 });
 
@@ -134,7 +149,7 @@ describe('NoteSurface', () => {
     );
 
     expect(surface.replaceAnchor('u1', 'dictated ', 'voice ').kind).toBe('replaced');
-    expect(doc(view)).toBe('HEAD taildictated ');
+    expect(doc(view)).toBe('HEAD tail dictated ');
   });
 
   it('latches only spans intersected by a user edit', () => {
@@ -241,6 +256,120 @@ describe('NoteSurface', () => {
     expect(surface.rewriteRegion({ from: 1, to: 4 }, 'ir', [])).toEqual({
       kind: 'denied',
       reason: 'Rewrite range intersects a partial utterance span.',
+    });
+  });
+
+  describe('readNoteGlossary', () => {
+    it('returns null for non-positive budget', () => {
+      const { surface } = createSurface({ doc: 'NVIDIA CUDA', selectionHead: 11 });
+
+      expect(surface.readNoteGlossary(0)).toBeNull();
+      expect(surface.readNoteGlossary(-5)).toBeNull();
+    });
+
+    it('returns null when the note has no glossary-worthy terms', () => {
+      const { surface } = createSurface({
+        doc: 'this is just plain prose with no special words',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toBeNull();
+    });
+
+    it('extracts acronyms', () => {
+      const { surface } = createSurface({
+        doc: 'We use NVIDIA GPU acceleration with STT.',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: NVIDIA, GPU, STT',
+        truncated: false,
+      });
+    });
+
+    it('extracts mixed-case identifiers (camelCase, PascalCase)', () => {
+      const { surface } = createSurface({
+        doc: 'See writingRegionTail and TranscriptionRequest for details.',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: writingRegionTail, TranscriptionRequest',
+        truncated: false,
+      });
+    });
+
+    it('extracts hyphenated, underscored, and dotted identifiers', () => {
+      const { surface } = createSurface({
+        doc: 'Files: note-surface, set_initial_prompt, whisper.cpp, Object.keys.',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: note-surface, set_initial_prompt, whisper.cpp, Object.keys',
+        truncated: false,
+      });
+    });
+
+    it('rejects Title.Title tokens fused at a sentence boundary', () => {
+      const { surface } = createSurface({
+        doc: 'We discussed Operations.One of the problems was Sidecar.',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: Sidecar',
+        truncated: false,
+      });
+    });
+
+    it('extracts capitalized proper nouns and skips common sentence-start words', () => {
+      const { surface } = createSurface({
+        doc: 'The team chose Claude. And Alex agreed.',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: Claude, Alex',
+        truncated: false,
+      });
+    });
+
+    it('dedupes case-insensitively, keeping the first-seen casing', () => {
+      const { surface } = createSurface({
+        doc: 'NVIDIA hardware and nvidia drivers from NVIDIA again.',
+        selectionHead: 0,
+      });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: NVIDIA',
+        truncated: false,
+      });
+    });
+
+    it('caps output at maxChars and flags truncated when terms are dropped', () => {
+      const { surface } = createSurface({
+        doc: 'NVIDIA CUDA Whisper Sidecar Obsidian Plugin GPU STT',
+        selectionHead: 0,
+      });
+
+      const result = surface.readNoteGlossary(30);
+
+      expect(result?.truncated).toBe(true);
+      expect(result?.text.length).toBeLessThanOrEqual(30);
+      expect(result?.text.startsWith('Glossary: ')).toBe(true);
+    });
+
+    it('scans the whole note, including text after the writing tail', () => {
+      const { surface, view } = createSurface({ doc: 'NVIDIA ', selectionHead: 7 });
+
+      view.dispatch({ changes: { from: 7, insert: 'after CUDA' } });
+
+      expect(surface.readNoteGlossary(384)).toEqual({
+        text: 'Glossary: NVIDIA, CUDA',
+        truncated: false,
+      });
     });
   });
 });

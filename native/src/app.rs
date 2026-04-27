@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use uuid::Uuid;
 
 use crate::catalog::ModelCatalog;
 use crate::engine::capabilities::{AcceleratorId, ModelFamilyId, RuntimeId};
@@ -10,9 +13,9 @@ use crate::model_store::{
     scan_installed_models,
 };
 use crate::protocol::{
-    AccelerationPreference, Command, CompiledAdapterInfo, CompiledRuntimeInfo, Event, HealthStatus,
-    ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel, SessionState,
-    SessionStopReason, system_info_string,
+    AccelerationPreference, Command, CompiledAdapterInfo, CompiledRuntimeInfo, ContextWindow,
+    Event, HealthStatus, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
+    SessionState, SessionStopReason, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
@@ -22,6 +25,13 @@ use crate::transcription::GpuConfig;
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
 const MAX_QUEUED_UTTERANCES: usize = 1;
+// Whisper's `initial_prompt` is hard-capped at 224 tokens (silently truncated
+// to the final 224 — see OpenAI's Whisper Prompting Guide). 384 chars of
+// glossary content (mostly short identifiers) lands comfortably under that
+// cap with headroom for tokenizer variance, while still fitting roughly
+// 30-60 distinct terms.
+const CONTEXT_BUDGET_CHARS: u32 = 384;
+const CONTEXT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 type SessionFactory = fn(SessionConfig) -> Result<ListeningSession, SessionInitError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +40,13 @@ pub enum ControlFlow {
     Shutdown,
 }
 
+/// Top-level sidecar state machine. Owns the worker channel, model
+/// registry, and pending-context queue.
+///
+/// Hosts must drive this on a loop: handle each incoming command/audio
+/// frame, then call `drain_pending_outputs` to flush worker events and
+/// any expired context-request dispatches before blocking on the next
+/// read.
 pub struct AppState {
     active_session: Option<ActiveSession>,
     catalog: Arc<ModelCatalog>,
@@ -44,9 +61,19 @@ struct ActiveSession {
     draining: bool,
     last_reported_state: Option<SessionState>,
     pause_while_processing: bool,
+    pending_context_requests: Vec<PendingContextRequest>,
     queued_utterances: usize,
     session: ListeningSession,
     transcription_active: bool,
+}
+
+struct PendingContextRequest {
+    correlation_id: Uuid,
+    deadline: Instant,
+    duration_ms: u64,
+    samples: Vec<i16>,
+    session_id: String,
+    utterance_id: Uuid,
 }
 
 struct ResolvedModelSelection {
@@ -99,7 +126,19 @@ impl AppState {
         }
     }
 
-    pub fn drain_worker_events(&mut self) -> Vec<Event> {
+    /// Drain all pending outputs the host should write before its next
+    /// blocking read: queued worker events plus any context-request
+    /// dispatches whose deadline has elapsed. Hosts driving `AppState`
+    /// MUST call this each iteration of their main loop — context-request
+    /// timeouts only fire from here, and skipping a tick will eventually
+    /// wedge the worker queue.
+    pub fn drain_pending_outputs(&mut self) -> Vec<Event> {
+        let mut events = self.drain_worker_events();
+        events.extend(self.tick());
+        events
+    }
+
+    pub(crate) fn drain_worker_events(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
 
         while let Some(worker_event) = self.transcription_worker.poll_event() {
@@ -187,6 +226,13 @@ impl AppState {
                     status: HealthStatus::Ready,
                 });
 
+                (ControlFlow::Continue, events)
+            }
+            Command::ContextResponse {
+                correlation_id,
+                context,
+            } => {
+                self.handle_context_response(correlation_id, context, &mut events);
                 (ControlFlow::Continue, events)
             }
             Command::GetModelStore {
@@ -338,7 +384,6 @@ impl AppState {
             }
             Command::StartSession {
                 acceleration_preference,
-                initial_prompt,
                 language,
                 mode,
                 model_selection,
@@ -390,7 +435,6 @@ impl AppState {
                                 runtime_id: resolved_model.runtime_id,
                                 family_id: resolved_model.family_id,
                                 gpu_config: GpuConfig { use_gpu },
-                                initial_prompt,
                                 language,
                                 model_file_path: resolved_model.resolved_path.clone(),
                                 session_id: session_id.clone(),
@@ -410,6 +454,7 @@ impl AppState {
                             draining: false,
                             last_reported_state: None,
                             pause_while_processing,
+                            pending_context_requests: Vec::new(),
                             queued_utterances: 0,
                             session,
                             transcription_active: false,
@@ -631,6 +676,7 @@ impl AppState {
                 details,
                 message,
                 session_id,
+                utterance_id: _,
             } => {
                 {
                     let Some(active_session) = self.active_session.as_mut() else {
@@ -676,12 +722,18 @@ impl AppState {
                     advance_transcription_queue(active_session);
                 }
 
+                let is_final = transcript.is_final();
+                let text = transcript.joined_text();
                 events.push(Event::TranscriptReady {
+                    is_final,
                     processing_duration_ms,
+                    revision: transcript.revision,
                     segments: transcript.segments,
                     session_id: session_id.clone(),
-                    text: transcript.text,
+                    stage_results: transcript.stage_history,
+                    text,
                     utterance_duration_ms,
+                    utterance_id: transcript.utterance_id,
                     warnings,
                 });
 
@@ -709,7 +761,7 @@ impl AppState {
     }
 
     fn enqueue_utterance(&mut self, utterance: FinalizedUtterance, events: &mut Vec<Event>) {
-        let Some(active_session) = self.active_session.as_ref() else {
+        let Some(active_session) = self.active_session.as_mut() else {
             return;
         };
 
@@ -730,33 +782,105 @@ impl AppState {
             return;
         }
 
-        if self
-            .transcription_worker
-            .send(WorkerCommand::TranscribeUtterance {
+        let utterance_id = Uuid::new_v4();
+        let correlation_id = Uuid::new_v4();
+        let deadline = Instant::now() + CONTEXT_REQUEST_TIMEOUT;
+
+        if was_transcribing {
+            active_session.queued_utterances += 1;
+        } else {
+            active_session.transcription_active = true;
+        }
+
+        active_session
+            .pending_context_requests
+            .push(PendingContextRequest {
+                correlation_id,
+                deadline,
                 duration_ms: utterance.duration_ms,
                 samples: utterance.samples,
                 session_id: session_id.clone(),
-            })
-            .is_err()
-        {
+                utterance_id,
+            });
+
+        events.push(Event::ContextRequest {
+            budget_chars: CONTEXT_BUDGET_CHARS,
+            correlation_id,
+            session_id,
+            utterance_id,
+        });
+    }
+
+    fn handle_context_response(
+        &mut self,
+        correlation_id: Uuid,
+        context: Option<ContextWindow>,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(active_session) = self.active_session.as_mut() else {
+            return;
+        };
+
+        let Some(index) = active_session
+            .pending_context_requests
+            .iter()
+            .position(|pending| pending.correlation_id == correlation_id)
+        else {
+            return;
+        };
+
+        let pending = active_session.pending_context_requests.remove(index);
+        self.dispatch_pending(pending, context, events);
+    }
+
+    /// Dispatch any pending context requests whose deadline has elapsed.
+    pub(crate) fn tick(&mut self) -> Vec<Event> {
+        let Some(active_session) = self.active_session.as_mut() else {
+            return Vec::new();
+        };
+        if active_session.pending_context_requests.is_empty() {
+            return Vec::new();
+        }
+
+        let now = Instant::now();
+        let expired: Vec<PendingContextRequest> = active_session
+            .pending_context_requests
+            .extract_if(.., |pending| pending.deadline <= now)
+            .collect();
+
+        let mut events = Vec::new();
+        for pending in expired {
+            self.dispatch_pending(pending, None, &mut events);
+        }
+        events
+    }
+
+    fn dispatch_pending(
+        &mut self,
+        pending: PendingContextRequest,
+        context: Option<ContextWindow>,
+        events: &mut Vec<Event>,
+    ) {
+        let send_result = self
+            .transcription_worker
+            .send(WorkerCommand::TranscribeUtterance {
+                context,
+                duration_ms: pending.duration_ms,
+                samples: pending.samples,
+                session_id: pending.session_id.clone(),
+                utterance_id: pending.utterance_id,
+            });
+
+        if send_result.is_err() {
             events.push(Event::Error {
                 code: "internal_error".to_string(),
                 details: None,
                 message: "Failed to queue audio for local transcription.".to_string(),
-                session_id: Some(session_id),
+                session_id: Some(pending.session_id),
             });
-            return;
-        }
 
-        if let Some(active_session) = self.active_session.as_mut() {
-            if active_session.session.config().session_id != session_id {
-                return;
-            }
-
-            if was_transcribing {
-                active_session.queued_utterances += 1;
-            } else {
-                active_session.transcription_active = true;
+            if let Some(active_session) = self.active_session.as_mut() {
+                advance_transcription_queue(active_session);
             }
         }
     }
@@ -1070,6 +1194,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use std::time::{Duration, Instant};
+
+    use uuid::Uuid;
+
     use super::{AppState, ControlFlow};
     use crate::catalog::{
         ArtifactRole, CatalogModel, ModelArtifact, ModelCatalog, ModelCollection,
@@ -1082,12 +1210,13 @@ mod tests {
     use crate::engine::registry::EngineRegistry;
     use crate::engine::traits::{LoadedModel, ModelFamilyAdapter, Runtime};
     use crate::protocol::{
-        AccelerationPreference, Command, Event, HealthStatus, ListeningMode, ModelProbeStatus,
-        SelectedModel, SessionState, SessionStopReason,
+        AccelerationPreference, Command, ContextWindow, ContextWindowSource, Event, HealthStatus,
+        ListeningMode, ModelProbeStatus, SelectedModel, SessionState, SessionStopReason,
     };
-    use crate::session::{ListeningSession, SessionInitError, SpeakingStyle};
+    use crate::session::{FinalizedUtterance, ListeningSession, SessionInitError, SpeakingStyle};
     use crate::transcription::{
-        GpuConfig, Transcript, TranscriptionError, TranscriptionRequest, validate_model_path,
+        EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
+        validate_model_path,
     };
 
     struct FakeRuntime {
@@ -1174,10 +1303,9 @@ mod tests {
         fn transcribe(
             &mut self,
             _request: &TranscriptionRequest,
-        ) -> Result<Transcript, TranscriptionError> {
-            Ok(Transcript {
+        ) -> Result<EngineTranscriptOutput, TranscriptionError> {
+            Ok(EngineTranscriptOutput {
                 segments: Vec::new(),
-                text: String::new(),
             })
         }
     }
@@ -1475,10 +1603,167 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enqueue_utterance_emits_context_request_and_records_pending_entry() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+
+        assert_eq!(events.len(), 1, "expected exactly one ContextRequest event");
+        let (correlation_id, utterance_id) = match &events[0] {
+            Event::ContextRequest {
+                budget_chars,
+                correlation_id,
+                session_id,
+                utterance_id,
+            } => {
+                assert_eq!(*budget_chars, 384);
+                assert_eq!(session_id, "session-1");
+                (*correlation_id, *utterance_id)
+            }
+            other => panic!("expected ContextRequest, got {other:?}"),
+        };
+
+        let active = app
+            .active_session
+            .as_ref()
+            .expect("active session should still be present after enqueue");
+        assert_eq!(active.pending_context_requests.len(), 1);
+        let pending = &active.pending_context_requests[0];
+        assert_eq!(pending.correlation_id, correlation_id);
+        assert_eq!(pending.utterance_id, utterance_id);
+        assert_eq!(pending.session_id, "session-1");
+        assert_eq!(pending.duration_ms, 1000);
+        assert!(active.transcription_active);
+    }
+
+    #[test]
+    fn context_response_with_window_clears_pending_request() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+        let correlation_id = match &events[0] {
+            Event::ContextRequest { correlation_id, .. } => *correlation_id,
+            other => panic!("expected ContextRequest, got {other:?}"),
+        };
+
+        let context_window = ContextWindow {
+            budget_chars: 384,
+            sources: vec![ContextWindowSource::SessionUtterance {
+                end_revision: 0,
+                text: "previous note text".to_string(),
+                truncated: false,
+                utterance_id: Uuid::new_v4(),
+            }],
+            text: "previous note text".to_string(),
+            truncated: false,
+        };
+        let (control_flow, response_events) = app.handle_command(Command::ContextResponse {
+            correlation_id,
+            context: Some(context_window),
+        });
+
+        assert_eq!(control_flow, ControlFlow::Continue);
+        assert!(
+            response_events.is_empty(),
+            "ContextResponse should dispatch silently on success: {response_events:?}"
+        );
+        let active = app.active_session.as_ref().expect("active session");
+        assert!(active.pending_context_requests.is_empty());
+    }
+
+    #[test]
+    fn context_response_with_null_window_clears_pending_request() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+        let correlation_id = match &events[0] {
+            Event::ContextRequest { correlation_id, .. } => *correlation_id,
+            other => panic!("expected ContextRequest, got {other:?}"),
+        };
+
+        let (control_flow, response_events) = app.handle_command(Command::ContextResponse {
+            correlation_id,
+            context: None,
+        });
+
+        assert_eq!(control_flow, ControlFlow::Continue);
+        assert!(response_events.is_empty());
+        let active = app.active_session.as_ref().expect("active session");
+        assert!(active.pending_context_requests.is_empty());
+    }
+
+    #[test]
+    fn context_response_with_unknown_correlation_id_is_a_no_op() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+
+        let (control_flow, response_events) = app.handle_command(Command::ContextResponse {
+            correlation_id: Uuid::new_v4(),
+            context: None,
+        });
+
+        assert_eq!(control_flow, ControlFlow::Continue);
+        assert!(response_events.is_empty());
+        let active = app.active_session.as_ref().expect("active session");
+        assert_eq!(active.pending_context_requests.len(), 1);
+    }
+
+    #[test]
+    fn tick_dispatches_pending_requests_past_their_deadline() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+
+        if let Some(active) = app.active_session.as_mut() {
+            for pending in active.pending_context_requests.iter_mut() {
+                pending.deadline = Instant::now() - Duration::from_millis(1);
+            }
+        }
+
+        let tick_events = app.tick();
+        assert!(
+            tick_events.is_empty(),
+            "tick should dispatch silently on the timeout path: {tick_events:?}"
+        );
+        let active = app.active_session.as_ref().expect("active session");
+        assert!(active.pending_context_requests.is_empty());
+    }
+
+    #[test]
+    fn tick_leaves_pending_requests_in_place_before_their_deadline() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+
+        let tick_events = app.tick();
+        assert!(tick_events.is_empty());
+        let active = app.active_session.as_ref().expect("active session");
+        assert_eq!(active.pending_context_requests.len(), 1);
+    }
+
     fn start_session_command(session_id: &str, model_file_path: &std::path::Path) -> Command {
         Command::StartSession {
             acceleration_preference: AccelerationPreference::Auto,
-            initial_prompt: None,
             language: "en".to_string(),
             mode: ListeningMode::AlwaysOn,
             model_selection: SelectedModel::ExternalFile {
@@ -1503,6 +1788,13 @@ mod tests {
         let path = directory.join("model.bin");
         write(&path, b"model").expect("model file should write");
         path
+    }
+
+    fn fake_utterance() -> FinalizedUtterance {
+        FinalizedUtterance {
+            duration_ms: 1000,
+            samples: vec![0i16; 16000],
+        }
     }
 
     fn sample_catalog() -> ModelCatalog {

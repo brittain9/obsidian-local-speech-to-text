@@ -1,11 +1,17 @@
+import { randomUUID } from 'node:crypto';
+
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
 import type { NotePlacementOptions } from '../editor/note-surface';
 import type { Session } from '../session/session';
-import type { TranscriptRevision } from '../session/session-journal';
 import type { PluginSettings } from '../settings/plugin-settings';
 import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
-import type { SessionState, SidecarEvent, TranscriptReadyEvent } from '../sidecar/protocol';
+import type {
+  ContextRequestEvent,
+  SessionState,
+  SidecarEvent,
+  TranscriptReadyEvent,
+} from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import { SidecarNotInstalledError } from '../sidecar/sidecar-paths';
 
@@ -19,6 +25,11 @@ export type DictationControllerState =
   | 'paused'
   | 'error';
 
+type ControllerSession = Pick<
+  Session,
+  'acceptTranscript' | 'dispose' | 'readNoteContext' | 'setAnchorMode'
+>;
+
 interface DictationSessionControllerDependencies {
   captureStream: Pick<AudioCaptureStream, 'isCapturing' | 'start' | 'stop'>;
   createSession: (options: {
@@ -28,7 +39,7 @@ interface DictationSessionControllerDependencies {
     };
     placement: NotePlacementOptions;
     sessionId: string;
-  }) => Pick<Session, 'acceptTranscript' | 'dispose' | 'setAnchorMode'>;
+  }) => ControllerSession;
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
   notice: (message: string) => void;
@@ -39,6 +50,7 @@ interface DictationSessionControllerDependencies {
     | 'cancelSession'
     | 'ensureStarted'
     | 'sendAudioFrame'
+    | 'sendContextResponse'
     | 'startSession'
     | 'stopSession'
     | 'subscribe'
@@ -52,10 +64,9 @@ export class DictationSessionController {
   private anchorTimerId: ReturnType<typeof setTimeout> | null = null;
   private pendingStartSessionId: string | null = null;
   private readonly releaseSidecarSubscription: () => void;
-  private session: Pick<Session, 'acceptTranscript' | 'dispose' | 'setAnchorMode'> | null = null;
+  private session: ControllerSession | null = null;
   private sessionId: string | null = null;
   private state: DictationControllerState = 'idle';
-  private transcriptSequence = 0;
 
   constructor(private readonly dependencies: DictationSessionControllerDependencies) {
     this.releaseSidecarSubscription = this.dependencies.sidecarConnection.subscribe((event) => {
@@ -117,7 +128,7 @@ export class DictationSessionController {
     const settings = this.dependencies.getSettings();
     const selectedModel = this.requireSelectedModel(settings);
     const sessionId = createSessionId();
-    let session: Pick<Session, 'acceptTranscript' | 'dispose' | 'setAnchorMode'>;
+    let session: ControllerSession;
 
     try {
       session = this.dependencies.createSession({
@@ -142,7 +153,6 @@ export class DictationSessionController {
 
     this.sessionId = sessionId;
     this.session = session;
-    this.transcriptSequence = 0;
     this.applyUiState('starting');
     this.dependencies.logger?.debug('session', `starting dictation session ${sessionId}`);
 
@@ -242,7 +252,6 @@ export class DictationSessionController {
     this.sessionId = null;
     const session = this.session;
     this.session = null;
-    this.transcriptSequence = 0;
     this.clearAnchorTimer();
 
     if (this.dependencies.captureStream.isCapturing()) {
@@ -347,6 +356,10 @@ export class DictationSessionController {
         await this.handleTranscriptReady(event);
         return;
 
+      case 'context_request':
+        this.handleContextRequest(event);
+        return;
+
       case 'warning':
         if (event.sessionId === undefined || event.sessionId === this.sessionId) {
           const detail = event.details ? `${event.message} (${event.details})` : event.message;
@@ -361,6 +374,39 @@ export class DictationSessionController {
       case 'error':
         await this.handleErrorEvent(event);
         return;
+    }
+  }
+
+  private handleContextRequest(event: ContextRequestEvent): void {
+    if (event.sessionId !== this.sessionId) {
+      return;
+    }
+
+    const settings = this.dependencies.getSettings();
+    const note = settings.useNoteAsContext
+      ? (this.session?.readNoteContext(event.budgetChars) ?? null)
+      : null;
+    const context =
+      note === null
+        ? null
+        : {
+            budgetChars: event.budgetChars,
+            sources: [],
+            text: note.text,
+            truncated: note.truncated,
+          };
+
+    if (note !== null) {
+      this.dependencies.logger?.debug(
+        'session',
+        `context_request: ${note.text} (${note.text.length}/${event.budgetChars} chars, truncated=${note.truncated})`,
+      );
+    }
+
+    try {
+      this.dependencies.sidecarConnection.sendContextResponse(event.correlationId, context);
+    } catch (error) {
+      this.dependencies.logger?.warn('session', 'failed to send context response', error);
     }
   }
 
@@ -384,9 +430,9 @@ export class DictationSessionController {
       );
     }
 
-    const text = normalizeTranscriptText(event);
+    const text = event.text.trim();
 
-    if (text === null) {
+    if (text.length === 0) {
       this.dependencies.logger?.debug('session', 'discarding empty transcript');
       return;
     }
@@ -396,36 +442,19 @@ export class DictationSessionController {
       return;
     }
 
-    const result = session.acceptTranscript(this.createTranscriptRevision(event, text));
+    const result = session.acceptTranscript({
+      isFinal: event.isFinal,
+      revision: event.revision,
+      segments: event.segments,
+      sessionId: event.sessionId,
+      stageResults: event.stageResults,
+      text,
+      utteranceId: event.utteranceId,
+    });
     if (result.kind === 'rejected') {
       this.handleError('Failed to record the local transcript', new Error(result.reason));
       void this.abortSessionAfterError(event.sessionId);
     }
-  }
-
-  private createTranscriptRevision(event: TranscriptReadyEvent, text: string): TranscriptRevision {
-    const revision = 0;
-
-    return {
-      isFinal: true,
-      revision,
-      segments: event.segments.map((segment) => ({ ...segment })),
-      sessionId: event.sessionId,
-      stageResults: [
-        {
-          durationMs: event.processingDurationMs,
-          payload: {
-            utteranceDurationMs: event.utteranceDurationMs,
-          },
-          revisionIn: revision,
-          revisionOut: revision,
-          stageId: 'engine',
-          status: { kind: 'ok' },
-        },
-      ],
-      text,
-      utteranceId: `utterance-${this.transcriptSequence++}`,
-    };
   }
 
   private handleLockedNoteClosed(sessionId: string): void {
@@ -490,7 +519,7 @@ export class DictationSessionController {
 }
 
 function createSessionId(): string {
-  return `session-${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
+  return `session-${randomUUID()}`;
 }
 
 function isAnchorVisibleSessionState(state: SessionState): boolean {
@@ -500,19 +529,4 @@ function isAnchorVisibleSessionState(state: SessionState): boolean {
     state === 'transcribing' ||
     state === 'paused'
   );
-}
-
-function normalizeTranscriptText(event: TranscriptReadyEvent): string | null {
-  const text = event.text.trim();
-
-  if (text.length > 0) {
-    return text;
-  }
-
-  const fallbackText = event.segments
-    .map((segment) => segment.text.trim())
-    .join(' ')
-    .trim();
-
-  return fallbackText.length > 0 ? fallbackText : null;
 }

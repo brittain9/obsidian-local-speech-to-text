@@ -22,6 +22,7 @@ use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
 use crate::model_store::{
     create_install_metadata, resolve_model_install_dir, write_install_metadata,
 };
+use crate::panic_util::format_panic_message;
 use crate::protocol::{Event, ModelInstallState};
 use crate::transcription::TranscriptionError;
 
@@ -167,13 +168,8 @@ impl ModelInstallManager {
             }));
 
             if let Err(panic_payload) = result {
-                let message = match panic_payload.downcast_ref::<&str>() {
-                    Some(s) => format!("Install thread panicked: {s}"),
-                    None => match panic_payload.downcast_ref::<String>() {
-                        Some(s) => format!("Install thread panicked: {s}"),
-                        None => "Install thread panicked unexpectedly.".to_string(),
-                    },
-                };
+                let message =
+                    format_panic_message(panic_payload.as_ref(), "Install thread panicked");
                 let _ = panic_tx.send(failed_update(
                     &panic_install_id,
                     runtime_id,

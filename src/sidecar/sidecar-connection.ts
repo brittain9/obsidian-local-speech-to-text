@@ -2,8 +2,10 @@ import { selectedModelEquals } from '../models/model-management-types';
 import { asError } from '../shared/error-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import {
+  type ContextWindow,
   createCancelModelInstallCommand,
   createCancelSessionCommand,
+  createContextResponseCommand,
   createGetModelStoreCommand,
   createGetSystemInfoCommand,
   createHealthCommand,
@@ -276,6 +278,14 @@ export class SidecarConnection {
 
   sendAudioFrame(frameBytes: Uint8Array): void {
     this.process.write(encodeAudioFrame(frameBytes));
+  }
+
+  sendContextResponse(correlationId: string, context: ContextWindow | null): void {
+    if (!this.process.isRunning()) {
+      return;
+    }
+
+    this.process.write(encodeJsonFrame(createContextResponseCommand(correlationId, context)));
   }
 
   dispose(): void {

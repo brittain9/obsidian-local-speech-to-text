@@ -135,11 +135,13 @@ export class NoteSurface {
       return { kind: 'denied', reason: 'Utterance is already projected.', utteranceId };
     }
 
+    const from = this.writingRegionTail();
+    const charBeforeTail = from > 0 ? this.view.state.doc.sliceString(from - 1, from) : null;
     const { prefix, trailing } = computePhraseSeparators({
+      charBeforeTail,
       isFirstPhrase: this.firstPhrase,
       separator: this.placement.separator,
     });
-    const from = this.writingRegionTail();
     const insertedText = `${prefix}${text}${trailing}`;
     const textStart = from + prefix.length;
     const textEnd = textStart + text.length;
@@ -319,6 +321,19 @@ export class NoteSurface {
     return span === undefined ? undefined : cloneSpan(span);
   }
 
+  // Whisper's `initial_prompt` is style-imitative — "Transcripts follow the
+  // style of the prompt" (OpenAI Whisper Prompting Guide). Feeding raw note
+  // prose causes whisper to continue in that voice instead of transcribing.
+  // A `Glossary: t1, t2, ...` shape has no narrative voice to imitate; it
+  // only nudges spelling for proper nouns and uncommon terms.
+  readNoteGlossary(maxChars: number): { text: string; truncated: boolean } | null {
+    if (this.disposed || maxChars <= 0) {
+      return null;
+    }
+
+    return buildGlossary(this.view.state.doc.toString(), maxChars);
+  }
+
   private insertInitialPrefix(): void {
     const charBeforeAnchor =
       this.initialAnchorPos > 0
@@ -371,7 +386,8 @@ export class NoteSurface {
       span.end = update.changes.mapPos(span.end, 1);
     }
 
-    this.initialAnchorPos = update.changes.mapPos(this.initialAnchorPos, -1);
+    // Tail bias: insertions at the initial anchor extend the writing region (D-014).
+    this.initialAnchorPos = update.changes.mapPos(this.initialAnchorPos, 1);
   }
 
   private hasLatchableUserChange(update: ViewUpdate): boolean {
@@ -432,4 +448,115 @@ function rangeIntersects(
 
 function cloneSpan(span: ProjectedSpan): ProjectedSpan {
   return { ...span };
+}
+
+// Tokens are split on whitespace and sentence punctuation, but `_`, `-`, and
+// `.` between alphanumerics are kept *inside* tokens. This preserves
+// identifiers that benefit from prompt-conditioning: `whisper.cpp`,
+// `set_initial_prompt`, `note-surface`, etc.
+const GLOSSARY_TOKEN_PATTERN = /[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*/gu;
+
+// `Capitalized` words like `Bob` or `See` could be proper nouns OR ordinary
+// English at a sentence boundary. We disambiguate by *position*: accept them
+// only when not at a sentence start. "Bob arrived" mid-sentence is
+// unambiguously a name; "Bob arrived." at sentence start is indistinguishable
+// from any other capitalized opener.
+function isGlossaryWorthy(token: string, noteText: string, offset: number): boolean {
+  if (/^[A-Z]{2,}$/u.test(token)) {
+    return true;
+  }
+
+  if (/^[A-Za-z]+$/u.test(token) && /[A-Z]/u.test(token.slice(1))) {
+    return true;
+  }
+
+  // Whisper sometimes emits sentence-final punctuation without a trailing
+  // space ("Operations.One of..."), and the dotted-identifier rule glues
+  // the two sides into one token. Title.Title with no other distinguishing
+  // signal (digits, multiple dots, underscores, hyphens) is far more likely
+  // to be sentence-glue than an identifier in dictated note prose.
+  if (/^[A-Z][a-z]+\.[A-Z][a-z]+$/u.test(token)) {
+    return false;
+  }
+
+  if (/[._-]/u.test(token)) {
+    return true;
+  }
+
+  if (/^[A-Z][a-z]+$/u.test(token)) {
+    return !isAtSentenceStart(noteText, offset);
+  }
+
+  return false;
+}
+
+// A sentence start is document start or immediately following `.`, `!`, or
+// `?` (skipping whitespace). Bare newlines are *not* sentence boundaries —
+// list items and headings start on new lines without closing punctuation;
+// otherwise every list-of-names note would lose every name.
+function isAtSentenceStart(noteText: string, offset: number): boolean {
+  let cursor = offset - 1;
+
+  while (cursor >= 0 && /\s/u.test(noteText.charAt(cursor))) {
+    cursor -= 1;
+  }
+
+  if (cursor < 0) {
+    return true;
+  }
+
+  const previous = noteText.charAt(cursor);
+  return previous === '.' || previous === '!' || previous === '?';
+}
+
+// Build `Glossary: t1, t2, ...` from the note in a single pass, deduped
+// case-insensitively (first-seen casing wins) and bounded by `maxChars`.
+// Stops scanning at the first token that would overflow the budget.
+function buildGlossary(
+  noteText: string,
+  maxChars: number,
+): { text: string; truncated: boolean } | null {
+  const prefix = 'Glossary: ';
+
+  if (prefix.length >= maxChars) {
+    return null;
+  }
+
+  const seen = new Set<string>();
+  let text = prefix;
+  let appended = 0;
+  let truncated = false;
+
+  for (const match of noteText.matchAll(GLOSSARY_TOKEN_PATTERN)) {
+    const token = match[0];
+    const offset = match.index ?? 0;
+
+    if (!isGlossaryWorthy(token, noteText, offset)) {
+      continue;
+    }
+
+    const key = token.toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    const candidate = appended === 0 ? `${text}${token}` : `${text}, ${token}`;
+
+    if (candidate.length > maxChars) {
+      truncated = true;
+      break;
+    }
+
+    text = candidate;
+    appended += 1;
+  }
+
+  if (appended === 0) {
+    return null;
+  }
+
+  return { text, truncated };
 }

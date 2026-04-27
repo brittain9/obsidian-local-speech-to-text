@@ -101,7 +101,6 @@ Durable workflow, product, and architecture decisions. Update in the same change
   - `allUtterancesInOrder() -> Iterable<Transcript>`
   - `revisionHistoryFor(id) -> Vec<Transcript>` (when history retention is enabled)
   - `subscribe(callback)` for live UI updates
-  - `assembleContext(spec: ContextWindowSpec) -> ContextWindow` for note-as-context input to the next utterance
   Sidecar reads (e.g., for note-as-context input) happen through a wire-protocol context request; the journal does not span the IPC boundary as shared memory.
 - Concurrency: one writer per utteranceId at a time. Pipeline stages run sequentially per utterance per D-015, so concurrent updates to the same utterance do not occur. Different utterances may have concurrent stage progression, but each utterance's revision sequence is strictly serial.
 - Note projection state: per-utterance anchor spans and user-wins latch state live in `NoteSurface` as a sibling structure to the journal, also keyed by `utteranceId`. The journal answers "what was said"; NoteSurface state answers "what's currently visible in the note." Neither subsumes the other.

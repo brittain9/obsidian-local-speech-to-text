@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { PCM_BYTES_PER_FRAME } from '../src/shared/pcm-format';
 import {
   AUDIO_FRAME_KIND,
+  type ContextWindow,
+  createContextResponseCommand,
   createGetSystemInfoCommand,
   createHealthCommand,
   createStartSessionCommand,
@@ -228,25 +230,170 @@ describe('sidecar protocol', () => {
     expect(() =>
       parseEventFrame(
         JSON.stringify({
+          isFinal: true,
           processingDurationMs: 100,
+          revision: 0,
           segments: [],
+          stageResults: [],
           text: 'hello',
           type: 'transcript_ready',
           utteranceDurationMs: 500,
+          utteranceId: 'utt-1',
+          warnings: [],
         }),
       ),
     ).toThrow('event.sessionId must be a string.');
   });
 
-  it('parses mixed JSON and binary frames across chunk boundaries', () => {
-    const parser = new FramedMessageParser(parseEventFrame);
-    const transcriptFrame = encodeJsonFrame({
+  it('rejects transcript_ready with missing utteranceId', () => {
+    expect(() =>
+      parseEventFrame(
+        JSON.stringify({
+          isFinal: true,
+          processingDurationMs: 100,
+          revision: 0,
+          segments: [],
+          sessionId: 'session-1',
+          stageResults: [],
+          text: 'hello',
+          type: 'transcript_ready',
+          utteranceDurationMs: 500,
+          warnings: [],
+        }),
+      ),
+    ).toThrow('event.utteranceId must be a string.');
+  });
+
+  it('parses transcript_ready with stage history', () => {
+    const event = parseEventFrame(
+      JSON.stringify({
+        isFinal: true,
+        processingDurationMs: 125,
+        revision: 0,
+        segments: [],
+        sessionId: 'session-1',
+        stageResults: [
+          {
+            durationMs: 100,
+            revisionIn: 0,
+            revisionOut: 0,
+            stageId: 'engine',
+            status: { kind: 'ok' },
+          },
+          {
+            durationMs: 0,
+            revisionIn: 0,
+            stageId: 'punctuation',
+            status: { kind: 'skipped', reason: 'stage not yet implemented' },
+          },
+        ],
+        text: 'hello world',
+        type: 'transcript_ready',
+        utteranceDurationMs: 900,
+        utteranceId: 'utt-1',
+        warnings: [],
+      }),
+    );
+
+    expect(event).toEqual({
+      isFinal: true,
       processingDurationMs: 125,
+      revision: 0,
       segments: [],
       sessionId: 'session-1',
+      stageResults: [
+        {
+          durationMs: 100,
+          revisionIn: 0,
+          revisionOut: 0,
+          stageId: 'engine',
+          status: { kind: 'ok' },
+        },
+        {
+          durationMs: 0,
+          revisionIn: 0,
+          stageId: 'punctuation',
+          status: { kind: 'skipped', reason: 'stage not yet implemented' },
+        },
+      ],
       text: 'hello world',
       type: 'transcript_ready',
       utteranceDurationMs: 900,
+      utteranceId: 'utt-1',
+      warnings: [],
+    });
+  });
+
+  it('parses context_request event', () => {
+    const event = parseEventFrame(
+      JSON.stringify({
+        budgetChars: 1024,
+        correlationId: 'corr-1',
+        sessionId: 'session-1',
+        type: 'context_request',
+        utteranceId: 'utt-1',
+      }),
+    );
+
+    expect(event).toEqual({
+      budgetChars: 1024,
+      correlationId: 'corr-1',
+      sessionId: 'session-1',
+      type: 'context_request',
+      utteranceId: 'utt-1',
+    });
+  });
+
+  it('serializes context_response with a context window', () => {
+    const context: ContextWindow = {
+      budgetChars: 512,
+      sources: [
+        {
+          endRevision: 0,
+          kind: 'session_utterance',
+          text: 'hello',
+          truncated: false,
+          utteranceId: 'utt-prior',
+        },
+      ],
+      text: 'hello',
+      truncated: false,
+    };
+
+    const command = createContextResponseCommand('corr-1', context);
+    const frame = encodeJsonFrame(command);
+    const payload = readPayload(frame) as Record<string, unknown>;
+
+    expect(payload).toEqual({
+      context,
+      correlationId: 'corr-1',
+      type: 'context_response',
+    });
+  });
+
+  it('serializes context_response with a null context', () => {
+    const frame = encodeJsonFrame(createContextResponseCommand('corr-1', null));
+
+    expect(readPayload(frame)).toEqual({
+      context: null,
+      correlationId: 'corr-1',
+      type: 'context_response',
+    });
+  });
+
+  it('parses mixed JSON and binary frames across chunk boundaries', () => {
+    const parser = new FramedMessageParser(parseEventFrame);
+    const transcriptFrame = encodeJsonFrame({
+      isFinal: true,
+      processingDurationMs: 125,
+      revision: 0,
+      segments: [],
+      sessionId: 'session-1',
+      stageResults: [],
+      text: 'hello world',
+      type: 'transcript_ready',
+      utteranceDurationMs: 900,
+      utteranceId: 'utt-1',
       warnings: [],
     });
     const audioFrame = encodeAudioFrame(new Uint8Array(PCM_BYTES_PER_FRAME).fill(3));
@@ -263,12 +410,16 @@ describe('sidecar protocol', () => {
     expect(frames).toHaveLength(2);
     expect(frames[0]).toEqual({
       envelope: {
+        isFinal: true,
         processingDurationMs: 125,
+        revision: 0,
         segments: [],
         sessionId: 'session-1',
+        stageResults: [],
         text: 'hello world',
         type: 'transcript_ready',
         utteranceDurationMs: 900,
+        utteranceId: 'utt-1',
         warnings: [],
       },
       kind: JSON_FRAME_KIND,

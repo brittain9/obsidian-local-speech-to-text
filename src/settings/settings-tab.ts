@@ -60,6 +60,7 @@ const SPEAKING_STYLE_OPTIONS: Array<{ label: string; value: SpeakingStyle }> = [
 ];
 
 export class LocalSttSettingTab extends PluginSettingTab {
+  private disposeEngineSection: (() => void) | null = null;
   private disposeModelSection: (() => void) | null = null;
   private nvidiaDriverStatus: Promise<NvidiaDriverStatus> | null = null;
 
@@ -215,7 +216,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     // --- Engine options ---
     new Setting(containerEl).setName('Engine options').setHeading();
     const engineSection = containerEl.createDiv();
-    void this.renderEngineOptions(engineSection);
+    void this.bindEngineOptions(engineSection, manager);
     const gpuSection = containerEl.createDiv();
     void this.renderGpuSidecarControls(gpuSection);
 
@@ -338,6 +339,8 @@ export class LocalSttSettingTab extends PluginSettingTab {
   private tearDown(): void {
     this.disposeModelSection?.();
     this.disposeModelSection = null;
+    this.disposeEngineSection?.();
+    this.disposeEngineSection = null;
     this.nvidiaDriverStatus = null;
   }
 
@@ -377,13 +380,21 @@ export class LocalSttSettingTab extends PluginSettingTab {
     };
   }
 
-  private async renderEngineOptions(
+  private async bindEngineOptions(
     containerEl: HTMLDivElement,
-    cachedSystemInfo?: SystemInfoEvent | null,
+    manager: ModelInstallManager,
   ): Promise<void> {
-    const systemInfo =
-      cachedSystemInfo !== undefined ? cachedSystemInfo : await this.fetchSystemInfo();
+    const systemInfo = await this.fetchSystemInfo();
+    this.renderEngineOptions(containerEl, systemInfo);
+    this.disposeEngineSection = manager.subscribe(() => {
+      this.renderEngineOptions(containerEl, systemInfo);
+    });
+  }
 
+  private renderEngineOptions(
+    containerEl: HTMLDivElement,
+    systemInfo: SystemInfoEvent | null,
+  ): void {
     const settings = this.dependencies.getSettings();
     const { label } = describeAcceleration(systemInfo, settings.accelerationPreference);
 
@@ -406,9 +417,27 @@ export class LocalSttSettingTab extends PluginSettingTab {
             ...this.dependencies.getSettings(),
             accelerationPreference: value ? 'auto' : 'cpu_only',
           });
-          void this.renderEngineOptions(containerEl, systemInfo);
+          this.renderEngineOptions(containerEl, systemInfo);
         });
       });
+
+    const caps = this.dependencies.modelInstallManager.getState().selectedModelCapabilities;
+    if (caps.status === 'ready' && caps.capabilities.family.supportsInitialPrompt) {
+      new Setting(containerEl)
+        .setName('Use note as context')
+        .setDesc(
+          'Send a glossary of distinctive terms from the note as the engine’s prompt. Helps spell proper nouns and technical terms. Only used by engines that support initial prompts.',
+        )
+        .addToggle((toggle) => {
+          toggle.setValue(settings.useNoteAsContext);
+          toggle.onChange(async (value) => {
+            await this.persistSettings({
+              ...this.dependencies.getSettings(),
+              useNoteAsContext: value,
+            });
+          });
+        });
+    }
   }
 
   private async renderGpuSidecarControls(containerEl: HTMLDivElement): Promise<void> {

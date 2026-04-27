@@ -30,7 +30,7 @@ fn run_stdio(catalog: ModelCatalog, app_version: String) -> Result<()> {
     let mut app_state = AppState::new(app_version, catalog);
 
     loop {
-        write_events(&mut writer, app_state.drain_worker_events())?;
+        write_events(&mut writer, app_state.drain_pending_outputs())?;
 
         match input_rx.recv_timeout(Duration::from_millis(10)) {
             Ok(InputMessage::Frame(frame)) => {
