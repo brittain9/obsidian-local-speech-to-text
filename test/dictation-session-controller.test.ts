@@ -346,8 +346,6 @@ describe('DictationSessionController', () => {
       vi.advanceTimersByTime(1);
       expect(controller.getState()).toBe('transcribing');
       expect(session.modeCalls.at(-1)).toBe('visible');
-
-      void controller;
     } finally {
       vi.useRealTimers();
     }
@@ -380,8 +378,6 @@ describe('DictationSessionController', () => {
 
       expect(controller.getState()).toBe('listening');
       expect(session.modeCalls).toEqual(['hidden', 'hidden']);
-
-      void controller;
     } finally {
       vi.useRealTimers();
     }
@@ -471,7 +467,6 @@ describe('DictationSessionController', () => {
       truncated: false,
     };
     expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-1', expected);
-    void controller;
   });
 
   it('replies with null when the session returns no note context', async () => {
@@ -495,7 +490,6 @@ describe('DictationSessionController', () => {
     });
 
     expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-empty', null);
-    void controller;
   });
 
   it('replies with null when useNoteAsContext is disabled, without consulting the session', async () => {
@@ -525,7 +519,6 @@ describe('DictationSessionController', () => {
 
     expect(session.readNoteContext).not.toHaveBeenCalled();
     expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-off', null);
-    void controller;
   });
 
   it('honors live changes to useNoteAsContext between context_request events', async () => {
@@ -571,7 +564,6 @@ describe('DictationSessionController', () => {
       truncated: false,
     });
     expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(2, 'corr-off', null);
-    void controller;
   });
 
   it('ignores context_request for an unrelated session', async () => {
@@ -595,7 +587,6 @@ describe('DictationSessionController', () => {
 
     expect(session.readNoteContext).not.toHaveBeenCalled();
     expect(sidecarConnection.sendContextResponse).not.toHaveBeenCalled();
-    void controller;
   });
 
   it('silently discards an empty transcript and continues the session', async () => {

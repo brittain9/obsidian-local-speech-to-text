@@ -143,7 +143,8 @@ pub fn apply_capability_gates(
     if request.context.is_some() && !adapter_capabilities.supports_initial_prompt {
         warnings.push(RequestWarning {
             field: "context".to_string(),
-            reason: "adapter does not support initial-prompt conditioning".to_string(),
+            reason: "context dropped because adapter does not advertise supports_initial_prompt"
+                .to_string(),
         });
         request.context = None;
     }
@@ -387,7 +388,9 @@ mod tests {
             warnings,
             vec![RequestWarning {
                 field: "context".to_string(),
-                reason: "adapter does not support initial-prompt conditioning".to_string(),
+                reason:
+                    "context dropped because adapter does not advertise supports_initial_prompt"
+                        .to_string(),
             }]
         );
     }
