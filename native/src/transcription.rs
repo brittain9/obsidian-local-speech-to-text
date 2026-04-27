@@ -61,12 +61,11 @@ impl Transcript {
         pieces.join(" ")
     }
 
-    /// Read the engine stage's `isFinal` flag. Per D-015 the engine stage's
-    /// payload is the canonical record of whether a revision is a finalized
-    /// engine pass (`true`) or a speculative partial (`false`). Returns
-    /// `false` if the engine stage or flag is absent — that is a contract
-    /// violation by the producer, but treating it as a partial is the safer
-    /// default than auto-finalizing into the journal.
+    /// Per D-015 the engine stage's `isFinal` payload flag is the canonical
+    /// record of whether a revision is a finalized engine pass. Returns
+    /// `false` if the engine stage or flag is absent — that is a producer
+    /// contract violation, but treating it as a partial is safer than
+    /// auto-finalizing into the journal.
     pub fn is_final(&self) -> bool {
         self.stage_history
             .first()

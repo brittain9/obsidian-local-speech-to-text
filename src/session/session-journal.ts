@@ -1,6 +1,7 @@
 export type UtteranceId = string;
 
-export type StageId = 'engine' | 'hallucination_filter' | 'punctuation' | 'user_rules';
+export const STAGE_IDS = ['engine', 'hallucination_filter', 'punctuation', 'user_rules'] as const;
+export type StageId = (typeof STAGE_IDS)[number];
 
 export interface TranscriptSegment {
   endMs: number;
@@ -274,11 +275,7 @@ function truncateAtWordBoundary(text: string, maxChars: number): string {
     return candidate;
   }
 
-  let boundary = -1;
-
-  for (const match of candidate.matchAll(/\s+/gu)) {
-    boundary = match.index;
-  }
+  const boundary = candidate.lastIndexOf(' ');
 
   if (boundary > 0) {
     return candidate.slice(0, boundary).trimEnd();

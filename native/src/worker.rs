@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::engine::capabilities::{ModelFamilyId, RequestWarning, RuntimeId};
 use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_adapter_error};
 use crate::engine::traits::LoadedModel;
+use crate::panic_util::format_panic_message;
 use crate::protocol::{ContextWindow, StageId, StageOutcome, StageStatus};
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
@@ -91,16 +92,6 @@ impl TranscriptionWorker {
     }
 }
 
-fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>, prefix: &str) -> String {
-    match payload.downcast_ref::<&str>() {
-        Some(s) => format!("{prefix}: {s}"),
-        None => match payload.downcast_ref::<String>() {
-            Some(s) => format!("{prefix}: {s}"),
-            None => format!("{prefix}."),
-        },
-    }
-}
-
 struct ActiveSession {
     metadata: SessionMetadata,
     loaded_model: Box<dyn LoadedModel>,
@@ -148,8 +139,10 @@ fn worker_main(
                         active = None;
                     }
                     Err(payload) => {
-                        let message =
-                            extract_panic_message(&payload, "Worker thread panicked loading model");
+                        let message = format_panic_message(
+                            payload.as_ref(),
+                            "Worker thread panicked loading model",
+                        );
                         let _ = event_tx.send(WorkerEvent::SessionError {
                             code: "worker_panic".to_string(),
                             details: None,
@@ -215,7 +208,7 @@ fn worker_main(
                         let transcript =
                             assemble_transcript(utterance_id, engine_output, engine_duration_ms);
                         let _ = event_tx.send(WorkerEvent::TranscriptReady {
-                            processing_duration_ms: started_at.elapsed().as_millis() as u64,
+                            processing_duration_ms: engine_duration_ms,
                             session_id,
                             transcript,
                             utterance_duration_ms: duration_ms,
@@ -232,8 +225,8 @@ fn worker_main(
                         });
                     }
                     Err(payload) => {
-                        let message = extract_panic_message(
-                            &payload,
+                        let message = format_panic_message(
+                            payload.as_ref(),
                             "Worker thread panicked during transcription",
                         );
                         let _ = event_tx.send(WorkerEvent::SessionError {
@@ -250,59 +243,47 @@ fn worker_main(
     }
 }
 
-/// Wrap raw engine output into a canonical `Transcript` with the post-engine
-/// stage pipeline. PR4 emits one final revision per utterance with engine
-/// status `ok` plus three skipped stubs (hallucination_filter, punctuation,
-/// user_rules) so consumers can rely on stage history shape now and the stages
-/// can be implemented later without changing the transcript contract.
-///
-/// The engine stage's payload carries `isFinal` per D-015 — this is the
-/// canonical record of whether a revision is a finalized engine pass. Today
-/// every assembled transcript is final; speculative-partial support will set
-/// the same field to `false` without touching the wire shape.
-///
-/// Revision numbering uses a single mutable counter that future stages bump
-/// on success and leave alone on skip/fail. PR4 emits revision 0 from the
-/// engine stage and skips the rest, so the final transcript revision stays at
-/// 0; once a post-engine stage actually rewrites segments it should push its
-/// `StageOutcome` and then bump the counter so subsequent stages observe the
-/// new revision.
+/// Wrap raw engine output into a canonical `Transcript`. The engine stage is
+/// emitted as `ok` with `isFinal: true` (D-015); each post-engine stage is
+/// emitted as a `skipped` stub until it gains a real implementation.
 fn assemble_transcript(
     utterance_id: Uuid,
     engine_output: EngineTranscriptOutput,
     engine_duration_ms: u64,
 ) -> Transcript {
-    let current_revision: u32 = 0;
-    let mut stage_history: Vec<StageOutcome> = Vec::with_capacity(4);
+    let revision: u32 = 0;
+    let mut stage_history: Vec<StageOutcome> = Vec::with_capacity(1 + POST_ENGINE_STAGES.len());
 
     stage_history.push(StageOutcome {
         duration_ms: engine_duration_ms,
         payload: Some(serde_json::json!({ "isFinal": true })),
-        revision_in: current_revision,
-        revision_out: Some(current_revision),
+        revision_in: revision,
+        revision_out: Some(revision),
         stage_id: StageId::Engine,
         status: StageStatus::Ok,
     });
 
-    for stage_id in [
-        StageId::HallucinationFilter,
-        StageId::Punctuation,
-        StageId::UserRules,
-    ] {
+    for stage_id in POST_ENGINE_STAGES {
         stage_history.push(skipped_stage(
             stage_id,
-            current_revision,
+            revision,
             "stage not yet implemented",
         ));
     }
 
     Transcript {
         utterance_id,
-        revision: current_revision,
+        revision,
         segments: engine_output.segments,
         stage_history,
     }
 }
+
+const POST_ENGINE_STAGES: [StageId; 3] = [
+    StageId::HallucinationFilter,
+    StageId::Punctuation,
+    StageId::UserRules,
+];
 
 fn skipped_stage(stage_id: StageId, revision: u32, reason: &str) -> StageOutcome {
     StageOutcome {

@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
+
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
 import type { NotePlacementOptions } from '../editor/note-surface';
 import type { Session } from '../session/session';
-import type { TranscriptRevision } from '../session/session-journal';
 import type { PluginSettings } from '../settings/plugin-settings';
 import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
@@ -24,6 +25,11 @@ export type DictationControllerState =
   | 'paused'
   | 'error';
 
+type ControllerSession = Pick<
+  Session,
+  'acceptTranscript' | 'assembleContext' | 'dispose' | 'setAnchorMode'
+>;
+
 interface DictationSessionControllerDependencies {
   captureStream: Pick<AudioCaptureStream, 'isCapturing' | 'start' | 'stop'>;
   createSession: (options: {
@@ -33,7 +39,7 @@ interface DictationSessionControllerDependencies {
     };
     placement: NotePlacementOptions;
     sessionId: string;
-  }) => Pick<Session, 'acceptTranscript' | 'assembleContext' | 'dispose' | 'setAnchorMode'>;
+  }) => ControllerSession;
   getSettings: () => PluginSettings;
   logger?: PluginLogger;
   notice: (message: string) => void;
@@ -58,10 +64,7 @@ export class DictationSessionController {
   private anchorTimerId: ReturnType<typeof setTimeout> | null = null;
   private pendingStartSessionId: string | null = null;
   private readonly releaseSidecarSubscription: () => void;
-  private session: Pick<
-    Session,
-    'acceptTranscript' | 'assembleContext' | 'dispose' | 'setAnchorMode'
-  > | null = null;
+  private session: ControllerSession | null = null;
   private sessionId: string | null = null;
   private state: DictationControllerState = 'idle';
 
@@ -125,10 +128,7 @@ export class DictationSessionController {
     const settings = this.dependencies.getSettings();
     const selectedModel = this.requireSelectedModel(settings);
     const sessionId = createSessionId();
-    let session: Pick<
-      Session,
-      'acceptTranscript' | 'assembleContext' | 'dispose' | 'setAnchorMode'
-    >;
+    let session: ControllerSession;
 
     try {
       session = this.dependencies.createSession({
@@ -412,9 +412,9 @@ export class DictationSessionController {
       );
     }
 
-    const text = normalizeTranscriptText(event);
+    const text = event.text.trim();
 
-    if (text === null) {
+    if (text.length === 0) {
       this.dependencies.logger?.debug('session', 'discarding empty transcript');
       return;
     }
@@ -424,7 +424,15 @@ export class DictationSessionController {
       return;
     }
 
-    const result = session.acceptTranscript(toTranscriptRevision(event, text));
+    const result = session.acceptTranscript({
+      isFinal: event.isFinal,
+      revision: event.revision,
+      segments: event.segments,
+      sessionId: event.sessionId,
+      stageResults: event.stageResults,
+      text,
+      utteranceId: event.utteranceId,
+    });
     if (result.kind === 'rejected') {
       this.handleError('Failed to record the local transcript', new Error(result.reason));
       void this.abortSessionAfterError(event.sessionId);
@@ -493,7 +501,7 @@ export class DictationSessionController {
 }
 
 function createSessionId(): string {
-  return `session-${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
+  return `session-${randomUUID()}`;
 }
 
 function isAnchorVisibleSessionState(state: SessionState): boolean {
@@ -503,37 +511,4 @@ function isAnchorVisibleSessionState(state: SessionState): boolean {
     state === 'transcribing' ||
     state === 'paused'
   );
-}
-
-function normalizeTranscriptText(event: TranscriptReadyEvent): string | null {
-  const text = event.text.trim();
-
-  if (text.length > 0) {
-    return text;
-  }
-
-  const fallbackText = event.segments
-    .map((segment) => segment.text.trim())
-    .join(' ')
-    .trim();
-
-  return fallbackText.length > 0 ? fallbackText : null;
-}
-
-function toTranscriptRevision(event: TranscriptReadyEvent, text: string): TranscriptRevision {
-  return {
-    isFinal: event.isFinal,
-    revision: event.revision,
-    segments: event.segments.map((segment) => ({ ...segment })),
-    sessionId: event.sessionId,
-    stageResults: event.stageResults.map(cloneStageOutcome),
-    text,
-    utteranceId: event.utteranceId,
-  };
-}
-
-function cloneStageOutcome<TOutcome extends TranscriptRevision['stageResults'][number]>(
-  outcome: TOutcome,
-): TOutcome {
-  return { ...outcome };
 }

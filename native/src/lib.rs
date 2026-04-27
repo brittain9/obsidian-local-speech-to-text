@@ -6,6 +6,7 @@ pub mod installer;
 #[cfg(feature = "engine-cohere-transcribe")]
 pub mod mel;
 pub mod model_store;
+pub mod panic_util;
 pub mod protocol;
 pub mod runtimes;
 pub mod session;

@@ -330,19 +330,15 @@ describe('DictationSessionController', () => {
       vi.advanceTimersByTime(1000);
       sidecarConnection.emit({ sessionId, state: 'transcribing', type: 'session_state_changed' });
       vi.advanceTimersByTime(1000);
-      sidecarConnection.emit({
-        isFinal: true,
-        processingDurationMs: 200,
-        revision: 0,
-        segments: [],
-        sessionId,
-        stageResults: [okEngineStage(200)],
-        text: 'hello',
-        type: 'transcript_ready',
-        utteranceDurationMs: 500,
-        utteranceId: 'utt-anchor',
-        warnings: [],
-      });
+      sidecarConnection.emit(
+        transcriptReadyEvent({
+          processingDurationMs: 200,
+          sessionId,
+          text: 'hello',
+          utteranceDurationMs: 500,
+          utteranceId: 'utt-anchor',
+        }),
+      );
       vi.advanceTimersByTime(499);
 
       vi.advanceTimersByTime(1);
@@ -425,19 +421,13 @@ describe('DictationSessionController', () => {
 
     await controller.startDictation();
 
-    sidecarConnection.emit({
-      isFinal: true,
-      processingDurationMs: 75,
-      revision: 0,
-      segments: [],
-      sessionId: sidecarConnection.lastSessionId ?? 'session-1',
-      stageResults: [okEngineStage(75)],
-      text: 'hello obsidian',
-      type: 'transcript_ready',
-      utteranceDurationMs: 700,
-      utteranceId: 'utt-from-sidecar',
-      warnings: [],
-    });
+    sidecarConnection.emit(
+      transcriptReadyEvent({
+        sessionId: sidecarConnection.lastSessionId ?? 'session-1',
+        text: 'hello obsidian',
+        utteranceId: 'utt-from-sidecar',
+      }),
+    );
 
     expect(session.acceptTranscript).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -549,19 +539,13 @@ describe('DictationSessionController', () => {
 
     await controller.startDictation();
 
-    sidecarConnection.emit({
-      isFinal: true,
-      processingDurationMs: 75,
-      revision: 0,
-      segments: [],
-      sessionId: sidecarConnection.lastSessionId ?? 'session-1',
-      stageResults: [okEngineStage(75)],
-      text: '   ',
-      type: 'transcript_ready',
-      utteranceDurationMs: 700,
-      utteranceId: 'utt-empty',
-      warnings: [],
-    });
+    sidecarConnection.emit(
+      transcriptReadyEvent({
+        sessionId: sidecarConnection.lastSessionId ?? 'session-1',
+        text: '   ',
+        utteranceId: 'utt-empty',
+      }),
+    );
 
     await vi.waitFor(() => {
       expect(notice).not.toHaveBeenCalled();
@@ -590,19 +574,13 @@ describe('DictationSessionController', () => {
     const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
     await controller.stopDictation();
 
-    sidecarConnection.emit({
-      isFinal: true,
-      processingDurationMs: 75,
-      revision: 0,
-      segments: [],
-      sessionId,
-      stageResults: [okEngineStage(75)],
-      text: 'drained transcript',
-      type: 'transcript_ready',
-      utteranceDurationMs: 700,
-      utteranceId: 'utt-drained',
-      warnings: [],
-    });
+    sidecarConnection.emit(
+      transcriptReadyEvent({
+        sessionId,
+        text: 'drained transcript',
+        utteranceId: 'utt-drained',
+      }),
+    );
 
     expect(captureStream.stop).toHaveBeenCalledTimes(1);
     expect(session.acceptTranscript).toHaveBeenCalledWith(
@@ -844,6 +822,29 @@ function okEngineStage(durationMs: number): TranscriptRevision['stageResults'][n
     revisionOut: 0,
     stageId: 'engine',
     status: { kind: 'ok' },
+  };
+}
+
+function transcriptReadyEvent(args: {
+  processingDurationMs?: number;
+  sessionId: string;
+  text: string;
+  utteranceDurationMs?: number;
+  utteranceId: string;
+}): Extract<SidecarEvent, { type: 'transcript_ready' }> {
+  const processingDurationMs = args.processingDurationMs ?? 75;
+  return {
+    isFinal: true,
+    processingDurationMs,
+    revision: 0,
+    segments: [],
+    sessionId: args.sessionId,
+    stageResults: [okEngineStage(processingDurationMs)],
+    text: args.text,
+    type: 'transcript_ready',
+    utteranceDurationMs: args.utteranceDurationMs ?? 700,
+    utteranceId: args.utteranceId,
+    warnings: [],
   };
 }
 

@@ -5,9 +5,8 @@ import {
   type EngineCapabilitiesRecord,
   getPrimaryArtifact,
   type InstalledModelRecord,
-  isModelFamilyId,
-  isRuntimeId,
   type LanguageSupport,
+  MODEL_FAMILY_IDS,
   type ModelCatalogRecord,
   type ModelCollectionRecord,
   type ModelFamilyCapabilitiesRecord,
@@ -21,16 +20,18 @@ import {
   type ModelStoreRecord,
   normalizeSelectedModel,
   type RequestWarning,
+  RUNTIME_IDS,
   type RuntimeCapabilitiesRecord,
   type RuntimeId,
   type SelectedModel,
 } from '../models/model-management-types';
-import type {
-  ContextWindow,
-  StageId,
-  StageOutcome,
-  StageStatus,
-  UtteranceId,
+import {
+  type ContextWindow,
+  STAGE_IDS,
+  type StageId,
+  type StageOutcome,
+  type StageStatus,
+  type UtteranceId,
 } from '../session/session-journal';
 import { PCM_BYTES_PER_FRAME } from '../shared/pcm-format';
 import { isRecord } from '../shared/type-guards';
@@ -40,23 +41,30 @@ export const AUDIO_FRAME_KIND = 0x02;
 export const FRAME_HEADER_LENGTH = 5;
 
 export type AccelerationPreference = 'auto' | 'cpu_only';
-export type ListeningMode = 'always_on' | 'one_sentence';
 export type SpeakingStyle = 'responsive' | 'balanced' | 'patient';
-export type SessionState =
-  | 'error'
-  | 'idle'
-  | 'listening'
-  | 'paused'
-  | 'speech_detected'
-  | 'speech_ending'
-  | 'transcribing';
 
-export type SessionStopReason =
-  | 'sentence_complete'
-  | 'session_replaced'
-  | 'timeout'
-  | 'user_cancel'
-  | 'user_stop';
+export const LISTENING_MODES = ['always_on', 'one_sentence'] as const;
+export type ListeningMode = (typeof LISTENING_MODES)[number];
+
+export const SESSION_STATES = [
+  'error',
+  'idle',
+  'listening',
+  'paused',
+  'speech_detected',
+  'speech_ending',
+  'transcribing',
+] as const;
+export type SessionState = (typeof SESSION_STATES)[number];
+
+export const SESSION_STOP_REASONS = [
+  'sentence_complete',
+  'session_replaced',
+  'timeout',
+  'user_cancel',
+  'user_stop',
+] as const;
+export type SessionStopReason = (typeof SESSION_STOP_REASONS)[number];
 
 export interface TranscriptSegment {
   endMs: number;
@@ -624,6 +632,20 @@ function readString(value: unknown, fieldName: string): string {
   return value;
 }
 
+function readEnumValue<TValue extends string>(
+  value: unknown,
+  allowed: readonly TValue[],
+  fieldName: string,
+): TValue {
+  const candidate = readString(value, fieldName);
+
+  if ((allowed as readonly string[]).includes(candidate)) {
+    return candidate as TValue;
+  }
+
+  throw new Error(`${fieldName} must be one of: ${allowed.join(', ')}; received "${candidate}".`);
+}
+
 function readOptionalString(value: unknown, fieldName: string): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -673,137 +695,66 @@ function readPositiveInteger(value: unknown, fieldName: string): number {
 }
 
 function readReadyStatus(value: unknown): 'ready' {
-  const status = readString(value, 'event.status');
-
-  if (status !== 'ready') {
-    throw new Error(`Unsupported sidecar status: ${status}`);
-  }
-
-  return status;
+  return readEnumValue(value, ['ready'] as const, 'event.status');
 }
 
 function readListeningMode(value: unknown, fieldName: string): ListeningMode {
-  const mode = readString(value, fieldName);
-
-  if (mode === 'always_on' || mode === 'one_sentence') {
-    return mode;
-  }
-
-  throw new Error(`Unsupported listening mode: ${mode}`);
+  return readEnumValue(value, LISTENING_MODES, fieldName);
 }
 
 function readSessionState(value: unknown, fieldName: string): SessionState {
-  const state = readString(value, fieldName);
-
-  if (
-    state === 'error' ||
-    state === 'idle' ||
-    state === 'listening' ||
-    state === 'paused' ||
-    state === 'speech_detected' ||
-    state === 'speech_ending' ||
-    state === 'transcribing'
-  ) {
-    return state;
-  }
-
-  throw new Error(`Unsupported session state: ${state}`);
+  return readEnumValue(value, SESSION_STATES, fieldName);
 }
 
 function readSessionStopReason(value: unknown, fieldName: string): SessionStopReason {
-  const reason = readString(value, fieldName);
-
-  if (
-    reason === 'sentence_complete' ||
-    reason === 'session_replaced' ||
-    reason === 'timeout' ||
-    reason === 'user_cancel' ||
-    reason === 'user_stop'
-  ) {
-    return reason;
-  }
-
-  throw new Error(`Unsupported session stop reason: ${reason}`);
+  return readEnumValue(value, SESSION_STOP_REASONS, fieldName);
 }
 
 function readRuntimeId(value: unknown, fieldName: string): RuntimeId {
-  const runtimeId = readString(value, fieldName);
-
-  if (!isRuntimeId(runtimeId)) {
-    throw new Error(`Unsupported runtime id: ${runtimeId}`);
-  }
-
-  return runtimeId;
+  return readEnumValue(value, RUNTIME_IDS, fieldName);
 }
 
 function readModelFamilyId(value: unknown, fieldName: string): ModelFamilyId {
-  const familyId = readString(value, fieldName);
-
-  if (!isModelFamilyId(familyId)) {
-    throw new Error(`Unsupported model family id: ${familyId}`);
-  }
-
-  return familyId;
+  return readEnumValue(value, MODEL_FAMILY_IDS, fieldName);
 }
 
 function readSelectedModel(value: unknown, fieldName: string): SelectedModel {
-  if (!isRecord(value)) {
-    throw new Error(`${fieldName} must be an object.`);
-  }
-
-  const kind = readString(value.kind, `${fieldName}.kind`);
-  const runtimeId = readRuntimeId(value.runtimeId, `${fieldName}.runtimeId`);
-  const familyId = readModelFamilyId(value.familyId, `${fieldName}.familyId`);
+  const record = readRecord(value, fieldName);
+  const kind = readEnumValue(
+    record.kind,
+    ['catalog_model', 'external_file'] as const,
+    `${fieldName}.kind`,
+  );
+  const runtimeId = readRuntimeId(record.runtimeId, `${fieldName}.runtimeId`);
+  const familyId = readModelFamilyId(record.familyId, `${fieldName}.familyId`);
 
   if (kind === 'catalog_model') {
     return normalizeSelectedModel({
       familyId,
       kind,
-      modelId: readString(value.modelId, `${fieldName}.modelId`),
+      modelId: readString(record.modelId, `${fieldName}.modelId`),
       runtimeId,
     });
   }
 
-  if (kind === 'external_file') {
-    return normalizeSelectedModel({
-      familyId,
-      filePath: readString(value.filePath, `${fieldName}.filePath`),
-      kind,
-      runtimeId,
-    });
-  }
-
-  throw new Error(`Unsupported selected model kind: ${kind}`);
+  return normalizeSelectedModel({
+    familyId,
+    filePath: readString(record.filePath, `${fieldName}.filePath`),
+    kind,
+    runtimeId,
+  });
 }
 
 function readModelProbeStatus(value: unknown, fieldName: string): ModelProbeResultRecord['status'] {
-  const status = readString(value, fieldName);
-
-  if (status === 'invalid' || status === 'missing' || status === 'ready') {
-    return status;
-  }
-
-  throw new Error(`Unsupported model probe status: ${status}`);
+  return readEnumValue(value, ['invalid', 'missing', 'ready'] as const, fieldName);
 }
 
 function readAcceleratorId(value: unknown, fieldName: string): AcceleratorId {
-  const id = readString(value, fieldName);
-
-  if (id === 'cpu' || id === 'cuda' || id === 'direct_ml' || id === 'metal') {
-    return id;
-  }
-
-  throw new Error(`Unsupported accelerator id: ${id}`);
+  return readEnumValue(value, ['cpu', 'cuda', 'direct_ml', 'metal'] as const, fieldName);
 }
 
 function readModelFormat(value: unknown, fieldName: string): ModelFormat {
-  const format = readString(value, fieldName);
-
-  if (format === 'ggml' || format === 'gguf' || format === 'onnx') {
-    return format;
-  }
-
-  throw new Error(`Unsupported model format: ${format}`);
+  return readEnumValue(value, ['ggml', 'gguf', 'onnx'] as const, fieldName);
 }
 
 function readAcceleratorAvailability(value: unknown, fieldName: string): AcceleratorAvailability {
@@ -856,11 +807,11 @@ function readRuntimeCapabilities(value: unknown, fieldName: string): RuntimeCapa
 
 function readLanguageSupport(value: unknown, fieldName: string): LanguageSupport {
   const record = readRecord(value, fieldName);
-  const kind = readString(record.kind, `${fieldName}.kind`);
-
-  if (kind === 'all' || kind === 'english_only' || kind === 'unknown') {
-    return { kind };
-  }
+  const kind = readEnumValue(
+    record.kind,
+    ['all', 'english_only', 'list', 'unknown'] as const,
+    `${fieldName}.kind`,
+  );
 
   if (kind === 'list') {
     return {
@@ -871,7 +822,7 @@ function readLanguageSupport(value: unknown, fieldName: string): LanguageSupport
     };
   }
 
-  throw new Error(`Unsupported language support kind: ${kind}`);
+  return { kind };
 }
 
 function readModelFamilyCapabilities(
@@ -970,21 +921,11 @@ function readRequestWarnings(value: unknown): RequestWarning[] {
 }
 
 function readModelInstallState(value: unknown, fieldName: string): ModelInstallState {
-  const state = readString(value, fieldName);
-
-  if (
-    state === 'cancelled' ||
-    state === 'completed' ||
-    state === 'downloading' ||
-    state === 'failed' ||
-    state === 'probing' ||
-    state === 'queued' ||
-    state === 'verifying'
-  ) {
-    return state;
-  }
-
-  throw new Error(`Unsupported model install state: ${state}`);
+  return readEnumValue(
+    value,
+    ['cancelled', 'completed', 'downloading', 'failed', 'probing', 'queued', 'verifying'] as const,
+    fieldName,
+  );
 }
 
 function readNonNegativeInteger(value: unknown, fieldName: string): number {
@@ -1022,18 +963,7 @@ function readStageOutcome(value: unknown, fieldName: string): StageOutcome {
 }
 
 function readStageId(value: unknown, fieldName: string): StageId {
-  const stageId = readString(value, fieldName);
-
-  if (
-    stageId === 'engine' ||
-    stageId === 'hallucination_filter' ||
-    stageId === 'punctuation' ||
-    stageId === 'user_rules'
-  ) {
-    return stageId;
-  }
-
-  throw new Error(`Unsupported stage id: ${stageId}`);
+  return readEnumValue(value, STAGE_IDS, fieldName);
 }
 
 function readStageStatus(value: unknown, fieldName: string): StageStatus {
@@ -1130,11 +1060,11 @@ function readCatalogModels(value: unknown): CatalogModelRecord[] {
 function readModelArtifacts(value: unknown, fieldName: string): CatalogModelRecord['artifacts'] {
   return readArray(value, fieldName).map((artifact, index) => {
     const record = readRecord(artifact, `${fieldName}[${index}]`);
-    const role = readString(record.role, `${fieldName}[${index}].role`);
-
-    if (role !== 'supporting_file' && role !== 'transcription_model') {
-      throw new Error(`Unsupported model artifact role: ${role}`);
-    }
+    const role = readEnumValue(
+      record.role,
+      ['supporting_file', 'transcription_model'] as const,
+      `${fieldName}[${index}].role`,
+    );
 
     return {
       artifactId: readString(record.artifactId, `${fieldName}[${index}].artifactId`),

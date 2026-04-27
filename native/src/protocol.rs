@@ -27,22 +27,20 @@ pub const PCM_SAMPLES_PER_FRAME: usize = (PCM_SAMPLE_RATE_HZ / 1_000) * PCM_FRAM
 pub const PCM_BYTES_PER_FRAME: usize = PCM_SAMPLES_PER_FRAME * PCM_CHANNEL_COUNT * PCM_SAMPLE_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum SelectedModel {
     CatalogModel {
-        #[serde(rename = "runtimeId")]
         runtime_id: RuntimeId,
-        #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
-        #[serde(rename = "modelId")]
         model_id: String,
     },
     ExternalFile {
-        #[serde(rename = "runtimeId")]
         runtime_id: RuntimeId,
-        #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
-        #[serde(rename = "filePath")]
         file_path: String,
     },
 }
@@ -129,10 +127,9 @@ pub enum ModelInstallState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
-    #[serde(rename = "endMs")]
     pub end_ms: u64,
-    #[serde(rename = "startMs")]
     pub start_ms: u64,
     pub text: String,
 }
@@ -155,20 +152,14 @@ pub enum StageStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StageOutcome {
-    #[serde(rename = "durationMs")]
     pub duration_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
-    #[serde(rename = "revisionIn")]
     pub revision_in: u32,
-    #[serde(
-        rename = "revisionOut",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision_out: Option<u32>,
-    #[serde(rename = "stageId")]
     pub stage_id: StageId,
     pub status: StageStatus,
 }
@@ -176,19 +167,18 @@ pub struct StageOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextWindowSource {
+    #[serde(rename_all = "camelCase")]
     SessionUtterance {
-        #[serde(rename = "endRevision")]
         end_revision: u32,
         text: String,
         truncated: bool,
-        #[serde(rename = "utteranceId")]
         utterance_id: Uuid,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContextWindow {
-    #[serde(rename = "budgetChars")]
     pub budget_chars: u32,
     pub sources: Vec<ContextWindowSource>,
     pub text: String,
@@ -196,24 +186,19 @@ pub struct ContextWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompiledRuntimeInfo {
-    #[serde(rename = "runtimeId")]
     pub runtime_id: RuntimeId,
-    #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(rename = "runtimeCapabilities")]
     pub runtime_capabilities: RuntimeCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompiledAdapterInfo {
-    #[serde(rename = "runtimeId")]
     pub runtime_id: RuntimeId,
-    #[serde(rename = "familyId")]
     pub family_id: ModelFamilyId,
-    #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(rename = "familyCapabilities")]
     pub family_capabilities: ModelFamilyCapabilities,
 }
 
@@ -224,70 +209,61 @@ struct CommandEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum Command {
     Health,
     StartSession {
-        #[serde(rename = "accelerationPreference", default)]
+        #[serde(default)]
         acceleration_preference: AccelerationPreference,
         language: String,
         mode: ListeningMode,
-        #[serde(rename = "modelSelection")]
         model_selection: SelectedModel,
-        #[serde(rename = "modelStorePathOverride", default)]
+        #[serde(default)]
         model_store_path_override: Option<String>,
-        #[serde(rename = "pauseWhileProcessing")]
         pause_while_processing: bool,
-        #[serde(rename = "sessionId")]
         session_id: String,
-        #[serde(rename = "speakingStyle", default)]
+        #[serde(default)]
         speaking_style: SpeakingStyle,
     },
     ContextResponse {
-        #[serde(rename = "correlationId")]
         correlation_id: Uuid,
         context: Option<ContextWindow>,
     },
     GetSystemInfo,
     GetModelStore {
-        #[serde(rename = "modelStorePathOverride", default)]
+        #[serde(default)]
         model_store_path_override: Option<String>,
     },
     ListModelCatalog,
     ListInstalledModels {
-        #[serde(rename = "modelStorePathOverride", default)]
+        #[serde(default)]
         model_store_path_override: Option<String>,
     },
     ProbeModelSelection {
-        #[serde(rename = "modelSelection")]
         model_selection: SelectedModel,
-        #[serde(rename = "modelStorePathOverride", default)]
+        #[serde(default)]
         model_store_path_override: Option<String>,
     },
     RemoveModel {
-        #[serde(rename = "runtimeId")]
         runtime_id: RuntimeId,
-        #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
-        #[serde(rename = "modelId")]
         model_id: String,
-        #[serde(rename = "modelStorePathOverride", default)]
+        #[serde(default)]
         model_store_path_override: Option<String>,
     },
     InstallModel {
-        #[serde(rename = "runtimeId")]
         runtime_id: RuntimeId,
-        #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
-        #[serde(rename = "installId")]
         install_id: String,
-        #[serde(rename = "modelId")]
         model_id: String,
-        #[serde(rename = "modelStorePathOverride", default)]
+        #[serde(default)]
         model_store_path_override: Option<String>,
     },
     CancelModelInstall {
-        #[serde(rename = "installId")]
         install_id: String,
     },
     StopSession,
@@ -302,22 +278,23 @@ struct EventEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum Event {
     HealthOk {
-        #[serde(rename = "sidecarVersion")]
         sidecar_version: String,
         status: HealthStatus,
     },
     ModelStore {
-        #[serde(rename = "overridePath", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         override_path: Option<String>,
         path: String,
-        #[serde(rename = "usingDefaultPath")]
         using_default_path: bool,
     },
     ModelCatalog {
-        #[serde(rename = "catalogVersion")]
         catalog_version: u32,
         collections: Vec<ModelCollection>,
         runtimes: Vec<ModelRuntimeDescriptor>,
@@ -331,100 +308,75 @@ pub enum Event {
         available: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<String>,
-        #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         display_name: Option<String>,
-        #[serde(rename = "runtimeId")]
         runtime_id: RuntimeId,
-        #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
         installed: bool,
-        #[serde(rename = "mergedCapabilities", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         merged_capabilities: Option<EngineCapabilities>,
         message: String,
-        #[serde(rename = "modelId", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         model_id: Option<String>,
-        #[serde(rename = "resolvedPath", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         resolved_path: Option<String>,
         selection: SelectedModel,
-        #[serde(rename = "sizeBytes", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         size_bytes: Option<u64>,
         status: ModelProbeStatus,
     },
     ModelRemoved {
-        #[serde(rename = "runtimeId")]
         runtime_id: RuntimeId,
-        #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
-        #[serde(rename = "modelId")]
         model_id: String,
         removed: bool,
     },
     ModelInstallUpdate {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<String>,
-        #[serde(rename = "downloadedBytes", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         downloaded_bytes: Option<u64>,
-        #[serde(rename = "runtimeId")]
         runtime_id: RuntimeId,
-        #[serde(rename = "familyId")]
         family_id: ModelFamilyId,
-        #[serde(rename = "installId")]
         install_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
-        #[serde(rename = "modelId")]
         model_id: String,
         state: ModelInstallState,
-        #[serde(rename = "totalBytes", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         total_bytes: Option<u64>,
     },
     SystemInfo {
-        #[serde(rename = "sidecarVersion")]
         sidecar_version: String,
-        #[serde(rename = "compiledRuntimes")]
         compiled_runtimes: Vec<CompiledRuntimeInfo>,
-        #[serde(rename = "compiledAdapters")]
         compiled_adapters: Vec<CompiledAdapterInfo>,
-        #[serde(rename = "systemInfo")]
         system_info: String,
     },
     SessionStarted {
         mode: ListeningMode,
-        #[serde(rename = "sessionId")]
         session_id: String,
     },
     SessionStateChanged {
-        #[serde(rename = "sessionId")]
         session_id: String,
         state: SessionState,
     },
     TranscriptReady {
-        #[serde(rename = "isFinal")]
         is_final: bool,
-        #[serde(rename = "processingDurationMs")]
         processing_duration_ms: u64,
         revision: u32,
         segments: Vec<TranscriptSegment>,
-        #[serde(rename = "sessionId")]
         session_id: String,
-        #[serde(rename = "stageResults")]
         stage_results: Vec<StageOutcome>,
         text: String,
-        #[serde(rename = "utteranceDurationMs")]
         utterance_duration_ms: u64,
-        #[serde(rename = "utteranceId")]
         utterance_id: Uuid,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<RequestWarning>,
     },
     ContextRequest {
-        #[serde(rename = "budgetChars")]
         budget_chars: u32,
-        #[serde(rename = "correlationId")]
         correlation_id: Uuid,
-        #[serde(rename = "sessionId")]
         session_id: String,
-        #[serde(rename = "utteranceId")]
         utterance_id: Uuid,
     },
     Warning {
@@ -432,12 +384,11 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<String>,
         message: String,
-        #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
     SessionStopped {
         reason: SessionStopReason,
-        #[serde(rename = "sessionId")]
         session_id: String,
     },
     Error {
@@ -445,7 +396,7 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<String>,
         message: String,
-        #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
 }

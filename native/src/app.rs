@@ -810,27 +810,24 @@ impl AppState {
     }
 
     /// Dispatch any pending context requests whose deadline has elapsed.
-    /// Called once per main-loop iteration to drive the 2-second timeout.
     pub fn tick(&mut self) -> Vec<Event> {
-        let mut events = Vec::new();
-        let now = Instant::now();
-        let mut expired = Vec::new();
-
-        if let Some(active_session) = self.active_session.as_mut() {
-            let mut index = 0;
-            while index < active_session.pending_context_requests.len() {
-                if active_session.pending_context_requests[index].deadline <= now {
-                    expired.push(active_session.pending_context_requests.remove(index));
-                } else {
-                    index += 1;
-                }
-            }
+        let Some(active_session) = self.active_session.as_mut() else {
+            return Vec::new();
+        };
+        if active_session.pending_context_requests.is_empty() {
+            return Vec::new();
         }
 
+        let now = Instant::now();
+        let expired: Vec<PendingContextRequest> = active_session
+            .pending_context_requests
+            .extract_if(.., |pending| pending.deadline <= now)
+            .collect();
+
+        let mut events = Vec::new();
         for pending in expired {
             self.dispatch_pending(pending, None, &mut events);
         }
-
         events
     }
 
