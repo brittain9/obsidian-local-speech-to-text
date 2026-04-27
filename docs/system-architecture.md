@@ -145,7 +145,7 @@ sequenceDiagram
 - `stdin` (TS → Rust): Both audio frames (`0x02`) and JSON command frames (`0x01`)
 - `stdout` (Rust → TS): JSON event frames (`0x01`) only
 
-**Commands (TS → Rust): 13 types**
+**Commands (TS → Rust): 14 types**
 
 | Command | Purpose |
 |---------|---------|
@@ -154,6 +154,7 @@ sequenceDiagram
 | `start_session` | Begin transcription (specifies model, mode, sessionId) |
 | `stop_session` | Graceful stop (drain pending transcriptions) |
 | `cancel_session` | Immediate cancel (discard pending) |
+| `context_response` | Reply to a `context_request` with the plugin-assembled `ContextWindow` (or `null`); correlated by `correlationId` (D-017) |
 | `shutdown` | Request sidecar exit |
 | `get_model_store` | Query model store path |
 | `list_model_catalog` | Fetch built-in model catalog |
@@ -163,7 +164,7 @@ sequenceDiagram
 | `cancel_model_install` | Cancel a pending install |
 | `remove_model` | Delete an installed model |
 
-**Events (Rust → TS): 14 types**
+**Events (Rust → TS): 15 types**
 
 | Event | Purpose |
 |-------|---------|
@@ -171,7 +172,8 @@ sequenceDiagram
 | `system_info` | `compiledRuntimes[]` + `compiledAdapters[]` with declared capabilities |
 | `session_started` | Session confirmed active |
 | `session_state_changed` | State machine transition |
-| `transcript_ready` | Completed transcript with segments + timing + `warnings[]` for capability-dropped fields |
+| `transcript_ready` | Completed transcript with segments + timing + `stageResults[]` (engine + post-engine stage history per D-015) + `warnings[]` for capability-dropped fields |
+| `context_request` | Sidecar asks the plugin for a `ContextWindow` for the next utterance; bounded by a short timeout, correlated by `correlationId` (D-017) |
 | `session_stopped` | Session ended with reason |
 | `warning` | Non-fatal warning |
 | `error` | Fatal error |
