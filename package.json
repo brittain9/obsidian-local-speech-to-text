@@ -1,6 +1,6 @@
 {
   "name": "local-transcript",
-  "version": "2026.4.25",
+  "version": "2026.4.27",
   "description": "Local speech-to-text for Obsidian",
   "private": true,
   "license": "MIT",

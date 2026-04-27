@@ -1,7 +1,7 @@
 {
   "id": "local-transcript",
   "name": "Local Transcript",
-  "version": "2026.4.25",
+  "version": "2026.4.27",
   "minAppVersion": "1.8.7",
   "description": "Local speech-to-text for Obsidian",
   "author": "Alexander Brittain",
