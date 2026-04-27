@@ -34,6 +34,7 @@ export interface PluginSettings {
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
   speakingStyle: SpeakingStyle;
+  useNoteAsContext: boolean;
 }
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -50,6 +51,7 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
   speakingStyle: 'balanced',
+  useNoteAsContext: true,
 };
 
 export function resolvePluginSettings(data: unknown): PluginSettings {
@@ -90,6 +92,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
     speakingStyle: isSpeakingStyle(raw.speakingStyle)
       ? raw.speakingStyle
       : DEFAULT_PLUGIN_SETTINGS.speakingStyle,
+    useNoteAsContext: readBoolean(raw.useNoteAsContext, DEFAULT_PLUGIN_SETTINGS.useNoteAsContext),
   };
 }
 

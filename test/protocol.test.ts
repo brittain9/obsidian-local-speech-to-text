@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ContextWindow } from '../src/session/session-journal';
 import { PCM_BYTES_PER_FRAME } from '../src/shared/pcm-format';
 import {
   AUDIO_FRAME_KIND,
+  type ContextWindow,
   createContextResponseCommand,
   createGetSystemInfoCommand,
   createHealthCommand,

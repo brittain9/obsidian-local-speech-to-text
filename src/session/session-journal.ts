@@ -34,25 +34,6 @@ export interface TranscriptRevision {
   utteranceId: UtteranceId;
 }
 
-export interface ContextWindowSpec {
-  maxChars: number;
-}
-
-export interface ContextWindowSource {
-  endRevision: number;
-  kind: 'session_utterance';
-  text: string;
-  truncated: boolean;
-  utteranceId: UtteranceId;
-}
-
-export interface ContextWindow {
-  budgetChars: number;
-  sources: readonly ContextWindowSource[];
-  text: string;
-  truncated: boolean;
-}
-
 export type SessionJournalSubscriber = (revision: TranscriptRevision) => void;
 
 export type SessionJournalUpsertResult =
@@ -153,62 +134,6 @@ export class SessionJournal {
     };
   }
 
-  assembleContext(spec: ContextWindowSpec): ContextWindow | null {
-    const budgetChars = Math.max(0, Math.floor(spec.maxChars));
-
-    if (budgetChars === 0) {
-      return null;
-    }
-
-    const finalized = this.allUtterancesInOrder().filter((revision) => revision.isFinal);
-    const selected: ContextWindowSource[] = [];
-    let remaining = budgetChars;
-    let truncated = false;
-
-    for (let index = finalized.length - 1; index >= 0; index -= 1) {
-      const revision = finalized[index];
-
-      if (revision === undefined) {
-        continue;
-      }
-
-      const separatorChars = selected.length === 0 ? 0 : 1;
-      const availableForText = remaining - separatorChars;
-
-      if (availableForText <= 0) {
-        break;
-      }
-
-      if (revision.text.length <= availableForText) {
-        selected.unshift(toContextSource(revision, revision.text, false));
-        remaining -= revision.text.length + separatorChars;
-        continue;
-      }
-
-      if (selected.length === 0) {
-        const truncatedText = truncateAtWordBoundary(revision.text, availableForText);
-
-        if (truncatedText.length > 0) {
-          selected.unshift(toContextSource(revision, truncatedText, true));
-          truncated = true;
-        }
-      }
-
-      break;
-    }
-
-    if (selected.length === 0) {
-      return null;
-    }
-
-    return {
-      budgetChars,
-      sources: selected,
-      text: selected.map((source) => source.text).join('\n'),
-      truncated,
-    };
-  }
-
   finalize(): void {
     this.frozen = true;
   }
@@ -242,44 +167,4 @@ export class SessionJournal {
       subscriber(revision);
     }
   }
-}
-
-function toContextSource(
-  revision: TranscriptRevision,
-  text: string,
-  truncated: boolean,
-): ContextWindowSource {
-  return {
-    endRevision: revision.revision,
-    kind: 'session_utterance',
-    text,
-    truncated,
-    utteranceId: revision.utteranceId,
-  };
-}
-
-function truncateAtWordBoundary(text: string, maxChars: number): string {
-  if (maxChars <= 0) {
-    return '';
-  }
-
-  const candidate = text.slice(0, maxChars).trimEnd();
-
-  if (candidate.length === text.length) {
-    return candidate;
-  }
-
-  const nextCharacter = text.charAt(candidate.length);
-
-  if (nextCharacter.length === 0 || /\s/u.test(nextCharacter)) {
-    return candidate;
-  }
-
-  const boundary = candidate.lastIndexOf(' ');
-
-  if (boundary > 0) {
-    return candidate.slice(0, boundary).trimEnd();
-  }
-
-  return '';
 }

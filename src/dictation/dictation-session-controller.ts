@@ -27,7 +27,7 @@ export type DictationControllerState =
 
 type ControllerSession = Pick<
   Session,
-  'acceptTranscript' | 'assembleContext' | 'dispose' | 'setAnchorMode'
+  'acceptTranscript' | 'dispose' | 'readNoteContext' | 'setAnchorMode'
 >;
 
 interface DictationSessionControllerDependencies {
@@ -382,8 +382,19 @@ export class DictationSessionController {
       return;
     }
 
-    const session = this.session;
-    const context = session === null ? null : session.assembleContext(event.budgetChars);
+    const settings = this.dependencies.getSettings();
+    const note = settings.useNoteAsContext
+      ? (this.session?.readNoteContext(event.budgetChars) ?? null)
+      : null;
+    const context =
+      note === null
+        ? null
+        : {
+            budgetChars: event.budgetChars,
+            sources: [],
+            text: note.text,
+            truncated: note.truncated,
+          };
 
     try {
       this.dependencies.sidecarConnection.sendContextResponse(event.correlationId, context);

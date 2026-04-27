@@ -8,7 +8,7 @@ import {
   type ReplaceResult,
 } from '../editor/note-surface';
 import type { PluginLogger } from '../shared/plugin-logger';
-import { type ContextWindow, SessionJournal, type TranscriptRevision } from './session-journal';
+import { SessionJournal, type TranscriptRevision } from './session-journal';
 
 interface EditorWithCm extends Editor {
   cm?: EditorView;
@@ -54,6 +54,7 @@ export interface SessionDependencies {
 interface NoteSurfaceLike {
   append(utteranceId: string, text: string): AppendResult;
   dispose(): void;
+  readContextBefore(maxChars: number): { text: string; truncated: boolean } | null;
   replaceAnchor(utteranceId: string, newText: string, expectedOldText: string): ReplaceResult;
   setAnchorMode(mode: DictationAnchorMode): void;
   validateExternalModification(): void;
@@ -124,8 +125,8 @@ export class Session {
     return { kind: 'accepted' };
   }
 
-  assembleContext(maxChars: number): ContextWindow | null {
-    return this.journal.assembleContext({ maxChars });
+  readNoteContext(maxChars: number): { text: string; truncated: boolean } | null {
+    return this.surface?.readContextBefore(maxChars) ?? null;
   }
 
   setAnchorMode(mode: DictationAnchorMode): void {

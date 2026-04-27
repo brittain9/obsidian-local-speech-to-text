@@ -14,6 +14,9 @@ class FakeSurface {
     utteranceId: string;
   }> = [];
   public readonly dispose = vi.fn();
+  public readonly readContextBefore = vi.fn(
+    (_maxChars: number): { text: string; truncated: boolean } | null => null,
+  );
   public readonly setAnchorMode = vi.fn();
   public readonly validateExternalModification = vi.fn();
   public nextAppendResult: AppendResult | null = null;
@@ -175,6 +178,21 @@ describe('Session', () => {
 
     expect(surface.validateExternalModification).toHaveBeenCalledTimes(1);
     expect(surface.appendCalls).toEqual([{ text: 'after rename', utteranceId: 'u1' }]);
+  });
+
+  it('proxies readNoteContext to the active surface', () => {
+    const { session, surface } = createSessionHarness();
+    surface.readContextBefore.mockReturnValueOnce({ text: 'before cursor', truncated: true });
+
+    expect(session.readNoteContext(256)).toEqual({ text: 'before cursor', truncated: true });
+    expect(surface.readContextBefore).toHaveBeenCalledWith(256);
+  });
+
+  it('returns null from readNoteContext when the surface is detached', async () => {
+    const { session } = createSessionHarness();
+    await session.dispose();
+
+    expect(session.readNoteContext(256)).toBeNull();
   });
 
   it('persists recovery after accepted transcripts and deletes it on dispose', async () => {

@@ -1,8 +1,8 @@
 import { selectedModelEquals } from '../models/model-management-types';
-import type { ContextWindow } from '../session/session-journal';
 import { asError } from '../shared/error-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import {
+  type ContextWindow,
   createCancelModelInstallCommand,
   createCancelSessionCommand,
   createContextResponseCommand,

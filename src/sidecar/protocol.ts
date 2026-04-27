@@ -26,7 +26,6 @@ import {
   type SelectedModel,
 } from '../models/model-management-types';
 import {
-  type ContextWindow,
   STAGE_IDS,
   type StageId,
   type StageOutcome,
@@ -70,6 +69,21 @@ export interface TranscriptSegment {
   endMs: number;
   startMs: number;
   text: string;
+}
+
+export interface ContextWindowSource {
+  endRevision: number;
+  kind: 'session_utterance';
+  text: string;
+  truncated: boolean;
+  utteranceId: UtteranceId;
+}
+
+export interface ContextWindow {
+  budgetChars: number;
+  sources: readonly ContextWindowSource[];
+  text: string;
+  truncated: boolean;
 }
 
 export interface CompiledRuntimeInfo {

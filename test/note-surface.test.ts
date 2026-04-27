@@ -243,4 +243,55 @@ describe('NoteSurface', () => {
       reason: 'Rewrite range intersects a partial utterance span.',
     });
   });
+
+  describe('readContextBefore', () => {
+    it('returns null when the budget is non-positive', () => {
+      const { surface } = createSurface({ doc: 'alpha bravo', selectionHead: 11 });
+
+      expect(surface.readContextBefore(0)).toBeNull();
+      expect(surface.readContextBefore(-5)).toBeNull();
+    });
+
+    it('returns null when no text precedes the writing tail', () => {
+      const { surface } = createSurface();
+
+      expect(surface.readContextBefore(100)).toBeNull();
+    });
+
+    it('returns the full preceding text when it fits within the budget', () => {
+      const { surface } = createSurface({ doc: 'alpha bravo', selectionHead: 11 });
+
+      expect(surface.readContextBefore(100)).toEqual({
+        text: 'alpha bravo',
+        truncated: false,
+      });
+    });
+
+    it('drops a leading partial word when the read window cuts mid-word', () => {
+      const { surface } = createSurface({
+        doc: 'alpha bravo charlie delta',
+        selectionHead: 25,
+      });
+
+      expect(surface.readContextBefore(12)).toEqual({ text: 'delta', truncated: true });
+    });
+
+    it('returns null when the read window contains only a single partial word', () => {
+      const { surface } = createSurface({ doc: 'antidisestablishment', selectionHead: 20 });
+
+      expect(surface.readContextBefore(5)).toBeNull();
+    });
+
+    it('anchors at the writing tail so text after a projected span is excluded', () => {
+      const { surface, view } = createSurface({ doc: 'preface ', selectionHead: 8 });
+
+      expect(surface.append('u1', 'spoken').kind).toBe('appended');
+      view.dispatch({ changes: { from: 14, insert: ' user typed after' } });
+
+      expect(surface.readContextBefore(100)).toEqual({
+        text: 'preface spoken',
+        truncated: false,
+      });
+    });
+  });
 });

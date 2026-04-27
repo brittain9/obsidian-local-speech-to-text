@@ -319,6 +319,25 @@ export class NoteSurface {
     return span === undefined ? undefined : cloneSpan(span);
   }
 
+  readContextBefore(maxChars: number): { text: string; truncated: boolean } | null {
+    if (this.disposed || maxChars <= 0) {
+      return null;
+    }
+
+    const tail = this.writingRegionTail();
+    const rawStart = Math.max(0, tail - maxChars);
+    const raw = this.view.state.doc.sliceString(rawStart, tail);
+    const cutFromStart = rawStart > 0;
+
+    const text = cutFromStart ? trimLeadingPartialWord(raw) : raw.trimStart();
+
+    if (text.length === 0) {
+      return null;
+    }
+
+    return { text, truncated: cutFromStart };
+  }
+
   private insertInitialPrefix(): void {
     const charBeforeAnchor =
       this.initialAnchorPos > 0
@@ -432,4 +451,18 @@ function rangeIntersects(
 
 function cloneSpan(span: ProjectedSpan): ProjectedSpan {
   return { ...span };
+}
+
+function trimLeadingPartialWord(text: string): string {
+  if (text.length === 0) {
+    return text;
+  }
+
+  if (/\s/u.test(text.charAt(0))) {
+    return text.trimStart();
+  }
+
+  const match = text.search(/\s/u);
+
+  return match === -1 ? '' : text.slice(match).trimStart();
 }

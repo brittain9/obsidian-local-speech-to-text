@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DictationSessionController } from '../src/dictation/dictation-session-controller';
 import type { NotePlacementOptions } from '../src/editor/note-surface';
-import type { ContextWindow, TranscriptRevision } from '../src/session/session-journal';
+import type { TranscriptRevision } from '../src/session/session-journal';
 import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from '../src/settings/plugin-settings';
-import type { SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
+import type { ContextWindow, SidecarEvent, StartSessionCommand } from '../src/sidecar/protocol';
 import { SidecarNotInstalledError } from '../src/sidecar/sidecar-paths';
 
 class FakeCaptureStream {
@@ -27,7 +27,9 @@ class FakeSession {
   public readonly acceptTranscript = vi.fn((_revision: TranscriptRevision) => ({
     kind: 'accepted' as const,
   }));
-  public readonly assembleContext = vi.fn((_maxChars: number): ContextWindow | null => null);
+  public readonly readNoteContext = vi.fn(
+    (_maxChars: number): { text: string; truncated: boolean } | null => null,
+  );
   public readonly dispose = vi.fn(async (_options?: { deleteRecovery: boolean }) => {});
   public readonly modeCalls: string[] = [];
 
@@ -440,23 +442,9 @@ describe('DictationSessionController', () => {
     );
   });
 
-  it('replies to context_request with the session-assembled context window', async () => {
+  it('replies to context_request with note text wrapped as a context window', async () => {
     const session = new FakeSession();
-    const context: ContextWindow = {
-      budgetChars: 1024,
-      sources: [
-        {
-          endRevision: 0,
-          kind: 'session_utterance',
-          text: 'prior text',
-          truncated: false,
-          utteranceId: 'utt-prior',
-        },
-      ],
-      text: 'prior text',
-      truncated: false,
-    };
-    session.assembleContext.mockReturnValueOnce(context);
+    session.readNoteContext.mockReturnValueOnce({ text: 'prior text', truncated: false });
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
       createSession: () => session,
@@ -475,12 +463,18 @@ describe('DictationSessionController', () => {
       utteranceId: 'utt-next',
     });
 
-    expect(session.assembleContext).toHaveBeenCalledWith(1024);
-    expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-1', context);
+    expect(session.readNoteContext).toHaveBeenCalledWith(1024);
+    const expected: ContextWindow = {
+      budgetChars: 1024,
+      sources: [],
+      text: 'prior text',
+      truncated: false,
+    };
+    expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-1', expected);
     void controller;
   });
 
-  it('replies with null when the session has no context to share', async () => {
+  it('replies with null when the session returns no note context', async () => {
     const session = new FakeSession();
     const sidecarConnection = new FakeSidecarConnection();
     const controller = createController({
@@ -504,6 +498,82 @@ describe('DictationSessionController', () => {
     void controller;
   });
 
+  it('replies with null when useNoteAsContext is disabled, without consulting the session', async () => {
+    const session = new FakeSession();
+    session.readNoteContext.mockReturnValueOnce({ text: 'should be ignored', truncated: false });
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () =>
+        createSettings({
+          selectedModel: createExternalModelSelection(),
+          useNoteAsContext: false,
+        }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      budgetChars: 1024,
+      correlationId: 'corr-off',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-off',
+    });
+
+    expect(session.readNoteContext).not.toHaveBeenCalled();
+    expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-off', null);
+    void controller;
+  });
+
+  it('honors live changes to useNoteAsContext between context_request events', async () => {
+    const session = new FakeSession();
+    session.readNoteContext.mockReturnValue({ text: 'note text', truncated: false });
+    const sidecarConnection = new FakeSidecarConnection();
+    let useNoteAsContext = true;
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () =>
+        createSettings({
+          selectedModel: createExternalModelSelection(),
+          useNoteAsContext,
+        }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      budgetChars: 1024,
+      correlationId: 'corr-on',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-on',
+    });
+
+    useNoteAsContext = false;
+
+    sidecarConnection.emit({
+      budgetChars: 1024,
+      correlationId: 'corr-off',
+      sessionId,
+      type: 'context_request',
+      utteranceId: 'utt-off',
+    });
+
+    expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(1, 'corr-on', {
+      budgetChars: 1024,
+      sources: [],
+      text: 'note text',
+      truncated: false,
+    });
+    expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(2, 'corr-off', null);
+    void controller;
+  });
+
   it('ignores context_request for an unrelated session', async () => {
     const session = new FakeSession();
     const sidecarConnection = new FakeSidecarConnection();
@@ -523,7 +593,7 @@ describe('DictationSessionController', () => {
       utteranceId: 'utt-foreign',
     });
 
-    expect(session.assembleContext).not.toHaveBeenCalled();
+    expect(session.readNoteContext).not.toHaveBeenCalled();
     expect(sidecarConnection.sendContextResponse).not.toHaveBeenCalled();
     void controller;
   });
