@@ -11,7 +11,7 @@ use crate::engine::capabilities::{ModelFamilyId, RequestWarning, RuntimeId};
 use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_adapter_error};
 use crate::engine::traits::LoadedModel;
 use crate::panic_util::format_panic_message;
-use crate::protocol::{ContextWindow, StageId, StageOutcome, StageStatus};
+use crate::protocol::{ContextWindow, EngineStagePayload, StageId, StageOutcome, StageStatus};
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
 };
@@ -256,7 +256,10 @@ fn assemble_transcript(
 
     stage_history.push(StageOutcome {
         duration_ms: engine_duration_ms,
-        payload: Some(serde_json::json!({ "isFinal": true })),
+        payload: Some(
+            serde_json::to_value(EngineStagePayload { is_final: true })
+                .expect("EngineStagePayload serialization is infallible"),
+        ),
         revision_in: revision,
         revision_out: Some(revision),
         stage_id: StageId::Engine,

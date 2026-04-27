@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::protocol::{ContextWindow, StageOutcome, TranscriptSegment};
+use crate::protocol::{
+    ContextWindow, EngineStagePayload, StageId, StageOutcome, TranscriptSegment,
+};
 
 pub(crate) const SUPPORTED_LANGUAGE: &str = "en";
 
@@ -67,12 +69,22 @@ impl Transcript {
     /// contract violation, but treating it as a partial is safer than
     /// auto-finalizing into the journal.
     pub fn is_final(&self) -> bool {
-        self.stage_history
-            .first()
-            .and_then(|stage| stage.payload.as_ref())
-            .and_then(|payload| payload.get("isFinal"))
-            .and_then(|value| value.as_bool())
+        self.engine_payload()
+            .map(|payload| payload.is_final)
             .unwrap_or(false)
+    }
+
+    /// Decode the engine stage's typed payload. Returns `None` if the first
+    /// stage is missing, isn't the engine stage, or carries a payload that
+    /// fails to deserialize as `EngineStagePayload` — all of which are
+    /// producer contract violations and treated as "partial" downstream.
+    fn engine_payload(&self) -> Option<EngineStagePayload> {
+        let engine_stage = self.stage_history.first()?;
+        if engine_stage.stage_id != StageId::Engine {
+            return None;
+        }
+        let payload = engine_stage.payload.as_ref()?;
+        serde_json::from_value::<EngineStagePayload>(payload.clone()).ok()
     }
 }
 
@@ -181,7 +193,10 @@ mod tests {
 
     use uuid::Uuid;
 
-    use super::{Transcript, validate_audio_samples, validate_language, validate_model_path};
+    use super::{
+        EngineStagePayload, Transcript, validate_audio_samples, validate_language,
+        validate_model_path,
+    };
     use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
 
     #[test]
@@ -289,7 +304,7 @@ mod tests {
     #[test]
     fn is_final_reads_true_from_engine_stage_payload() {
         let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::json!({ "isFinal": true }),
+            serde_json::to_value(EngineStagePayload { is_final: true }).unwrap(),
         ))]);
 
         assert!(transcript.is_final());
@@ -298,8 +313,22 @@ mod tests {
     #[test]
     fn is_final_reads_false_from_engine_stage_payload() {
         let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::json!({ "isFinal": false }),
+            serde_json::to_value(EngineStagePayload { is_final: false }).unwrap(),
         ))]);
+
+        assert!(!transcript.is_final());
+    }
+
+    #[test]
+    fn is_final_returns_false_when_first_stage_is_not_engine() {
+        let transcript = transcript_with_stages(vec![StageOutcome {
+            duration_ms: 0,
+            payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+            revision_in: 0,
+            revision_out: Some(0),
+            stage_id: StageId::Punctuation,
+            status: StageStatus::Ok,
+        }]);
 
         assert!(!transcript.is_final());
     }
