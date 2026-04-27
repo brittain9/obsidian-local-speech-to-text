@@ -135,11 +135,13 @@ export class NoteSurface {
       return { kind: 'denied', reason: 'Utterance is already projected.', utteranceId };
     }
 
+    const from = this.writingRegionTail();
+    const charBeforeTail = from > 0 ? this.view.state.doc.sliceString(from - 1, from) : null;
     const { prefix, trailing } = computePhraseSeparators({
+      charBeforeTail,
       isFirstPhrase: this.firstPhrase,
       separator: this.placement.separator,
     });
-    const from = this.writingRegionTail();
     const insertedText = `${prefix}${text}${trailing}`;
     const textStart = from + prefix.length;
     const textEnd = textStart + text.length;
@@ -384,7 +386,8 @@ export class NoteSurface {
       span.end = update.changes.mapPos(span.end, 1);
     }
 
-    this.initialAnchorPos = update.changes.mapPos(this.initialAnchorPos, -1);
+    // Tail bias: insertions at the initial anchor extend the writing region (D-014).
+    this.initialAnchorPos = update.changes.mapPos(this.initialAnchorPos, 1);
   }
 
   private hasLatchableUserChange(update: ViewUpdate): boolean {

@@ -71,11 +71,11 @@ describe('dictationAnchorStateField', () => {
     });
   });
 
-  it('maps the anchor left (bias -1) through edits at the anchor position', () => {
+  it('extends the anchor past insertions at the anchor position (tail bias +1)', () => {
     const state = createState('hello world');
     const pinned = state.update({ effects: setAnchorEffect.of(6) }).state;
     const edited = pinned.update({ changes: { from: 6, insert: 'NEW ' } }).state;
-    expect(edited.field(dictationAnchorStateField).pos).toBe(6);
+    expect(edited.field(dictationAnchorStateField).pos).toBe(10);
     expect(edited.doc.toString()).toBe('hello NEW world');
   });
 

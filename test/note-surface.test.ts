@@ -66,6 +66,21 @@ function doc(view: FakeEditorView): string {
 }
 
 describe('NoteSurface', () => {
+  it('extends the writing-region tail past user text typed at the initial anchor before any utterance', () => {
+    const { surface, view } = createSurface();
+
+    surface.observeTransaction(
+      view.apply({
+        annotations: Transaction.userEvent.of('input.type'),
+        changes: { from: 0, insert: 'hello' },
+      }),
+    );
+
+    expect(surface.append('u1', 'first').kind).toBe('appended');
+
+    expect(doc(view)).toBe('hello first');
+  });
+
   it('appends dictated text at the writing-region tail after user text typed at the old anchor', () => {
     const { surface, view } = createSurface({ doc: 'start ', selectionHead: 6 });
 
@@ -134,7 +149,7 @@ describe('NoteSurface', () => {
     );
 
     expect(surface.replaceAnchor('u1', 'dictated ', 'voice ').kind).toBe('replaced');
-    expect(doc(view)).toBe('HEAD taildictated ');
+    expect(doc(view)).toBe('HEAD tail dictated ');
   });
 
   it('latches only spans intersected by a user edit', () => {
