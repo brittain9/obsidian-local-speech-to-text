@@ -105,6 +105,11 @@ interface EnvelopeBase<TType extends string> {
 
 export interface HealthCommand extends EnvelopeBase<'health'> {}
 
+export interface StageOverrides {
+  hallucinationFilter?: boolean;
+  punctuation?: boolean;
+}
+
 export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   accelerationPreference: AccelerationPreference;
   language: 'en';
@@ -114,6 +119,7 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   pauseWhileProcessing: boolean;
   sessionId: string;
   speakingStyle: SpeakingStyle;
+  stageOverrides?: StageOverrides;
 }
 
 export interface ContextResponseCommand extends EnvelopeBase<'context_response'> {

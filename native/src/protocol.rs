@@ -170,6 +170,18 @@ pub struct EngineStagePayload {
     pub is_final: bool,
 }
 
+/// Per-session toggles for the post-engine stage pipeline (D-015). Absent
+/// fields fall through to each stage's compiled-in default — adding a new
+/// stage does not require older clients to know about it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hallucination_filter: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub punctuation: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextWindowSource {
@@ -234,6 +246,8 @@ pub enum Command {
         session_id: String,
         #[serde(default)]
         speaking_style: SpeakingStyle,
+        #[serde(default)]
+        stage_overrides: Option<StageOverrides>,
     },
     ContextResponse {
         correlation_id: Uuid,
@@ -559,6 +573,51 @@ mod tests {
                 pause_while_processing: true,
                 session_id: "session-1".to_string(),
                 speaking_style: SpeakingStyle::Balanced,
+                stage_overrides: None,
+            })
+        );
+    }
+
+    #[test]
+    fn start_session_round_trip_carries_stage_overrides() {
+        use super::StageOverrides;
+
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "start_session",
+            "sessionId": "session-stages",
+            "mode": "always_on",
+            "modelSelection": {
+                "kind": "external_file",
+                "runtimeId": "whisper_cpp",
+                "familyId": "whisper",
+                "filePath": "/tmp/model.bin"
+            },
+            "language": "en",
+            "pauseWhileProcessing": true,
+            "stageOverrides": {
+                "hallucinationFilter": false,
+                "punctuation": true
+            }
+        }))
+        .expect("payload should serialize");
+        let mut framed = Vec::new();
+        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
+
+        let parsed = read_frame(&mut framed.as_slice())
+            .expect("frame should parse")
+            .expect("frame should exist");
+
+        let IncomingFrame::Command(Command::StartSession {
+            stage_overrides, ..
+        }) = parsed
+        else {
+            panic!("expected StartSession");
+        };
+        assert_eq!(
+            stage_overrides,
+            Some(StageOverrides {
+                hallucination_filter: Some(false),
+                punctuation: Some(true),
             })
         );
     }
