@@ -79,12 +79,7 @@ impl LoadedModel for LoadedWhisperModel {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        // Pin temperature so per-token logprobs reflect a single, known
-        // sampling pass — whisper.cpp's internal temperature fallback would
-        // otherwise change `plog` between segments and make `avg_logprob`
-        // unreliable as a hallucination signal.
         params.set_temperature(0.0);
-        params.set_temperature_inc(0.0);
 
         if let Some(context) = request.context.as_ref() {
             params.set_initial_prompt(&context.text);
