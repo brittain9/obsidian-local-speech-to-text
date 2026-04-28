@@ -14,6 +14,7 @@ use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_ad
 use crate::engine::traits::LoadedModel;
 use crate::panic_util::format_panic_message;
 use crate::protocol::{ContextWindow, EngineStagePayload, StageId, StageOutcome, StageStatus};
+use crate::stages::hallucination_filter::HallucinationFilterStage;
 use crate::stages::noop::NoopProcessor;
 use crate::stages::{StageContext, StageEnablement, StageProcessor, run_post_engine};
 use crate::transcription::{
@@ -278,8 +279,11 @@ fn assemble_transcript(
     stage_history.push(StageOutcome {
         duration_ms: engine_duration_ms,
         payload: Some(
-            serde_json::to_value(EngineStagePayload { is_final: true })
-                .expect("EngineStagePayload serialization is infallible"),
+            serde_json::to_value(EngineStagePayload {
+                is_final: true,
+                segment_diagnostics: engine_output.segment_diagnostics,
+            })
+            .expect("EngineStagePayload serialization is infallible"),
         ),
         revision_in: revision,
         revision_out: Some(revision),
@@ -309,7 +313,7 @@ fn assemble_transcript(
 /// the corresponding real stage lands.
 fn post_engine_processors() -> Vec<Box<dyn StageProcessor>> {
     vec![
-        Box::new(NoopProcessor::new(StageId::HallucinationFilter)),
+        Box::new(HallucinationFilterStage::new()),
         Box::new(NoopProcessor::new(StageId::Punctuation)),
         Box::new(NoopProcessor::new(StageId::UserRules)),
     ]

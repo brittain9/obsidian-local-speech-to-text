@@ -9,8 +9,9 @@ use crate::engine::capabilities::{
     LanguageSupport, ModelFamilyCapabilities, ModelFamilyId, RuntimeId,
 };
 use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
-use crate::protocol::TranscriptSegment;
+use crate::protocol::{SegmentDiagnostics, TranscriptSegment};
 use crate::runtimes::onnx::build_session;
+use crate::stages::diagnostics::compute_compression_ratio;
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
     validate_audio_samples, validate_language, validate_model_path,
@@ -152,18 +153,31 @@ impl LoadedModel for LoadedCohereModel {
         )?;
 
         let trimmed = text.trim().to_string();
-        let segments = if trimmed.is_empty() {
-            Vec::new()
+        let (segments, segment_diagnostics) = if trimmed.is_empty() {
+            (Vec::new(), Some(Vec::new()))
         } else {
             let duration_ms = (request.audio_samples.len() as u64 * 1_000) / SAMPLE_RATE as u64;
-            vec![TranscriptSegment {
-                end_ms: duration_ms,
-                start_ms: 0,
-                text: trimmed,
-            }]
+            let voiced_seconds = duration_ms as f32 / 1_000.0;
+            let diag = SegmentDiagnostics {
+                avg_logprob: None,
+                compression_ratio: compute_compression_ratio(&trimmed),
+                no_speech_prob: None,
+                voiced_seconds,
+            };
+            (
+                vec![TranscriptSegment {
+                    end_ms: duration_ms,
+                    start_ms: 0,
+                    text: trimmed,
+                }],
+                Some(vec![diag]),
+            )
         };
 
-        Ok(EngineTranscriptOutput { segments })
+        Ok(EngineTranscriptOutput {
+            segments,
+            segment_diagnostics,
+        })
     }
 }
 

@@ -348,6 +348,50 @@ describe('sidecar protocol', () => {
     });
   });
 
+  it('parses transcript_ready engine payload carrying segmentDiagnostics', () => {
+    const enginePayload = {
+      isFinal: true,
+      segmentDiagnostics: [
+        {
+          avgLogprob: -0.42,
+          compressionRatio: 1.7,
+          noSpeechProb: 0.05,
+          voicedSeconds: 1.2,
+        },
+      ],
+    };
+
+    const event = parseEventFrame(
+      JSON.stringify({
+        isFinal: true,
+        processingDurationMs: 50,
+        revision: 0,
+        segments: [{ endMs: 1200, startMs: 0, text: 'hello world' }],
+        sessionId: 'session-1',
+        stageResults: [
+          {
+            durationMs: 50,
+            payload: enginePayload,
+            revisionIn: 0,
+            revisionOut: 0,
+            stageId: 'engine',
+            status: { kind: 'ok' },
+          },
+        ],
+        text: 'hello world',
+        type: 'transcript_ready',
+        utteranceDurationMs: 1200,
+        utteranceId: 'utt-1',
+        warnings: [],
+      }),
+    );
+
+    if (event.type !== 'transcript_ready') {
+      throw new Error('expected transcript_ready');
+    }
+    expect(event.stageResults[0]?.payload).toEqual(enginePayload);
+  });
+
   it('parses context_request event', () => {
     const event = parseEventFrame(
       JSON.stringify({

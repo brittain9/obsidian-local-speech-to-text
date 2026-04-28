@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::protocol::{
-    ContextWindow, EngineStagePayload, StageId, StageOutcome, TranscriptSegment,
+    ContextWindow, EngineStagePayload, SegmentDiagnostics, StageId, StageOutcome, TranscriptSegment,
 };
 
 pub(crate) const SUPPORTED_LANGUAGE: &str = "en";
@@ -32,9 +32,15 @@ pub struct TranscriptionRequest {
 /// What an adapter returns from `transcribe`. Adapters own only the engine
 /// inference output; revisioning, stage history, and identity are added by
 /// the worker as it wraps this into the canonical `Transcript`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `segment_diagnostics` is `Some` only when the adapter actually computed
+/// per-segment metrics. When present, the vector length matches `segments`
+/// 1:1 in order. The worker forwards this through to the engine stage's
+/// payload so the hallucination filter (and dev tools) can read it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct EngineTranscriptOutput {
     pub segments: Vec<TranscriptSegment>,
+    pub segment_diagnostics: Option<Vec<SegmentDiagnostics>>,
 }
 
 /// Canonical transcript revision. Segments are the source of truth; joined
@@ -304,7 +310,11 @@ mod tests {
     #[test]
     fn is_final_reads_true_from_engine_stage_payload() {
         let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::to_value(EngineStagePayload { is_final: true }).unwrap(),
+            serde_json::to_value(EngineStagePayload {
+                is_final: true,
+                segment_diagnostics: None,
+            })
+            .unwrap(),
         ))]);
 
         assert!(transcript.is_final());
@@ -313,7 +323,11 @@ mod tests {
     #[test]
     fn is_final_reads_false_from_engine_stage_payload() {
         let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::to_value(EngineStagePayload { is_final: false }).unwrap(),
+            serde_json::to_value(EngineStagePayload {
+                is_final: false,
+                segment_diagnostics: None,
+            })
+            .unwrap(),
         ))]);
 
         assert!(!transcript.is_final());
@@ -323,7 +337,13 @@ mod tests {
     fn is_final_returns_false_when_first_stage_is_not_engine() {
         let transcript = transcript_with_stages(vec![StageOutcome {
             duration_ms: 0,
-            payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+            payload: Some(
+                serde_json::to_value(EngineStagePayload {
+                    is_final: true,
+                    segment_diagnostics: None,
+                })
+                .unwrap(),
+            ),
             revision_in: 0,
             revision_out: Some(0),
             stage_id: StageId::Punctuation,
