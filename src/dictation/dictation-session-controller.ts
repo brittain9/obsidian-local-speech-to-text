@@ -186,6 +186,10 @@ export class DictationSessionController {
           pauseWhileProcessing: settings.pauseWhileProcessing,
           sessionId,
           speakingStyle: settings.speakingStyle,
+          stageOverrides: {
+            hallucinationFilter: settings.stages.hallucinationFilter,
+            punctuation: settings.stages.punctuation,
+          },
           ...(settings.modelStorePathOverride.length > 0
             ? { modelStorePathOverride: settings.modelStorePathOverride }
             : {}),

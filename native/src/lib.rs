@@ -10,6 +10,7 @@ pub mod panic_util;
 pub mod protocol;
 pub mod runtimes;
 pub mod session;
+pub mod stages;
 pub mod transcription;
 pub mod vad;
 pub mod worker;

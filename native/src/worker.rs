@@ -7,11 +7,15 @@ use std::time::Instant;
 
 use uuid::Uuid;
 
-use crate::engine::capabilities::{ModelFamilyId, RequestWarning, RuntimeId};
+use crate::engine::capabilities::{
+    ModelFamilyCapabilities, ModelFamilyId, RequestWarning, RuntimeId,
+};
 use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_adapter_error};
 use crate::engine::traits::LoadedModel;
 use crate::panic_util::format_panic_message;
 use crate::protocol::{ContextWindow, EngineStagePayload, StageId, StageOutcome, StageStatus};
+use crate::stages::noop::NoopProcessor;
+use crate::stages::{StageContext, StageEnablement, StageProcessor, run_post_engine};
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
 };
@@ -24,6 +28,7 @@ pub struct SessionMetadata {
     pub language: String,
     pub model_file_path: PathBuf,
     pub session_id: String,
+    pub stage_enablement: StageEnablement,
 }
 
 #[derive(Debug)]
@@ -205,8 +210,19 @@ fn worker_main(
 
                 match result {
                     Ok(Ok(engine_output)) => {
-                        let transcript =
-                            assemble_transcript(utterance_id, engine_output, engine_duration_ms);
+                        let family_capabilities = registry
+                            .adapter(session.metadata.runtime_id, session.metadata.family_id)
+                            .map(|adapter| adapter.capabilities().clone())
+                            .unwrap_or_else(ModelFamilyCapabilities::unknown);
+                        let transcript = assemble_transcript(
+                            utterance_id,
+                            engine_output,
+                            engine_duration_ms,
+                            duration_ms,
+                            &family_capabilities,
+                            &session.metadata.stage_enablement,
+                            &post_engine_processors(),
+                        );
                         let _ = event_tx.send(WorkerEvent::TranscriptReady {
                             processing_duration_ms: engine_duration_ms,
                             session_id,
@@ -243,16 +259,21 @@ fn worker_main(
     }
 }
 
-/// Wrap raw engine output into a canonical `Transcript`. The engine stage is
-/// emitted as `ok` with `isFinal: true` (D-015); each post-engine stage is
-/// emitted as a `skipped` stub until it gains a real implementation.
+/// Wrap raw engine output into a canonical `Transcript` and run the
+/// post-engine stage pipeline (D-015). The engine stage is emitted as `ok`
+/// with `isFinal: true`; each post-engine stage's outcome is appended by
+/// [`run_post_engine`].
 fn assemble_transcript(
     utterance_id: Uuid,
     engine_output: EngineTranscriptOutput,
     engine_duration_ms: u64,
+    utterance_duration_ms: u64,
+    family_capabilities: &ModelFamilyCapabilities,
+    stage_enablement: &StageEnablement,
+    processors: &[Box<dyn StageProcessor>],
 ) -> Transcript {
     let revision: u32 = 0;
-    let mut stage_history: Vec<StageOutcome> = Vec::with_capacity(1 + POST_ENGINE_STAGES.len());
+    let mut stage_history: Vec<StageOutcome> = Vec::with_capacity(1 + processors.len());
 
     stage_history.push(StageOutcome {
         duration_ms: engine_duration_ms,
@@ -266,37 +287,30 @@ fn assemble_transcript(
         status: StageStatus::Ok,
     });
 
-    for stage_id in POST_ENGINE_STAGES {
-        stage_history.push(skipped_stage(
-            stage_id,
-            revision,
-            "stage not yet implemented",
-        ));
-    }
-
-    Transcript {
+    let mut transcript = Transcript {
         utterance_id,
         revision,
         segments: engine_output.segments,
         stage_history,
-    }
+    };
+
+    let ctx = StageContext {
+        utterance_duration_ms,
+        family_capabilities,
+        stage_enabled: stage_enablement,
+    };
+    run_post_engine(&mut transcript, processors, &ctx);
+
+    transcript
 }
 
-const POST_ENGINE_STAGES: [StageId; 3] = [
-    StageId::HallucinationFilter,
-    StageId::Punctuation,
-    StageId::UserRules,
-];
-
-fn skipped_stage(stage_id: StageId, revision: u32, reason: &str) -> StageOutcome {
-    StageOutcome {
-        duration_ms: 0,
-        payload: None,
-        revision_in: revision,
-        revision_out: None,
-        stage_id,
-        status: StageStatus::Skipped {
-            reason: reason.to_string(),
-        },
-    }
+/// Build the registered post-engine processor chain in the canonical
+/// order (D-015 §"Stage order"). Each entry is a `NoopProcessor` until
+/// the corresponding real stage lands.
+fn post_engine_processors() -> Vec<Box<dyn StageProcessor>> {
+    vec![
+        Box::new(NoopProcessor::new(StageId::HallucinationFilter)),
+        Box::new(NoopProcessor::new(StageId::Punctuation)),
+        Box::new(NoopProcessor::new(StageId::UserRules)),
+    ]
 }

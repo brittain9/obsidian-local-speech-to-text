@@ -57,6 +57,30 @@ describe('sidecar protocol', () => {
     expect(payload.sessionId).toBe('session-gpu');
   });
 
+  it('serializes start_session command with stageOverrides', () => {
+    const command = createStartSessionCommand({
+      accelerationPreference: 'auto',
+      language: 'en',
+      mode: 'always_on',
+      modelSelection: {
+        familyId: 'whisper',
+        filePath: '/tmp/m.bin',
+        kind: 'external_file',
+        runtimeId: 'whisper_cpp',
+      },
+      pauseWhileProcessing: true,
+      sessionId: 'session-stages',
+      speakingStyle: 'balanced',
+      stageOverrides: { hallucinationFilter: false, punctuation: true },
+    });
+    const payload = readPayload(encodeJsonFrame(command)) as Record<string, unknown>;
+
+    expect(payload.stageOverrides).toEqual({
+      hallucinationFilter: false,
+      punctuation: true,
+    });
+  });
+
   it('serializes get_system_info command', () => {
     const frame = encodeJsonFrame(createGetSystemInfoCommand());
 
@@ -284,7 +308,7 @@ describe('sidecar protocol', () => {
             durationMs: 0,
             revisionIn: 0,
             stageId: 'punctuation',
-            status: { kind: 'skipped', reason: 'stage not yet implemented' },
+            status: { kind: 'skipped', reason: 'stage_not_implemented' },
           },
         ],
         text: 'hello world',
@@ -313,7 +337,7 @@ describe('sidecar protocol', () => {
           durationMs: 0,
           revisionIn: 0,
           stageId: 'punctuation',
-          status: { kind: 'skipped', reason: 'stage not yet implemented' },
+          status: { kind: 'skipped', reason: 'stage_not_implemented' },
         },
       ],
       text: 'hello world',

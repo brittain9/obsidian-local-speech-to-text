@@ -15,12 +15,13 @@ use crate::model_store::{
 use crate::protocol::{
     AccelerationPreference, Command, CompiledAdapterInfo, CompiledRuntimeInfo, ContextWindow,
     Event, HealthStatus, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
-    SessionState, SessionStopReason, system_info_string,
+    SessionState, SessionStopReason, StageOverrides, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
     SessionInitError,
 };
+use crate::stages::StageEnablement;
 use crate::transcription::GpuConfig;
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
@@ -391,6 +392,7 @@ impl AppState {
                 pause_while_processing,
                 session_id,
                 speaking_style,
+                stage_overrides,
             } => {
                 if let Some(replaced_events) =
                     self.finish_active_session(SessionStopReason::SessionReplaced)
@@ -438,6 +440,7 @@ impl AppState {
                                 language,
                                 model_file_path: resolved_model.resolved_path.clone(),
                                 session_id: session_id.clone(),
+                                stage_enablement: resolve_stage_enablement(stage_overrides),
                             }))
                             .is_err()
                         {
@@ -1157,6 +1160,22 @@ fn internal_error_event(code: &str, message: &str, details: Option<String>) -> E
     }
 }
 
+/// Compose the per-session `StageEnablement` from the wire payload. Missing
+/// fields fall through to the compiled-in defaults so older clients keep
+/// working when new stages are added.
+fn resolve_stage_enablement(overrides: Option<StageOverrides>) -> StageEnablement {
+    let defaults = StageEnablement::default();
+    let Some(overrides) = overrides else {
+        return defaults;
+    };
+    StageEnablement {
+        hallucination_filter: overrides
+            .hallucination_filter
+            .unwrap_or(defaults.hallucination_filter),
+        punctuation: overrides.punctuation.unwrap_or(defaults.punctuation),
+    }
+}
+
 fn resolve_use_gpu(
     runtime_id: RuntimeId,
     acceleration_preference: AccelerationPreference,
@@ -1775,6 +1794,7 @@ mod tests {
             pause_while_processing: true,
             session_id: session_id.to_string(),
             speaking_style: SpeakingStyle::Balanced,
+            stage_overrides: None,
         }
     }
 
