@@ -1325,6 +1325,7 @@ mod tests {
         ) -> Result<EngineTranscriptOutput, TranscriptionError> {
             Ok(EngineTranscriptOutput {
                 segments: Vec::new(),
+                segment_diagnostics: None,
             })
         }
     }

@@ -6,7 +6,8 @@ use crate::engine::capabilities::{
     LanguageSupport, ModelFamilyCapabilities, ModelFamilyId, RuntimeId,
 };
 use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
-use crate::protocol::TranscriptSegment;
+use crate::protocol::{SegmentDiagnostics, TranscriptSegment};
+use crate::stages::diagnostics::compute_compression_ratio;
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
     validate_audio_samples, validate_language, validate_model_path,
@@ -78,6 +79,12 @@ impl LoadedModel for LoadedWhisperModel {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+        // Pin temperature so per-token logprobs reflect a single, known
+        // sampling pass — whisper.cpp's internal temperature fallback would
+        // otherwise change `plog` between segments and make `avg_logprob`
+        // unreliable as a hallucination signal.
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.0);
 
         if let Some(context) = request.context.as_ref() {
             params.set_initial_prompt(&context.text);
@@ -90,18 +97,68 @@ impl LoadedModel for LoadedWhisperModel {
             })?;
 
         let mut segments = Vec::new();
+        let mut diagnostics = Vec::new();
 
         for segment in state.as_iter() {
             let segment_text = segment.to_string();
+            let trimmed = segment_text.trim().to_string();
+            let start_ms = whisper_timestamp_to_millis(segment.start_timestamp());
+            let end_ms = whisper_timestamp_to_millis(segment.end_timestamp());
+
+            let avg_logprob = average_token_logprob(&segment);
+            let no_speech_prob = segment.no_speech_probability();
+
+            diagnostics.push(SegmentDiagnostics {
+                avg_logprob,
+                compression_ratio: compute_compression_ratio(&trimmed),
+                no_speech_prob: Some(no_speech_prob),
+                voiced_seconds: voiced_seconds_from_ms(start_ms, end_ms),
+            });
+
             segments.push(TranscriptSegment {
-                end_ms: whisper_timestamp_to_millis(segment.end_timestamp()),
-                start_ms: whisper_timestamp_to_millis(segment.start_timestamp()),
-                text: segment_text.trim().to_string(),
+                end_ms,
+                start_ms,
+                text: trimmed,
             });
         }
 
-        Ok(EngineTranscriptOutput { segments })
+        Ok(EngineTranscriptOutput {
+            segments,
+            segment_diagnostics: Some(diagnostics),
+        })
     }
+}
+
+fn average_token_logprob(segment: &whisper_rs::WhisperSegment<'_>) -> Option<f32> {
+    let n_tokens = segment.n_tokens();
+    if n_tokens <= 0 {
+        return None;
+    }
+
+    let mut sum = 0.0_f32;
+    let mut count = 0_u32;
+    for index in 0..n_tokens {
+        if let Some(token) = segment.get_token(index) {
+            let plog = token.token_data().plog;
+            if plog.is_finite() {
+                sum += plog;
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f32)
+    }
+}
+
+fn voiced_seconds_from_ms(start_ms: u64, end_ms: u64) -> f32 {
+    if end_ms <= start_ms {
+        return 0.0;
+    }
+    (end_ms - start_ms) as f32 / 1_000.0
 }
 
 fn load_whisper_context(

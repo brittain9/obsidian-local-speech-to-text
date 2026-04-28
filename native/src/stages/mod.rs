@@ -18,6 +18,9 @@ use crate::panic_util::format_panic_message;
 use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
 use crate::transcription::Transcript;
 
+pub mod consts;
+pub mod diagnostics;
+pub mod hallucination_filter;
 pub mod noop;
 
 /// Runtime knobs supplied per session. Each stage owns the meaning of its
@@ -195,7 +198,13 @@ mod tests {
             }],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
-                payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+                payload: Some(
+                    serde_json::to_value(EngineStagePayload {
+                        is_final: true,
+                        segment_diagnostics: None,
+                    })
+                    .unwrap(),
+                ),
                 revision_in: 0,
                 revision_out: Some(0),
                 stage_id: StageId::Engine,

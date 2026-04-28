@@ -164,10 +164,30 @@ pub struct StageOutcome {
     pub status: StageStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStagePayload {
     pub is_final: bool,
+    /// Per-segment metrics the hallucination filter consults. Optional so
+    /// engines that do not expose any diagnostics (or older sidecar builds)
+    /// can omit the field entirely. Adapters always emit one entry per
+    /// segment when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment_diagnostics: Option<Vec<SegmentDiagnostics>>,
+}
+
+/// Per-segment quality metrics. `compression_ratio` and `voiced_seconds` are
+/// always present; engine-specific signals (`no_speech_prob`, `avg_logprob`)
+/// are `None` for engines that do not expose them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_logprob: Option<f32>,
+    pub compression_ratio: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_speech_prob: Option<f32>,
+    pub voiced_seconds: f32,
 }
 
 /// Per-session toggles for the post-engine stage pipeline (D-015). Absent
