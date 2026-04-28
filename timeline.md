@@ -1,22 +1,49 @@
 # Feature Timeline
 
+This is the roadmap of major work in flight after the engine-registry foundation.
+It's a menu, not a plan — each PR gets its own detailed plan when we pick it up.
+The scope and contract surface here are the durable parts; per-PR plans cover
+verification, risks, and specific test cases.
+
+## Posture
+
+Greenfield. No users yet. Free to break wire shapes, command schemas, and stage
+IDs without migrations or compatibility branches. No `schemaVersion`, no fallback
+shims, no legacy renames. Ship one PR at a time on `main`; each one breaks what
+it needs to break.
+
 ## Contract
 
 Every dictated utterance has a stable `utterance_id` and a monotonic revision
-stream. Engine output creates revisions; speculative output is
-`is_final=false`, and one finalized engine revision is `is_final=true`.
-Post-engine quality stages run only on finalized revisions unless a stage is
-explicitly marked partial-safe. Segment text is canonical, joined text is a
-projection, and timestamps are metadata with explicit provenance. Timestamp
-rendering happens only when a final revision is projected into the note.
-Whole-session LLM rewrite is a separate experimental artifact, not a normal
-transcript revision; in v1 it is mutually exclusive with rendered timestamps.
+stream. Engine output creates revisions; speculative output is `is_final=false`,
+and one finalized engine revision is `is_final=true`. Post-engine quality stages
+run only on finalized revisions unless a stage is explicitly marked
+partial-safe with a narrower partial contract. Segment text is canonical, joined
+text is a projection, and timestamps are metadata with explicit provenance.
+Timestamp rendering happens only when a final revision is projected into the
+note. Per-utterance LLM cleanup is an alignment-preserving final-only stage.
+Whole-session LLM polish is a separate experimental artifact, not a normal
+transcript revision; in v1 it is mutually exclusive with rendered timestamps and
+with speculative transcription.
+
+## UX Contract
+
+Advanced features are session-scoped. Settings are snapshotted when dictation
+starts; changes made during active dictation apply to the next session. Features
+that cannot run together stay visible in settings, but disabled controls must
+name the active conflict. The default experience stays simple: hallucination
+filter on, timestamps off, live partials auto, LLM cleanup off, session polish
+off, diarization off. Partial text may be replaced until finalization, but the
+user-wins latch is absolute. Empty filtered utterances are silent in the note
+and preserved in the journal/developer diagnostics.
 
 ## Timing Model
 
-`start_ms` and `end_ms` are always utterance-relative. A later session-level
-renderer may derive wall-clock or elapsed-session timestamps, but transcript
-segments do not store editor-facing timestamp text.
+`start_ms` and `end_ms` are always utterance-relative. A session-level renderer
+derives wall-clock or elapsed-session timestamps from
+`utterance_start_ms_in_session` (added by PR 1). Every transcript segment carries
+its own timing source and granularity. Word timings, when added, carry their own
+provenance too. No transcript object stores editor-facing timestamp text.
 
 Timing provenance and timing granularity are separate:
 
@@ -33,7 +60,7 @@ Examples:
 - Text-stage re-segmentation after timed input: `source=interpolated`,
   `granularity=segment`.
 
-Capability flags should distinguish:
+Capability flags distinguish:
 
 - `supports_segment_timestamps`
 - `supports_word_timestamps`
@@ -41,135 +68,265 @@ Capability flags should distinguish:
 - `supports_initial_prompt`
 - `produces_punctuation`
 
-Do not expose word-level timestamp UI until a model path actually populates
-word timing. Cohere Transcribe does not provide timestamps or diarization, so
-its v1 timing is `source=vad`, `granularity=utterance`.
+Word-level timestamp UI is not surfaced until a model path actually populates
+word timing.
 
 ## Compatibility Matrix
 
-| Combination | V1 status | Contract |
+| Combination | v1 | Contract |
 | --- | --- | --- |
-| Speculative + hallucination filter | Yes | Partials bypass post-engine stages; final revision is filtered. |
-| Speculative + timestamps | Yes | Partials may carry provisional timing but never render timestamp markers. |
-| Speculative + smart separator | Yes | Separator choice is final-revision projection behavior. |
-| Speculative + accumulate pauses | Yes | Same audio-pipeline state; pause accumulation defines finalization. |
-| Timestamps + hallucination filter | Yes | Drop-only filtering preserves timing on kept segments and audits dropped ranges. |
-| Timestamps + user rules | Conditional | Rules that rewrite within segments keep timing; rules that re-segment must mark timing `estimated` or drop word timing. |
-| Timestamps + LLM post-process | No in v1 | Enabling session rewrite disables rendered timestamps for that session. |
-| Hallucination filter + LLM post-process | Yes | Filter runs before LLM so obvious junk is not rewritten into polished junk. |
+| Speculative + hallucination filter | Yes | Partial-safe mode may drop only obvious HARD artifacts; full SOFT/evidence filter runs on finals. Other post-engine stages skip on partials. |
+| Speculative + timestamps | Yes (read-only on partial) | Partials may carry provisional timing for diagnostics; timestamp markers render in the note only on `is_final=true`. |
+| Speculative + accumulate pauses | Yes | Same audio pipeline. Pause boundary triggers the final decode. |
+| Speculative + smart separator | Yes | Separator is a final-revision projection concern. |
+| Timestamps + hallucination filter | Yes | Filter is drop-only; kept segments retain timing. Dropped segments and their time ranges are recorded for the journal. |
+| Timestamps + LLM cleanup | No in v1 | Mutually exclusive. Settings UI gates one when the other is on. |
+| Speculative + LLM cleanup | No in v1 | LLM cleanup runs on `is_final=true` only and would mis-render against still-replacing partials. Settings UI gates. |
+| Hallucination filter + LLM cleanup | Yes | Filter runs first; LLM never sees obvious junk. |
+| Session polish + timestamps | No in v1 | Whole-session rewrite can destroy alignment, so timestamps are disabled for that session. |
+| Diarization + timestamps | Future yes | Speaker labels attach to timed segments; timestamp rendering remains projection-only. |
+| Diarization + session polish | No in first pass | Session rewrite must preserve speaker spans before these can run together. |
 
-## Timeline
+## PR sequence
 
-### 1. Infrastructure Baseline
+PRs 1 and 2 are the foundation — every later PR depends on the contract surface
+they establish. After that, the order optimizes for landing the user-visible
+filter fix (PR 3) early, then layering speculative + UX features on the stable
+finality and timing contracts.
 
-Keep the PR 61 stage-runner shape, but harden the contract before adding more
-features.
+### PR 1 — Infrastructure baseline
 
-- Add worker-level integration tests for real post-engine chain assembly:
-  stage order, revision bumps, disabled-stage outcomes, diagnostics forwarding,
-  and final DTO shape.
-- Add an explicit finality gate: the worker may emit partial engine revisions,
-  but the post-engine runner must skip non-partial-safe stages unless
-  `is_final=true`.
-- Add `ContextWindow` to `StageContext` separately from engine
-  `initial_prompt`, so future stages can use context even when an engine cannot.
-- Gate context requests before asking the plugin for note context when the
-  selected engine cannot consume it.
-- Align durable docs: D-015 and `docs/system-architecture.md` currently disagree
-  on whether text stages may re-segment.
-- Add utterance start offsets to the audio/session contract. Per-utterance
-  `0..duration` timing is enough for transcript internals, but timestamp
-  rendering and pause-aware features need a stable session timeline.
+Lock the contracts so every later PR plugs into a stable surface.
 
-### 2. Hallucination Filter
+- Add `runs_on_partials: bool` to the `StageProcessor` trait. Default `false`;
+  set `true` only on stages with a documented narrower partial contract.
+- Add a finality gate to `run_post_engine`: if `is_final` is false, skip stages
+  with `runs_on_partials = false`, emitting `Skipped { reason: "partial" }`.
+- Stop hard-coding `is_final = true` in `assemble_transcript`; take it as a
+  parameter.
+- Add `ContextWindow` to `StageContext` (separate from engine `initial_prompt`)
+  so future stages consume note context without an engine round trip.
+- Gate `ContextRequest`: don't ask the plugin for note context when family
+  `supports_initial_prompt = false` and no post-engine stage requested it.
+- Session contract carries a stable session t0: `SessionConfig.session_start_unix_ms`,
+  and `FinalizedUtterance.utterance_start_ms_in_session` alongside `duration_ms`.
+- Snapshot advanced feature settings at session start. Mid-session settings
+  changes apply to the next dictation session only.
 
-Ship first as a conservative quality stage.
+**Contract additions:** `runs_on_partials` capability, `Skipped { reason: "partial" }`
+outcome, `is_final` parameter on `assemble_transcript`,
+`utterance_start_ms_in_session`, session-scoped feature snapshot.
 
-- Drop-only in v1: no reflow, no boundary changes.
-- Use evidence-based classification. Common phrases such as `thank you` and
-  `bye` are never unconditional drops.
-- Split phrase rules into hard artifacts and soft phrases:
-  - hard: caption/source artifacts such as `subtitles by ...`
-  - soft: common hallucinated speech that requires corroboration from VAD,
-    `no_speech_prob`, low logprob, compression, repetition, or very low voiced
-    duration
-- Include dropped segment `index`, `text`, `start_ms`, `end_ms`, timing source,
-  timing granularity, and reasons in the stage payload.
-- Preserve filtered-empty final revisions in the session journal while skipping
-  note projection of empty text.
+### PR 2 — VAD trace through the pipeline
 
-### 3. Accumulate Pauses
+The VAD signal becomes a first-class pipeline input. Every downstream stage
+that wants it (filter today, future stages tomorrow) reads it from a single
+source.
 
-Implement thought-level finalization before speculative transcription.
+- `ListeningSession` records a per-frame Silero probability ring buffer for the
+  active utterance, cleared on finalize.
+- `FinalizedUtterance` carries `vad_probabilities: Vec<f32>` (one per 20 ms PCM
+  frame, 50 Hz).
+- The trace flows through `WorkerCommand::TranscribeUtterance` to the adapter,
+  into the engine stage payload, and into `StageContext` for every downstream
+  stage.
+- New helper `voiced_fraction(start_ms, end_ms, trace, threshold)`. Adapter
+  calls it once per segment when populating `SegmentDiagnostics.voiced_seconds`.
+- `voiced_seconds` semantic: time within `[start_ms, end_ms]` where Silero
+  probability ≥ 0.35 (well below Silero's 0.5 default speech threshold;
+  conservative on the side of "voiced").
+- Cohere adapter populates the same way; its single `[0..duration]` segment
+  naturally degrades to per-utterance voiced fraction.
 
-- One-sentence mode stays eager.
-- Always-on mode uses two thresholds:
-  - short pause: update UI and keep accumulating
-  - thought boundary: finalize after sustained low speech probability or user stop
-- Store pause duration between finalized utterances for smart separator and
-  timestamp rendering policy.
-- Keep a max utterance cap with boundary-aware split.
+**Contract additions:** `vad_probabilities` on `FinalizedUtterance`, redefined
+`voiced_seconds` semantic, VAD trace exposed via `StageContext`.
 
-### 4. Timestamp Rendering
+### PR 3 — Hallucination filter v2 (HARD / SOFT + corroboration)
 
-Add user-facing timestamps only after provenance exists.
+The user-visible quality fix. Today's filter drops `thank you` and `bye`
+unconditionally; this PR replaces that with evidence-based classification.
 
-- Modes:
-  - `off`
-  - `utterance`
-  - `long_pause`
-  - `interval`
-  - later: `word` only when populated by a capable engine
-- Settings:
-  - timestamp mode
-  - format: `[MM:SS]`, `[HH:MM:SS]`
-  - minimum interval between rendered markers
-  - placement: inline prefix or own line
-- Render markers only on final revisions. Never commit timestamp text for a
-  speculative partial.
+- Split the blocklist:
+  - **HARD** — drop on text match alone. Caption/source artifacts (`subtitles
+    by …`, `captions by`, `transcribed by`), bracketed sound tags (`[music]`,
+    `[applause]`, `[blank_audio]`), YouTube CTA templates (`please subscribe …`,
+    `see you in the next video`, `let me know in the comments`), domain markers
+    (`www.mooji.org`).
+  - **SOFT** — text match alone is not enough. `thank you`, `thank you for
+    watching`, `thanks for watching`, `thank you so much (for watching)`,
+    `thank you very much`, `bye`, `bye bye`, `goodbye`, `see you next time`,
+    `i'll see you next time`.
+  - Punctuation-only artifacts such as `.` stay HARD.
+  - Single-word `you` moves to SOFT; exact-segment matching alone is still not
+    enough to drop legitimate dictation.
+- On partial revisions, run only the HARD artifact subset. Do not run SOFT
+  phrase filtering, prompt-leak filtering, or confidence/VAD heuristics until
+  the final revision.
+- Drop a final-revision SOFT match only with at least one corroborator: existing silence rule
+  (`no_speech_prob > 0.6 AND avg_logprob < -1.0`), loose silence (`> 0.5 AND
+  < -0.7`), short voiced span (`voiced_seconds < 1.2 AND avg_logprob < -0.7`),
+  or VAD corroboration (`voiced_fraction < 0.35`).
+- Add a 5-gram-counted-2 repetition rule alongside the existing 3-gram rule.
+- Add a prompt-leak rule, but never drop a single glossary term. Drop only when
+  the output includes prompt scaffolding such as `Glossary:` or reproduces a
+  large contiguous prompt span, and corroborating low-speech/low-confidence
+  evidence is present.
+- Adapters without `avg_logprob` / `no_speech_prob` (Cohere) fall back to
+  VAD-only corroboration; loose-silence is skipped automatically.
+- `dropped_segments` payload names the specific rule (`blocklist_hard`,
+  `blocklist_soft_corroborated`, `silence`, `compression`, `repetition`,
+  `prompt_leak_corroborated`) and includes `index`, `text`, `start_ms`,
+  `end_ms`, `timestamp_source`, and `timestamp_granularity`.
 
-### 5. Speculative Transcription
+**Contract additions:** `dropped_segments[].reason` gains `blocklist_hard`,
+`blocklist_soft_corroborated`, `prompt_leak_corroborated`. Filter reads
+`initial_prompt` via `StageContext`.
 
-Build after pause accumulation and final projection semantics are stable.
+### PR 4 — Pause accumulation
 
-- Start with Whisper only.
-- Re-decode the growing utterance buffer at a bounded cadence when the selected
-  model can keep up.
-- Emit `is_final=false` revisions for partials.
-- On VAD finalization, decode once more and emit `is_final=true`.
-- Post-engine stages run on the final revision only.
-- Treat speculative timing as diagnostic-only. Segment and word boundaries can
-  move between re-decodes, so downstream timestamp consumers require `isFinal`.
-- Plugin uses `replace_anchor`; if the user edits the span, user-wins latch
-  stops further replacement for that utterance.
+Thought-level finalization in always-on mode. Smart separator and timestamp
+rendering both depend on pause metadata, so this PR ships before either.
 
-### 6. Smart Separator
+- One-sentence mode unchanged.
+- Always-on mode: short pause keeps accumulating into the same utterance; a
+  sustained low-VAD thought boundary finalizes it. Threshold is driven by
+  `SpeakingStyle`: Responsive 1.5 s / Balanced 2.5 s / Patient 3.5 s.
+- `FinalizedUtterance.pause_ms_before_utterance: Option<u64>`, computed at the
+  current utterance's start; `None` for the first utterance of a session. This
+  lets timestamp and separator projection decide before inserting the current
+  utterance, with no retroactive note edit.
+- `MAX_UTTERANCE_FRAMES` cap and boundary-aware split unchanged.
 
-Make separator selection final-revision projection behavior.
+**Contract additions:** `pause_ms_before_utterance` on `FinalizedUtterance`.
 
-- Inputs: prior utterance end, current utterance start, VAD pause duration, and
-  user setting.
-- Output: space, newline, or paragraph break.
-- Do not make this a transcript stage; it is note-rendering policy.
+### PR 5 — Timestamp rendering
 
-### 7. LLM Post-Processing
+User-facing timestamps with explicit provenance.
 
-Park until the transcript, timestamp, and projection contracts are stable.
+- Capability split: replace `supports_timed_segments` with
+  `supports_segment_timestamps` and `supports_word_timestamps`.
+- `TimestampSource = engine | vad | interpolated | none`;
+  `TimestampGranularity = utterance | segment | word`. Adapter populates both
+  on each `TranscriptSegment`.
+- Settings: `timestampMode (off | utterance | long_pause | interval)`,
+  `timestampFormat ([MM:SS] | [HH:MM:SS])`, `timestampMinIntervalSec`,
+  `timestampPlacement (inline_prefix | own_line)`.
+- Renderer uses `utterance_start_ms_in_session` +
+  `pause_ms_before_utterance` to decide marker emission for `long_pause` mode.
+- Render markers only on `is_final = true` revisions.
+- Word-timestamp UI is not surfaced until an engine populates word timing.
 
-- Opt-in experimental setting.
-- Local-only, no telemetry, no cloud dependency.
-- Whole-session rewrite is a separate `SessionRewrite` artifact.
-- V1 disables rendered timestamps for the session.
-- User-wins latch remains absolute. If the rewrite cannot preserve latched text,
-  reject it.
+**Contract additions:** capability flag split, `TimestampSource` and
+`TimestampGranularity` on `TranscriptSegment`.
+
+### PR 6 — Speculative transcription
+
+Live partials on tiny.en / base.en. Depends on PRs 1-5 for the contract surface.
+
+- Whisper adapter only. Cohere is request-response; nothing to do.
+- Worker partial loop: re-decode-on-grow with an `audio_ctx` ramp. Skip below
+  1.0 s of audio; cadence is 400-750 ms by audio length; final decode at full
+  settings.
+- Partial decode params: `set_audio_ctx`, `set_no_context(true)`,
+  `set_single_segment(true)`, `set_temperature(0)`. Pad to ≥ 1.0 s with zeros
+  if needed.
+- LocalAgreement-2 per active utterance: `committed` + `buffer` lists. Two
+  consecutive decodes agree on a token at the same position → it moves to
+  `committed`. Volatile suffix is `buffer`. Port the n-gram dedup against
+  `committed_in_buffer`.
+- Each partial decode → `revision = N+1`, `is_final = false`. VAD finalization
+  → final decode at full settings → `is_final = true`. Buffer cleared.
+- Race guard: each decode carries an internal `(utterance_id,
+  requested_revision)` tuple. Worker writes only if `requested_revision >
+  last_committed_revision` and the utterance is not yet finalized; the final
+  decode supersedes any in-flight partial unconditionally.
+- `initial_prompt` is identical on every decode in an utterance. Do not feed
+  prior partial output back via `set_tokens`.
+- Settings: `livePartials: auto | always | off`. `auto` = on for tiny.en /
+  base.en, off otherwise.
+- Plugin uses `replace_anchor`; user-wins latch absorbs partial revisions
+  identically to final ones.
+
+**Contract additions:** worker becomes the canonical producer of
+`is_final = false` revisions; multiple `TranscriptReady` events per utterance
+with monotonic `revision`.
+
+### PR 7 — Smart separator
+
+Choose space / newline / paragraph between consecutive utterances.
+
+- Pure plugin-side. Not a transcript stage.
+- Inputs: current utterance's `pause_ms_before_utterance`, user setting (`separator:
+  space_default | newline_short_pause | paragraph_long_pause`).
+- `selectSeparator(prevPauseMs, settings)` returns `" "`, `"\n"`, or `"\n\n"`.
+- When the existing `phraseSeparator` setting is `new_line` or `new_paragraph`,
+  smart separator is disabled.
+
+**Contract additions:** none in the sidecar; pure plugin projection.
+
+### PR 8 — LLM cleanup (experimental, opt-in)
+
+Per-utterance disfluency cleanup. Park until PRs 1-7 are stable.
+
+- New runtime: `RuntimeId::LlamaCpp` via the `llama-cpp-2` binding (pinned
+  exact version).
+- Two presets, both Q4_K_M: **Fast** (Qwen 2.5 1.5B Instruct, ~1 GB) and
+  **Quality** (Llama 3.2 3B Instruct, ~2 GB).
+- New stage `LlmCleanupStage`; `runs_on_partials = false`.
+- Alignment-preserving cleanup: may delete filler/false starts and adjust light
+  casing or punctuation, but must not re-segment, summarize, reorder, or
+  rephrase the user's meaning.
+- Validation chain (any failure → `StageStatus::Failed`, prior revision stays):
+  - Output length within `[0.5×, 1.5×]` of input.
+  - Word-level normalized edit distance ≤ 0.3.
+  - GBNF grammar forbids leading "Sure, here is", code fences, "I cannot…",
+    quote-wrapping the whole output.
+  - Stop sequences: `\n\nInput:`, `\n\n#`.
+- Mutual exclusion: when LLM is on, timestamps and speculative are forced off
+  for the session. Settings UI surfaces the gate with a reason; runtime
+  double-checks against the session-scoped feature snapshot.
+- Latch: cleaned utterances are revisions; user-wins latch absorbs them
+  identically to any other downstream stage.
+
+**Contract additions:** `RuntimeId::LlamaCpp`, new `StageId::LlmCleanup`.
+
+### Later — Session polish
+
+Whole-session rewrite is not a transcript stage. It ships as a separate
+`SessionRewrite` artifact behind an explicit "Polish session" command.
+
+- Opt-in command, never automatic while dictation is active.
+- Mutually exclusive with rendered timestamps in v1.
+- Reject output that cannot preserve user-latched text.
+- Do not combine with diarization until the rewrite can preserve speaker spans.
+
+**Contract additions:** `SessionRewrite` artifact, separate from transcript
+revision history.
+
+### Later — Diarization
+
+Speaker labeling belongs upstream in the audio pipeline alongside VAD.
+
+- Off by default.
+- Segment annotation, not a post-engine text stage.
+- Fields: `speaker_id`, `speaker_source`, optional `speaker_confidence`.
+- UX modes: `off`, `speaker_change_prefix`, `every_segment`.
+- Compatible with timestamps because both attach to timed segments.
+- Not compatible with session polish until polish preserves speaker spans.
+
+**Contract additions:** speaker annotations on timed transcript segments.
 
 ## Guardrails
 
+- Greenfield: no `schemaVersion`, no migration paths, no compatibility
+  branches. Break what you need to break.
 - Quality stages must raise quality without silent data loss.
 - Empty final text can be valid after filtering; journal it, do not project it.
 - Timestamp text is rendered output, never canonical transcript data.
 - Word timing is optional data, not a baseline promise.
 - Model capability gates drive UI affordances; TypeScript should not mirror
   engine-specific support by hand.
-- Any feature that destroys alignment must not masquerade as a normal transcript
-  revision.
+- Any feature that destroys alignment must not masquerade as a normal
+  transcript revision.
+- Diarization belongs upstream in the audio pipeline alongside VAD; it is not
+  a post-engine stage.
