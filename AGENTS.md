@@ -69,22 +69,16 @@ Local docs support ongoing work:
 
 ### Session Bootstrap
 
-At the start of every non-trivial task:
+At the start of a non-trivial task, glance at `docs/decisions.md` and any `docs/lessons.md` entries that look relevant. Code is the source of truth. Github issues track work.
 
-1. Read `AGENTS.md`.
-2. Read `docs/decisions.md`.
-3. Read any `docs/lessons.md` entries relevant to the work.
-4. We are using github issues to track work items
+### Decisions and Lessons
 
-### Lessons
+These two files are lightweight reminders. They're low-stakes. Their only job is to save the user from re-explaining the same things.
 
-After any user correction or process mistake, add a concise lesson to `docs/lessons.md` capturing the pattern and a concrete preventive rule. Deduplicate instead of accumulating near-identical lessons.
+- `docs/decisions.md` is a short list of architectural calls the user has made. One paragraph each. Glance at it for context; let code carry the details.
+- `docs/lessons.md` is a short list of mistakes worth catching twice. One line each. Add an entry when the user corrects something concrete that would otherwise repeat.
 
-Format: `- YYYY-MM-DD | [tag] | Pattern: … | Rule: …`. Tags are one of `[build]`, `[test]`, `[ui]`, `[process]`, `[gpu]` — add a new tag only when none fit and the area is likely to recur. Tags make the file greppable by area as it grows.
-
-### Decisions
-
-Record durable product and architecture decisions in `docs/decisions.md` with status, decision, rationale, and implication. Update in the same change that alters a decision. Mark superseded decisions explicitly.
+Keep both files small. Sharpen existing entries before adding new ones. Reference code in PRs.
 
 ### Plans
 
