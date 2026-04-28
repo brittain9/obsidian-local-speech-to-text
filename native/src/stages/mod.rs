@@ -22,6 +22,7 @@ pub mod consts;
 pub mod diagnostics;
 pub mod hallucination_filter;
 pub mod noop;
+pub mod punctuation;
 
 /// Runtime knobs supplied per session. Each stage owns the meaning of its
 /// own flag; the runner only reads `is_enabled`.

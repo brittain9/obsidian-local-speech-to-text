@@ -16,6 +16,7 @@ use crate::panic_util::format_panic_message;
 use crate::protocol::{ContextWindow, EngineStagePayload, StageId, StageOutcome, StageStatus};
 use crate::stages::hallucination_filter::HallucinationFilterStage;
 use crate::stages::noop::NoopProcessor;
+use crate::stages::punctuation::PunctuationStage;
 use crate::stages::{StageContext, StageEnablement, StageProcessor, run_post_engine};
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
@@ -314,7 +315,7 @@ fn assemble_transcript(
 fn post_engine_processors() -> Vec<Box<dyn StageProcessor>> {
     vec![
         Box::new(HallucinationFilterStage::new()),
-        Box::new(NoopProcessor::new(StageId::Punctuation)),
+        Box::new(PunctuationStage::new()),
         Box::new(NoopProcessor::new(StageId::UserRules)),
     ]
 }
