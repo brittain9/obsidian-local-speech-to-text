@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::protocol::{
-    ContextWindow, EngineStagePayload, StageId, StageOutcome, TranscriptSegment,
-};
+use crate::protocol::{ContextWindow, StageId, StageOutcome, TranscriptSegment};
 
 pub(crate) const SUPPORTED_LANGUAGE: &str = "en";
 
@@ -63,28 +61,16 @@ impl Transcript {
         pieces.join(" ")
     }
 
-    /// Per D-015 the engine stage's `isFinal` payload flag is the canonical
-    /// record of whether a revision is a finalized engine pass. Returns
-    /// `false` if the engine stage or flag is absent — that is a producer
-    /// contract violation, but treating it as a partial is safer than
-    /// auto-finalizing into the journal.
+    /// Per D-015 the engine stage outcome is the canonical record of whether
+    /// a revision is a finalized engine pass. Returns `false` if the engine
+    /// stage is absent — that is a producer contract violation, but treating
+    /// it as a partial is safer than auto-finalizing into the journal.
     pub fn is_final(&self) -> bool {
-        self.engine_payload()
-            .map(|payload| payload.is_final)
+        self.stage_history
+            .first()
+            .filter(|stage| stage.stage_id == StageId::Engine)
+            .map(|stage| stage.is_final)
             .unwrap_or(false)
-    }
-
-    /// Decode the engine stage's typed payload. Returns `None` if the first
-    /// stage is missing, isn't the engine stage, or carries a payload that
-    /// fails to deserialize as `EngineStagePayload` — all of which are
-    /// producer contract violations and treated as "partial" downstream.
-    fn engine_payload(&self) -> Option<EngineStagePayload> {
-        let engine_stage = self.stage_history.first()?;
-        if engine_stage.stage_id != StageId::Engine {
-            return None;
-        }
-        let payload = engine_stage.payload.as_ref()?;
-        serde_json::from_value::<EngineStagePayload>(payload.clone()).ok()
     }
 }
 
@@ -193,10 +179,7 @@ mod tests {
 
     use uuid::Uuid;
 
-    use super::{
-        EngineStagePayload, Transcript, validate_audio_samples, validate_language,
-        validate_model_path,
-    };
+    use super::{Transcript, validate_audio_samples, validate_language, validate_model_path};
     use crate::protocol::{
         StageId, StageOutcome, StageStatus, TimestampGranularity, TimestampSource,
         TranscriptSegment,
@@ -294,10 +277,11 @@ mod tests {
         assert_eq!(transcript.joined_text(), "");
     }
 
-    fn engine_stage_with_payload(payload: Option<serde_json::Value>) -> StageOutcome {
+    fn engine_stage(is_final: bool) -> StageOutcome {
         StageOutcome {
             duration_ms: 0,
-            payload,
+            is_final,
+            payload: None,
             revision_in: 0,
             revision_out: Some(0),
             stage_id: StageId::Engine,
@@ -315,19 +299,15 @@ mod tests {
     }
 
     #[test]
-    fn is_final_reads_true_from_engine_stage_payload() {
-        let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::to_value(EngineStagePayload { is_final: true }).unwrap(),
-        ))]);
+    fn is_final_reads_true_from_engine_stage_outcome() {
+        let transcript = transcript_with_stages(vec![engine_stage(true)]);
 
         assert!(transcript.is_final());
     }
 
     #[test]
-    fn is_final_reads_false_from_engine_stage_payload() {
-        let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::to_value(EngineStagePayload { is_final: false }).unwrap(),
-        ))]);
+    fn is_final_reads_false_from_engine_stage_outcome() {
+        let transcript = transcript_with_stages(vec![engine_stage(false)]);
 
         assert!(!transcript.is_final());
     }
@@ -336,7 +316,8 @@ mod tests {
     fn is_final_returns_false_when_first_stage_is_not_engine() {
         let transcript = transcript_with_stages(vec![StageOutcome {
             duration_ms: 0,
-            payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+            is_final: true,
+            payload: None,
             revision_in: 0,
             revision_out: Some(0),
             stage_id: StageId::Punctuation,
@@ -347,25 +328,18 @@ mod tests {
     }
 
     #[test]
-    fn is_final_returns_false_when_engine_stage_payload_missing() {
-        let transcript = transcript_with_stages(vec![engine_stage_with_payload(None)]);
-
-        assert!(!transcript.is_final());
-    }
-
-    #[test]
-    fn is_final_returns_false_when_payload_lacks_is_final_key() {
-        let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::json!({ "other": "value" }),
-        ))]);
-
-        assert!(!transcript.is_final());
-    }
-
-    #[test]
     fn is_final_returns_false_when_stage_history_empty() {
         let transcript = transcript_with_stages(Vec::new());
 
         assert!(!transcript.is_final());
+    }
+
+    #[test]
+    fn is_final_ignores_payload_shape() {
+        let mut stage = engine_stage(true);
+        stage.payload = Some(serde_json::json!({ "other": "value" }));
+        let transcript = transcript_with_stages(vec![stage]);
+
+        assert!(transcript.is_final());
     }
 }

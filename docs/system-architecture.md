@@ -238,6 +238,8 @@ The silence-window values are calibrated against industry streaming-dictation no
 2. **Boundary-aware split at cap** — at `MAX_UTTERANCE_FRAMES` (30 s), the session cuts at the most recent silence boundary (if within `BOUNDARY_STALENESS_CAP_FRAMES`) and keeps the tail running. If no usable boundary exists, it falls back to a hard cut.
 3. **Graceful stop** — on user stop, any pending utterance is emitted before `SessionStopped`.
 
+Each finalized utterance carries `VoiceActivityEvidence` derived from the same buffered frames as the PCM sent to inference: session-relative audio bounds, retained speech bounds (plain `u64`, collapsing to `audio_start_ms` when no frame met the fixed 0.35 threshold), voiced/unvoiced duration, and compact mean/max probability. The aggregate ships on the wire as `stageResults[0].payload.voiceActivity` for the plugin journal; finality is a typed `isFinal` field on each `StageOutcome`, not part of that payload. The per-frame Silero trace also reaches downstream Rust stages as `StageContext.vad_probabilities` — a borrowed slice, never serialized — so processors that need sub-utterance resolution (e.g. per-segment voiced fraction) compute it via `audio_metadata::voiced_fraction`.
+
 **Code weight:** ~730 LOC (`session.rs`) + ~240 LOC (`vad.rs`) + session management in `app.rs`.
 
 **Time cost:** Silero ONNX inference runs once per ~32 ms window (~1 ms per call amortised across 20 ms frames). The perceived end-of-speech delay is the preset's `silence_end_frames`: 400 ms on Responsive, 1000 ms on Balanced, 2000 ms on Patient.
@@ -248,7 +250,7 @@ The silence-window values are calibrated against industry streaming-dictation no
 
 ```mermaid
 flowchart LR
-    UTT["Completed utterance<br/>(PCM)"] --> WORKER
+    UTT["Completed utterance<br/>(PCM + VAD evidence)"] --> WORKER
 
     subgraph WORKER ["Worker thread"]
         direction TB

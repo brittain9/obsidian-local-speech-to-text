@@ -999,6 +999,7 @@ function readStageOutcome(value: unknown, fieldName: string): StageOutcome {
   const record = readRecord(value, fieldName);
   const outcome: StageOutcome = {
     durationMs: readNonNegativeNumber(record.durationMs, `${fieldName}.durationMs`),
+    isFinal: readBoolean(record.isFinal, `${fieldName}.isFinal`),
     revisionIn: readNonNegativeInteger(record.revisionIn, `${fieldName}.revisionIn`),
     stageId: readStageId(record.stageId, `${fieldName}.stageId`),
     status: readStageStatus(record.status, `${fieldName}.status`),

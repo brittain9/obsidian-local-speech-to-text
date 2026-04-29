@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::audio_metadata::VoiceActivityEvidence;
 use crate::catalog::{
     CatalogModel, ModelCollection, ModelFamilyDescriptor, ModelRuntimeDescriptor,
 };
@@ -174,6 +175,7 @@ pub enum StageStatus {
 #[serde(rename_all = "camelCase")]
 pub struct StageOutcome {
     pub duration_ms: u64,
+    pub is_final: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
     pub revision_in: u32,
@@ -183,10 +185,10 @@ pub struct StageOutcome {
     pub status: StageStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStagePayload {
-    pub is_final: bool,
+    pub voice_activity: VoiceActivityEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,6 +1,7 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Instant;
 
+use crate::audio_metadata::VoiceActivityEvidence;
 use crate::engine::capabilities::ModelFamilyCapabilities;
 use crate::panic_util::format_panic_message;
 use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
@@ -11,10 +12,11 @@ pub struct StageEnablement;
 
 pub struct StageContext<'a> {
     pub context: Option<&'a crate::protocol::ContextWindow>,
-    pub utterance_duration_ms: u64,
     pub family_capabilities: &'a ModelFamilyCapabilities,
     pub stage_enabled: &'a StageEnablement,
     pub is_final: bool,
+    pub vad_probabilities: &'a [f32],
+    pub voice_activity: &'a VoiceActivityEvidence,
 }
 
 pub enum StageProcess {
@@ -67,6 +69,7 @@ pub fn run_post_engine(
         if !ctx.is_final && !processor.runs_on_partials() {
             transcript.stage_history.push(StageOutcome {
                 duration_ms: 0,
+                is_final: ctx.is_final,
                 payload: None,
                 revision_in,
                 revision_out: None,
@@ -86,7 +89,7 @@ pub fn run_post_engine(
             Ok(StageProcess::Ok { segments, payload }) => match validate_stage_segments(
                 &segments,
                 &transcript.segments,
-                ctx.utterance_duration_ms,
+                ctx.voice_activity.duration_ms(),
             ) {
                 Ok(()) => {
                     let revision_out = revision_in.saturating_add(1);
@@ -94,6 +97,7 @@ pub fn run_post_engine(
                     transcript.segments = segments;
                     StageOutcome {
                         duration_ms,
+                        is_final: ctx.is_final,
                         payload,
                         revision_in,
                         revision_out: Some(revision_out),
@@ -103,6 +107,7 @@ pub fn run_post_engine(
                 }
                 Err(error) => StageOutcome {
                     duration_ms,
+                    is_final: ctx.is_final,
                     payload,
                     revision_in,
                     revision_out: None,
@@ -112,6 +117,7 @@ pub fn run_post_engine(
             },
             Ok(StageProcess::Skipped { reason, payload }) => StageOutcome {
                 duration_ms,
+                is_final: ctx.is_final,
                 payload,
                 revision_in,
                 revision_out: None,
@@ -120,6 +126,7 @@ pub fn run_post_engine(
             },
             Ok(StageProcess::Failed { error, payload }) => StageOutcome {
                 duration_ms,
+                is_final: ctx.is_final,
                 payload,
                 revision_in,
                 revision_out: None,
@@ -128,6 +135,7 @@ pub fn run_post_engine(
             },
             Err(panic_payload) => StageOutcome {
                 duration_ms,
+                is_final: ctx.is_final,
                 payload: None,
                 revision_in,
                 revision_out: None,
@@ -193,10 +201,9 @@ fn validate_stage_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_metadata::VoiceActivityEvidence;
     use crate::engine::capabilities::{LanguageSupport, ModelFamilyCapabilities};
-    use crate::protocol::{
-        EngineStagePayload, TimestampGranularity, TimestampSource, TranscriptSegment,
-    };
+    use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -225,7 +232,8 @@ mod tests {
             }],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
-                payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+                is_final: true,
+                payload: None,
                 revision_in: 0,
                 revision_out: Some(0),
                 stage_id: StageId::Engine,
@@ -266,12 +274,14 @@ mod tests {
     fn run(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
         let caps = whisper_caps();
         let enablement = StageEnablement;
+        let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
-            utterance_duration_ms: 1_000,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: true,
+            vad_probabilities: &[],
+            voice_activity: &voice_activity,
         };
         run_post_engine(transcript, &processors, &ctx);
     }
@@ -279,14 +289,29 @@ mod tests {
     fn run_partial(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
         let caps = whisper_caps();
         let enablement = StageEnablement;
+        let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
-            utterance_duration_ms: 1_000,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: false,
+            vad_probabilities: &[],
+            voice_activity: &voice_activity,
         };
         run_post_engine(transcript, &processors, &ctx);
+    }
+
+    fn voice_activity() -> VoiceActivityEvidence {
+        VoiceActivityEvidence {
+            audio_start_ms: 0,
+            audio_end_ms: 1_000,
+            speech_start_ms: 0,
+            speech_end_ms: 1_000,
+            voiced_ms: 1_000,
+            unvoiced_ms: 0,
+            mean_probability: 0.9,
+            max_probability: 1.0,
+        }
     }
 
     #[test]
@@ -569,7 +594,8 @@ mod tests {
             ],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
-                payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+                is_final: true,
+                payload: None,
                 revision_in: 0,
                 revision_out: Some(0),
                 stage_id: StageId::Engine,

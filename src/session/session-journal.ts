@@ -19,6 +19,7 @@ export type StageStatus =
 
 export interface StageOutcome {
   durationMs: number;
+  isFinal: boolean;
   payload?: Record<string, unknown>;
   revisionIn: number;
   revisionOut?: number;

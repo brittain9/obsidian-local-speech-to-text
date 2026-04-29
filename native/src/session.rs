@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::audio_metadata::{VOICED_THRESHOLD, VoiceActivityEvidence};
 use crate::protocol::{
     ListeningMode, PCM_BYTES_PER_FRAME, PCM_FRAME_DURATION_MS, PCM_SAMPLES_PER_FRAME,
     SessionStopReason,
@@ -82,16 +83,29 @@ pub struct SessionConfig {
     pub style: SpeakingStyle,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FinalizedUtterance {
-    pub duration_ms: u64,
     pub samples: Vec<i16>,
-    pub utterance_end_ms_in_session: u64,
     pub utterance_index: u64,
-    pub utterance_start_ms_in_session: u64,
+    pub vad_probabilities: Vec<f32>,
+    pub voice_activity: VoiceActivityEvidence,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl FinalizedUtterance {
+    pub fn utterance_start_ms_in_session(&self) -> u64 {
+        self.voice_activity.audio_start_ms
+    }
+
+    pub fn utterance_end_ms_in_session(&self) -> u64 {
+        self.voice_activity.audio_end_ms
+    }
+
+    pub fn duration_ms(&self) -> u64 {
+        self.voice_activity.duration_ms()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SessionAction {
     FinalizeUtterance(FinalizedUtterance),
     Stop(SessionStopReason),
@@ -132,12 +146,19 @@ pub struct ListeningSession<TVad: VoiceActivityDetector = SileroVadDetector> {
     last_silence_boundary: Option<usize>,
     next_utterance_index: u64,
     pending_end_start: Option<usize>,
-    pre_speech_frames: VecDeque<(usize, Vec<i16>)>,
+    pre_speech_frames: VecDeque<BufferedAudioFrame>,
     session_frames: usize,
     speech_started: bool,
     tuning: VadTuning,
-    utterance_frames: Vec<(usize, Vec<i16>)>,
+    utterance_frames: Vec<BufferedAudioFrame>,
     vad: TVad,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BufferedAudioFrame {
+    samples: Vec<i16>,
+    start_frame: usize,
+    speech_probability: f32,
 }
 
 impl ListeningSession<SileroVadDetector> {
@@ -227,10 +248,16 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
                     frame.len()
                 )),
                 message: "Voice activity detection failed on an audio frame.",
-            })?;
+            })?
+            .clamp(0.0, 1.0);
 
         self.session_frames += 1;
         self.activity_frames += 1;
+        let buffered_frame = BufferedAudioFrame {
+            samples: frame,
+            start_frame: frame_start,
+            speech_probability: probability,
+        };
 
         if !self.speech_started {
             if probability >= self.tuning.speech_threshold {
@@ -242,16 +269,16 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
                     self.pending_end_start = None;
                     self.utterance_frames
                         .extend(self.pre_speech_frames.drain(..));
-                    self.utterance_frames.push((frame_start, frame));
+                    self.utterance_frames.push(buffered_frame);
                 } else {
-                    self.push_pre_speech_frame(frame_start, frame);
+                    self.push_pre_speech_frame(buffered_frame);
                 }
             } else {
                 self.consecutive_above_threshold = 0;
-                self.push_pre_speech_frame(frame_start, frame);
+                self.push_pre_speech_frame(buffered_frame);
             }
         } else {
-            self.utterance_frames.push((frame_start, frame));
+            self.utterance_frames.push(buffered_frame);
 
             if probability >= self.tuning.speech_threshold {
                 self.frames_since_confident_speech = 0;
@@ -359,7 +386,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         ))
     }
 
-    fn push_pre_speech_frame(&mut self, frame_start: usize, frame: Vec<i16>) {
+    fn push_pre_speech_frame(&mut self, frame: BufferedAudioFrame) {
         if self.speech_started {
             return;
         }
@@ -368,26 +395,67 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             self.pre_speech_frames.pop_front();
         }
 
-        self.pre_speech_frames.push_back((frame_start, frame));
+        self.pre_speech_frames.push_back(frame);
     }
 }
 
-fn flatten_frames(frames: &[(usize, Vec<i16>)], utterance_index: u64) -> FinalizedUtterance {
+fn flatten_frames(frames: &[BufferedAudioFrame], utterance_index: u64) -> FinalizedUtterance {
     let mut samples = Vec::with_capacity(frames.len() * PCM_SAMPLES_PER_FRAME);
-    for (_, frame) in frames {
-        samples.extend_from_slice(frame);
+    let mut vad_probabilities = Vec::with_capacity(frames.len());
+
+    let frame_duration_ms = PCM_FRAME_DURATION_MS as u64;
+    let audio_start_ms = frames
+        .first()
+        .map(|frame| frame.start_frame as u64 * frame_duration_ms)
+        .unwrap_or(0);
+    let mut audio_end_ms = audio_start_ms;
+    let mut voiced_frames = 0_u64;
+    let mut probability_sum = 0.0_f32;
+    let mut max_probability = 0.0_f32;
+    let mut speech_start_ms = None;
+    let mut speech_end_ms = None;
+
+    for frame in frames {
+        samples.extend_from_slice(&frame.samples);
+        vad_probabilities.push(frame.speech_probability);
+
+        probability_sum += frame.speech_probability;
+        max_probability = max_probability.max(frame.speech_probability);
+        audio_end_ms = (frame.start_frame as u64 + 1) * frame_duration_ms;
+
+        if frame.speech_probability >= VOICED_THRESHOLD {
+            voiced_frames += 1;
+            let frame_start_ms = frame.start_frame as u64 * frame_duration_ms;
+            speech_start_ms.get_or_insert(frame_start_ms);
+            speech_end_ms = Some((frame.start_frame as u64 + 1) * frame_duration_ms);
+        }
     }
-    let start_frame = frames.first().map(|(idx, _)| *idx).unwrap_or(0);
-    let end_frame = frames
-        .last()
-        .map(|(idx, _)| idx.saturating_add(1))
-        .unwrap_or(start_frame);
+
+    let total_frames = frames.len() as u64;
+    let voiced_ms = voiced_frames * frame_duration_ms;
+    let unvoiced_ms = total_frames.saturating_sub(voiced_frames) * frame_duration_ms;
+    let mean_probability = if frames.is_empty() {
+        0.0
+    } else {
+        probability_sum / frames.len() as f32
+    };
+
+    let voice_activity = VoiceActivityEvidence {
+        audio_start_ms,
+        audio_end_ms,
+        speech_start_ms: speech_start_ms.unwrap_or(audio_start_ms),
+        speech_end_ms: speech_end_ms.unwrap_or(audio_start_ms),
+        voiced_ms,
+        unvoiced_ms,
+        mean_probability,
+        max_probability,
+    };
+
     FinalizedUtterance {
-        duration_ms: (frames.len() * PCM_FRAME_DURATION_MS) as u64,
         samples,
-        utterance_end_ms_in_session: (end_frame * PCM_FRAME_DURATION_MS) as u64,
         utterance_index,
-        utterance_start_ms_in_session: (start_frame * PCM_FRAME_DURATION_MS) as u64,
+        vad_probabilities,
+        voice_activity,
     }
 }
 
@@ -464,8 +532,21 @@ mod tests {
         let finalized = finalized.expect("utterance should finalize");
 
         // Retained = pending_end_start (3) + post_speech_pad_frames (2) = 5.
-        assert_eq!(finalized.duration_ms, 5 * PCM_FRAME_DURATION_MS as u64);
+        assert_eq!(finalized.duration_ms(), 5 * PCM_FRAME_DURATION_MS as u64);
         assert_eq!(finalized.samples.len(), 5 * PCM_SAMPLES_PER_FRAME);
+        assert_eq!(
+            finalized.vad_probabilities.len(),
+            finalized.samples.len() / PCM_SAMPLES_PER_FRAME
+        );
+        assert_eq!(finalized.vad_probabilities, vec![1.0, 1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(finalized.voice_activity.audio_start_ms, 40);
+        assert_eq!(finalized.voice_activity.audio_end_ms, 140);
+        assert_eq!(finalized.voice_activity.speech_start_ms, 40);
+        assert_eq!(finalized.voice_activity.speech_end_ms, 100);
+        assert_eq!(finalized.voice_activity.voiced_ms, 60);
+        assert_eq!(finalized.voice_activity.unvoiced_ms, 40);
+        assert_eq!(finalized.voice_activity.mean_probability, 0.6);
+        assert_eq!(finalized.voice_activity.max_probability, 1.0);
         assert_eq!(session.base_state(), SessionBaseState::Listening);
     }
 
@@ -492,11 +573,31 @@ mod tests {
 
         let finalized = finalized.expect("utterance should finalize");
         // 2 pre-pad frames + 1 frame that triggered speech + 2 post-pad frames.
-        assert_eq!(finalized.duration_ms, 5 * PCM_FRAME_DURATION_MS as u64);
+        assert_eq!(finalized.duration_ms(), 5 * PCM_FRAME_DURATION_MS as u64);
         assert_eq!(finalized.samples.len(), 5 * PCM_SAMPLES_PER_FRAME);
         assert_eq!(finalized.utterance_index, 0);
-        assert_eq!(finalized.utterance_start_ms_in_session, 80);
-        assert_eq!(finalized.utterance_end_ms_in_session, 180);
+        assert_eq!(finalized.utterance_start_ms_in_session(), 80);
+        assert_eq!(finalized.utterance_end_ms_in_session(), 180);
+        assert_eq!(
+            finalized.utterance_start_ms_in_session(),
+            finalized.voice_activity.audio_start_ms,
+        );
+        assert_eq!(
+            finalized.utterance_end_ms_in_session(),
+            finalized.voice_activity.audio_end_ms,
+        );
+        assert_eq!(
+            finalized.vad_probabilities.len(),
+            finalized.samples.len() / PCM_SAMPLES_PER_FRAME
+        );
+        assert_eq!(finalized.voice_activity.audio_start_ms, 80);
+        assert_eq!(finalized.voice_activity.audio_end_ms, 180);
+        assert_eq!(finalized.voice_activity.speech_start_ms, 80);
+        assert_eq!(finalized.voice_activity.speech_end_ms, 140);
+        assert_eq!(finalized.voice_activity.voiced_ms, 60);
+        assert_eq!(finalized.voice_activity.unvoiced_ms, 40);
+        assert_eq!(finalized.voice_activity.mean_probability, 0.6);
+        assert_eq!(finalized.voice_activity.max_probability, 1.0);
     }
 
     #[test]
@@ -599,7 +700,7 @@ mod tests {
 
         let finalized = finalized.expect("utterance should finalize");
         assert_eq!(finalized_at_frame, 55);
-        assert_eq!(finalized.duration_ms, 5 * PCM_FRAME_DURATION_MS as u64);
+        assert_eq!(finalized.duration_ms(), 5 * PCM_FRAME_DURATION_MS as u64);
     }
 
     #[test]
@@ -682,7 +783,7 @@ mod tests {
             create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
 
         let mut finalized_count = 0;
-        let mut first_duration_ms = 0;
+        let mut first_finalized = None;
 
         for _ in 0..total_frames {
             let actions = session
@@ -693,19 +794,42 @@ mod tests {
                 if let SessionAction::FinalizeUtterance(utterance) = action {
                     finalized_count += 1;
                     if finalized_count == 1 {
-                        first_duration_ms = utterance.duration_ms;
+                        first_finalized = Some(utterance);
                     }
                 }
             }
         }
 
         assert_eq!(finalized_count, 1);
+        let finalized = first_finalized.expect("utterance should finalize at boundary");
         // last_silence_boundary is updated through the end of the gap to
         // utterance_frames.len() at that moment = (gap_start + gap_len) - FRAME_OFFSET.
         let expected_boundary = gap_start + gap_len - FRAME_OFFSET;
+        let expected_ms = (expected_boundary * PCM_FRAME_DURATION_MS) as u64;
+        assert_eq!(finalized.duration_ms(), expected_ms);
         assert_eq!(
-            first_duration_ms,
-            (expected_boundary * PCM_FRAME_DURATION_MS) as u64
+            finalized.vad_probabilities.len(),
+            finalized.samples.len() / PCM_SAMPLES_PER_FRAME
+        );
+        assert_eq!(
+            finalized.vad_probabilities.len(),
+            expected_boundary,
+            "trace must cover every retained frame"
+        );
+        // Pre-pad of 2 silent-but-real frames means audio starts at frame index 2.
+        assert_eq!(
+            finalized.voice_activity.audio_start_ms,
+            (FRAME_OFFSET * PCM_FRAME_DURATION_MS) as u64
+        );
+        // Every retained frame is at >= 0.4 (the gap), all >= the fixed 0.35
+        // threshold, so the entire window is voiced.
+        assert_eq!(
+            finalized.voice_activity.voiced_ms, expected_ms,
+            "every retained frame in the boundary slice meets the fixed threshold"
+        );
+        assert_eq!(
+            finalized.voice_activity.speech_start_ms,
+            (FRAME_OFFSET * PCM_FRAME_DURATION_MS) as u64
         );
         assert!(session.speech_started);
     }
@@ -731,10 +855,22 @@ mod tests {
         }
 
         let finalized = finalized.expect("utterance should finalize at cap");
+        let cap_duration_ms = (super::MAX_UTTERANCE_FRAMES * PCM_FRAME_DURATION_MS) as u64;
+        assert_eq!(finalized.duration_ms(), cap_duration_ms);
+        assert_eq!(finalized.voice_activity.audio_start_ms, 40);
+        assert_eq!(finalized.voice_activity.audio_end_ms, 40 + cap_duration_ms);
         assert_eq!(
-            finalized.duration_ms,
-            (super::MAX_UTTERANCE_FRAMES * PCM_FRAME_DURATION_MS) as u64
+            finalized.vad_probabilities.len(),
+            finalized.samples.len() / PCM_SAMPLES_PER_FRAME
         );
+        assert_eq!(
+            finalized.vad_probabilities.len(),
+            super::MAX_UTTERANCE_FRAMES
+        );
+        assert_eq!(finalized.voice_activity.voiced_ms, cap_duration_ms);
+        assert_eq!(finalized.voice_activity.unvoiced_ms, 0);
+        assert_eq!(finalized.voice_activity.speech_start_ms, 40);
+        assert_eq!(finalized.voice_activity.speech_end_ms, 40 + cap_duration_ms);
         assert_eq!(session.base_state(), SessionBaseState::Listening);
     }
 

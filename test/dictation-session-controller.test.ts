@@ -884,6 +884,7 @@ function createSettings(overrides: Partial<PluginSettings>): PluginSettings {
 function okEngineStage(durationMs: number): TranscriptRevision['stageResults'][number] {
   return {
     durationMs,
+    isFinal: true,
     revisionIn: 0,
     revisionOut: 0,
     stageId: 'engine',
