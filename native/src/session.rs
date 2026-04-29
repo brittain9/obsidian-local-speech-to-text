@@ -86,14 +86,20 @@ pub struct SessionConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FinalizedUtterance {
     pub samples: Vec<i16>,
-    pub utterance_end_ms_in_session: u64,
     pub utterance_index: u64,
-    pub utterance_start_ms_in_session: u64,
     pub vad_probabilities: Vec<f32>,
     pub voice_activity: VoiceActivityEvidence,
 }
 
 impl FinalizedUtterance {
+    pub fn utterance_start_ms_in_session(&self) -> u64 {
+        self.voice_activity.audio_start_ms
+    }
+
+    pub fn utterance_end_ms_in_session(&self) -> u64 {
+        self.voice_activity.audio_end_ms
+    }
+
     pub fn duration_ms(&self) -> u64 {
         self.voice_activity.duration_ms()
     }
@@ -396,36 +402,13 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
 fn flatten_frames(frames: &[BufferedAudioFrame], utterance_index: u64) -> FinalizedUtterance {
     let mut samples = Vec::with_capacity(frames.len() * PCM_SAMPLES_PER_FRAME);
     let mut vad_probabilities = Vec::with_capacity(frames.len());
-    for frame in frames {
-        samples.extend_from_slice(&frame.samples);
-        vad_probabilities.push(frame.speech_probability);
-    }
-    let start_frame = frames.first().map(|frame| frame.start_frame).unwrap_or(0);
-    let end_frame = frames
-        .last()
-        .map(|frame| frame.start_frame.saturating_add(1))
-        .unwrap_or(start_frame);
-    let voice_activity = voice_activity_evidence(frames);
-    FinalizedUtterance {
-        samples,
-        utterance_end_ms_in_session: (end_frame * PCM_FRAME_DURATION_MS) as u64,
-        utterance_index,
-        utterance_start_ms_in_session: (start_frame * PCM_FRAME_DURATION_MS) as u64,
-        vad_probabilities,
-        voice_activity,
-    }
-}
 
-fn voice_activity_evidence(frames: &[BufferedAudioFrame]) -> VoiceActivityEvidence {
+    let frame_duration_ms = PCM_FRAME_DURATION_MS as u64;
     let audio_start_ms = frames
         .first()
-        .map(|frame| (frame.start_frame * PCM_FRAME_DURATION_MS) as u64)
+        .map(|frame| frame.start_frame as u64 * frame_duration_ms)
         .unwrap_or(0);
-    let audio_end_ms = frames
-        .last()
-        .map(|frame| ((frame.start_frame + 1) * PCM_FRAME_DURATION_MS) as u64)
-        .unwrap_or(audio_start_ms);
-
+    let mut audio_end_ms = audio_start_ms;
     let mut voiced_frames = 0_u64;
     let mut probability_sum = 0.0_f32;
     let mut max_probability = 0.0_f32;
@@ -433,24 +416,22 @@ fn voice_activity_evidence(frames: &[BufferedAudioFrame]) -> VoiceActivityEviden
     let mut speech_end_ms = None;
 
     for frame in frames {
+        samples.extend_from_slice(&frame.samples);
+        vad_probabilities.push(frame.speech_probability);
+
         probability_sum += frame.speech_probability;
         max_probability = max_probability.max(frame.speech_probability);
+        audio_end_ms = (frame.start_frame as u64 + 1) * frame_duration_ms;
 
         if frame.speech_probability >= VOICED_THRESHOLD {
             voiced_frames += 1;
-            let frame_start_ms = (frame.start_frame * PCM_FRAME_DURATION_MS) as u64;
+            let frame_start_ms = frame.start_frame as u64 * frame_duration_ms;
             speech_start_ms.get_or_insert(frame_start_ms);
-            speech_end_ms = Some(((frame.start_frame + 1) * PCM_FRAME_DURATION_MS) as u64);
+            speech_end_ms = Some((frame.start_frame as u64 + 1) * frame_duration_ms);
         }
     }
 
-    let frame_duration_ms = PCM_FRAME_DURATION_MS as u64;
     let total_frames = frames.len() as u64;
-    debug_assert_eq!(
-        audio_end_ms - audio_start_ms,
-        total_frames * frame_duration_ms,
-        "buffered frames must be contiguous in the session clock",
-    );
     let voiced_ms = voiced_frames * frame_duration_ms;
     let unvoiced_ms = total_frames.saturating_sub(voiced_frames) * frame_duration_ms;
     let mean_probability = if frames.is_empty() {
@@ -459,7 +440,7 @@ fn voice_activity_evidence(frames: &[BufferedAudioFrame]) -> VoiceActivityEviden
         probability_sum / frames.len() as f32
     };
 
-    VoiceActivityEvidence {
+    let voice_activity = VoiceActivityEvidence {
         audio_start_ms,
         audio_end_ms,
         speech_start_ms: speech_start_ms.unwrap_or(audio_start_ms),
@@ -468,6 +449,13 @@ fn voice_activity_evidence(frames: &[BufferedAudioFrame]) -> VoiceActivityEviden
         unvoiced_ms,
         mean_probability,
         max_probability,
+    };
+
+    FinalizedUtterance {
+        samples,
+        utterance_index,
+        vad_probabilities,
+        voice_activity,
     }
 }
 
@@ -588,8 +576,16 @@ mod tests {
         assert_eq!(finalized.duration_ms(), 5 * PCM_FRAME_DURATION_MS as u64);
         assert_eq!(finalized.samples.len(), 5 * PCM_SAMPLES_PER_FRAME);
         assert_eq!(finalized.utterance_index, 0);
-        assert_eq!(finalized.utterance_start_ms_in_session, 80);
-        assert_eq!(finalized.utterance_end_ms_in_session, 180);
+        assert_eq!(finalized.utterance_start_ms_in_session(), 80);
+        assert_eq!(finalized.utterance_end_ms_in_session(), 180);
+        assert_eq!(
+            finalized.utterance_start_ms_in_session(),
+            finalized.voice_activity.audio_start_ms,
+        );
+        assert_eq!(
+            finalized.utterance_end_ms_in_session(),
+            finalized.voice_activity.audio_end_ms,
+        );
         assert_eq!(
             finalized.vad_probabilities.len(),
             finalized.samples.len() / PCM_SAMPLES_PER_FRAME

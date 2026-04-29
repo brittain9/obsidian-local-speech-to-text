@@ -188,14 +188,16 @@ fn worker_main(
                     continue;
                 }
 
-                let voice_activity = utterance.voice_activity;
                 let utterance_duration_ms = utterance.duration_ms();
-                let utterance_end_ms_in_session = utterance.utterance_end_ms_in_session;
-                let utterance_index = utterance.utterance_index;
-                let utterance_start_ms_in_session = utterance.utterance_start_ms_in_session;
-                let vad_probabilities = utterance.vad_probabilities;
-                let audio_samples: Vec<f32> = utterance
-                    .samples
+                let utterance_end_ms_in_session = utterance.utterance_end_ms_in_session();
+                let utterance_start_ms_in_session = utterance.utterance_start_ms_in_session();
+                let FinalizedUtterance {
+                    samples,
+                    utterance_index,
+                    vad_probabilities,
+                    voice_activity,
+                } = utterance;
+                let audio_samples: Vec<f32> = samples
                     .iter()
                     .map(|&sample| sample as f32 / 32768.0)
                     .collect();
@@ -231,7 +233,6 @@ fn worker_main(
                             engine_output,
                             engine_duration_ms,
                             is_final: true,
-                            utterance_duration_ms,
                             vad_probabilities: &vad_probabilities,
                             voice_activity,
                             context: stage_context.as_ref(),
@@ -283,7 +284,6 @@ struct TranscriptAssembly<'a> {
     engine_output: EngineTranscriptOutput,
     engine_duration_ms: u64,
     is_final: bool,
-    utterance_duration_ms: u64,
     vad_probabilities: &'a [f32],
     voice_activity: crate::audio_metadata::VoiceActivityEvidence,
     context: Option<&'a ContextWindow>,
@@ -298,12 +298,12 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
 
     stage_history.push(StageOutcome {
         duration_ms: input.engine_duration_ms,
+        is_final: input.is_final,
         payload: Some(
             serde_json::to_value(EngineStagePayload {
-                is_final: input.is_final,
                 voice_activity: input.voice_activity,
             })
-            .expect("EngineStagePayload serialization is infallible"),
+            .expect("EngineStagePayload serialization should not fail"),
         ),
         revision_in: revision,
         revision_out: Some(revision),
@@ -320,7 +320,6 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
 
     let ctx = StageContext {
         context: input.context,
-        utterance_duration_ms: input.utterance_duration_ms,
         family_capabilities: input.family_capabilities,
         stage_enabled: input.stage_enablement,
         is_final: input.is_final,
@@ -394,7 +393,6 @@ mod tests {
             is_final: true,
             processors: &[],
             stage_enablement: &StageEnablement,
-            utterance_duration_ms: voice_activity.duration_ms(),
             utterance_id: Uuid::nil(),
             vad_probabilities: &[],
             voice_activity,
@@ -407,11 +405,9 @@ mod tests {
             .clone();
         assert_eq!(
             serde_json::from_value::<EngineStagePayload>(payload).unwrap(),
-            EngineStagePayload {
-                is_final: true,
-                voice_activity,
-            }
+            EngineStagePayload { voice_activity }
         );
+        assert!(transcript.stage_history[0].is_final);
     }
 
     #[test]
@@ -427,7 +423,6 @@ mod tests {
             is_final: true,
             processors: &processors,
             stage_enablement: &StageEnablement,
-            utterance_duration_ms: voice_activity.duration_ms(),
             utterance_id: Uuid::nil(),
             vad_probabilities: &[],
             voice_activity,
@@ -459,7 +454,6 @@ mod tests {
             is_final: true,
             processors: &processors,
             stage_enablement: &StageEnablement,
-            utterance_duration_ms: voice_activity.duration_ms(),
             utterance_id: Uuid::nil(),
             vad_probabilities: &trace,
             voice_activity,

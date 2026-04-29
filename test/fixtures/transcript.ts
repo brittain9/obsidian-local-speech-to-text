@@ -19,6 +19,7 @@ export function transcript(
     stageResults: [
       {
         durationMs: 10,
+        isFinal: true,
         revisionIn: 0,
         revisionOut: overrides.revision ?? 0,
         stageId: 'engine',

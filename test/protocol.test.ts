@@ -284,8 +284,8 @@ describe('sidecar protocol', () => {
         stageResults: [
           {
             durationMs: 100,
+            isFinal: true,
             payload: {
-              isFinal: true,
               voiceActivity: {
                 audioEndMs: 1100,
                 audioStartMs: 100,
@@ -304,6 +304,7 @@ describe('sidecar protocol', () => {
           },
           {
             durationMs: 0,
+            isFinal: true,
             revisionIn: 0,
             stageId: 'punctuation',
             status: { kind: 'skipped', reason: 'no_action' },
@@ -329,8 +330,8 @@ describe('sidecar protocol', () => {
       stageResults: [
         {
           durationMs: 100,
+          isFinal: true,
           payload: {
-            isFinal: true,
             voiceActivity: {
               audioEndMs: 1100,
               audioStartMs: 100,
@@ -349,6 +350,7 @@ describe('sidecar protocol', () => {
         },
         {
           durationMs: 0,
+          isFinal: true,
           revisionIn: 0,
           stageId: 'punctuation',
           status: { kind: 'skipped', reason: 'no_action' },

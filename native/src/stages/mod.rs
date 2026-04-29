@@ -12,7 +12,6 @@ pub struct StageEnablement;
 
 pub struct StageContext<'a> {
     pub context: Option<&'a crate::protocol::ContextWindow>,
-    pub utterance_duration_ms: u64,
     pub family_capabilities: &'a ModelFamilyCapabilities,
     pub stage_enabled: &'a StageEnablement,
     pub is_final: bool,
@@ -70,6 +69,7 @@ pub fn run_post_engine(
         if !ctx.is_final && !processor.runs_on_partials() {
             transcript.stage_history.push(StageOutcome {
                 duration_ms: 0,
+                is_final: ctx.is_final,
                 payload: None,
                 revision_in,
                 revision_out: None,
@@ -89,7 +89,7 @@ pub fn run_post_engine(
             Ok(StageProcess::Ok { segments, payload }) => match validate_stage_segments(
                 &segments,
                 &transcript.segments,
-                ctx.utterance_duration_ms,
+                ctx.voice_activity.duration_ms(),
             ) {
                 Ok(()) => {
                     let revision_out = revision_in.saturating_add(1);
@@ -97,6 +97,7 @@ pub fn run_post_engine(
                     transcript.segments = segments;
                     StageOutcome {
                         duration_ms,
+                        is_final: ctx.is_final,
                         payload,
                         revision_in,
                         revision_out: Some(revision_out),
@@ -106,6 +107,7 @@ pub fn run_post_engine(
                 }
                 Err(error) => StageOutcome {
                     duration_ms,
+                    is_final: ctx.is_final,
                     payload,
                     revision_in,
                     revision_out: None,
@@ -115,6 +117,7 @@ pub fn run_post_engine(
             },
             Ok(StageProcess::Skipped { reason, payload }) => StageOutcome {
                 duration_ms,
+                is_final: ctx.is_final,
                 payload,
                 revision_in,
                 revision_out: None,
@@ -123,6 +126,7 @@ pub fn run_post_engine(
             },
             Ok(StageProcess::Failed { error, payload }) => StageOutcome {
                 duration_ms,
+                is_final: ctx.is_final,
                 payload,
                 revision_in,
                 revision_out: None,
@@ -131,6 +135,7 @@ pub fn run_post_engine(
             },
             Err(panic_payload) => StageOutcome {
                 duration_ms,
+                is_final: ctx.is_final,
                 payload: None,
                 revision_in,
                 revision_out: None,
@@ -198,9 +203,7 @@ mod tests {
     use super::*;
     use crate::audio_metadata::VoiceActivityEvidence;
     use crate::engine::capabilities::{LanguageSupport, ModelFamilyCapabilities};
-    use crate::protocol::{
-        EngineStagePayload, TimestampGranularity, TimestampSource, TranscriptSegment,
-    };
+    use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -229,13 +232,8 @@ mod tests {
             }],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
-                payload: Some(
-                    serde_json::to_value(EngineStagePayload {
-                        is_final: true,
-                        voice_activity: voice_activity(),
-                    })
-                    .unwrap(),
-                ),
+                is_final: true,
+                payload: None,
                 revision_in: 0,
                 revision_out: Some(0),
                 stage_id: StageId::Engine,
@@ -279,7 +277,6 @@ mod tests {
         let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
-            utterance_duration_ms: 1_000,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: true,
@@ -295,7 +292,6 @@ mod tests {
         let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
-            utterance_duration_ms: 1_000,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: false,
@@ -598,13 +594,8 @@ mod tests {
             ],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
-                payload: Some(
-                    serde_json::to_value(EngineStagePayload {
-                        is_final: true,
-                        voice_activity: voice_activity(),
-                    })
-                    .unwrap(),
-                ),
+                is_final: true,
+                payload: None,
                 revision_in: 0,
                 revision_out: Some(0),
                 stage_id: StageId::Engine,

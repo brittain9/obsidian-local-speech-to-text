@@ -1889,9 +1889,7 @@ mod tests {
     fn fake_utterance() -> FinalizedUtterance {
         FinalizedUtterance {
             samples: vec![0i16; 16000],
-            utterance_end_ms_in_session: 1000,
             utterance_index: 0,
-            utterance_start_ms_in_session: 0,
             vad_probabilities: Vec::new(),
             voice_activity: fake_voice_activity(),
         }
