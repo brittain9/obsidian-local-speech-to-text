@@ -1,401 +1,206 @@
-# PR 61 Contract Baseline and VAD Trace Plan
+# PR 62 Plan: Carry VAD Evidence Through The Pipeline
 
-## Summary
+## Branching
 
-Refactor PR 61 from "stage pipeline scaffolding with no-op future stages" into
-the contract baseline for the intelligent STT timeline. PR 61 should lock
-revision/finality behavior, session-scoped feature settings, context handling,
-and timing metadata without shipping placeholder processors or user-visible
-future features.
+Branch PR 62 from PR 61 after PR 61's working tree is committed and pushed.
 
-Then add a new stacked PR 2 that carries Silero VAD evidence through the
-pipeline as an internal utterance signal. PR 2 makes VAD usable by the
-hallucination filter, future timestamp fallback, and later pause-aware UX
-without serializing raw VAD probabilities to the plugin.
+Suggested command:
 
-## Branch Sequence
+```bash
+git switch feat/stage-pipeline-scaffolding
+git pull --ff-only
+git switch -c feat/vad-evidence-pipeline
+```
 
-1. Keep this plan on `main`.
-2. Rebase `feat/stage-pipeline-scaffolding` on `main` and rewrite it as PR 61:
-   contract baseline only.
-3. Create `feat/vad-trace-pipeline` from the updated PR 61 branch. This is the
-   new timeline PR 2.
-4. Rebase `feat/stage-hallucination-filter` on the VAD trace branch and rewrite
-   it as hallucination filter v2. That work is intentionally not part of this
-   plan except for the contract it depends on.
+Do not branch PR 62 directly from `main`; PR 62 depends on PR 61's canonical transcript/stage-runner work.
+
+## Goal
+
+VAD currently decides utterance boundaries and then most of its evidence is discarded. PR 62 should preserve the useful audio-domain facts so later pipeline stages can use them for timestamp quality, hallucination detection, and other segment-preserving text stages.
+
+The implementation should keep one authoritative VAD evidence object and pass that object through the existing sidecar pipeline. Avoid adding settings, feature toggles, placeholder processors, or UI behavior in this PR.
+
+## Current Shape
+
+Relevant existing flow:
+
+1. `ListeningSession` ingests 20 ms PCM frames and calls `VoiceActivityDetector::speech_probability`.
+2. The session uses thresholds and padding to create a `FinalizedUtterance`.
+3. `AppState` queues that utterance while it requests plugin context.
+4. `TranscriptionWorker` sends audio to the selected engine adapter.
+5. The worker wraps engine output into a canonical `Transcript`, writes an engine `StageOutcome`, and runs post-engine stages.
+6. The plugin receives `transcript_ready` with `segments`, `text`, and `stageResults`.
+
+The loss happens at step 2: `FinalizedUtterance` only carries `duration_ms` and `samples`. The VAD probabilities, speech window, padding window, and session-relative timing are gone before the worker and stage context can inspect them.
+
+## Design
+
+Introduce a small audio-domain metadata type for the facts VAD already knows. Keep it independent of any specific future processor.
+
+Proposed Rust shape:
+
+```rust
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceActivityEvidence {
+    pub audio_start_ms: u64,
+    pub audio_end_ms: u64,
+    pub speech_start_ms: u64,
+    pub speech_end_ms: u64,
+    pub voiced_ms: u64,
+    pub unvoiced_ms: u64,
+    pub mean_probability: f32,
+    pub max_probability: f32,
+}
+```
+
+Semantics:
+
+- `audio_start_ms` / `audio_end_ms` are session-relative bounds of the exact sample buffer sent to inference, including retained pre/post padding.
+- `speech_start_ms` / `speech_end_ms` are session-relative bounds of retained frames whose probabilities met the session's speech threshold. They describe the retained inference buffer, not any earlier candidate frames discarded by the min-speech gate.
+- `voiced_ms` and `unvoiced_ms` summarize retained VAD frames using the session's existing speech threshold.
+- `mean_probability` and `max_probability` summarize retained VAD probabilities for future quality stages without serializing a large per-frame trace.
+
+Keep raw per-frame probabilities internal to `ListeningSession` while an utterance is being assembled. Do not put the full trace on the wire in PR 62.
+
+## Data Flow Changes
+
+1. Add an internal buffered-frame struct in `native/src/session.rs`:
+
+   ```rust
+   struct BufferedAudioFrame {
+       samples: Vec<i16>,
+       start_ms: u64,
+       speech_probability: f32,
+   }
+   ```
+
+2. Add a monotonic session clock to `ListeningSession`.
+
+   `elapsed_frames` can continue to serve one-sentence timeout behavior. Add a separate counter or millisecond field that is not reset by `clear_activity`, so each finalized utterance has stable session-relative timing.
+
+3. Change `pre_speech_frames` and `utterance_frames` from raw sample buffers to buffered frames.
+
+   This is the source of truth for both flattened samples and VAD evidence.
+
+4. Replace `FinalizedUtterance { duration_ms, samples }` with:
+
+   ```rust
+   pub struct FinalizedUtterance {
+       pub samples: Vec<i16>,
+       pub voice_activity: VoiceActivityEvidence,
+   }
+   ```
+
+   Add a small `duration_ms()` method if call sites need the audio duration. Do not store `duration_ms` separately from `voice_activity.audio_*`.
+
+5. Store the whole `FinalizedUtterance` in `PendingContextRequest`.
+
+   This prevents `samples`, duration, and VAD metadata from drifting across the context-request delay.
+
+6. Pass `voice_activity` through `WorkerCommand::TranscribeUtterance` and `TranscriptAssembly`.
+
+7. Add `voice_activity` to `StageContext`.
+
+   Future processors should read typed data from `StageContext`, not deserialize their own copy from JSON.
+
+8. Add `voiceActivity` to `EngineStagePayload`.
+
+   This is the reporting path. It lets the plugin journal preserve the evidence through the existing `stageResults[0].payload` record without adding a new top-level `transcript_ready` field.
+
+9. Keep TypeScript changes minimal.
+
+   The current sidecar parser already preserves `StageOutcome.payload` as a generic record. Add or adjust only the tests needed to prove the engine payload survives parsing. Do not add a plugin UI consumer in PR 62.
+
+## Placement
+
+Prefer a small new Rust module if importing the metadata type from both session and protocol gets awkward:
+
+- `native/src/audio.rs` or `native/src/audio_metadata.rs`
+
+The type should not live in a future hallucination or timestamp module. VAD evidence is an audio-pipeline fact, not ownership of any one post-engine stage.
 
 ## Non-Goals
 
-- No hallucination filter behavior in PR 61 or PR 2.
-- No timestamp rendering UI.
-- No speculative transcription loop.
-- No LLM cleanup or session polish.
-- No punctuation stage, punctuation setting, or punctuation no-op.
-- No schema versions, migrations, compatibility shims, or legacy branches.
-- No raw VAD probability stream in the TypeScript protocol.
-
-## Shared Contract
-
-- A dictated utterance has stable `utterance_id`, `utterance_index`, and
-  session-relative timing.
-- Revisions are monotonic per utterance. Partial revisions are `is_final=false`;
-  final engine and final post-engine revisions are `is_final=true`.
-- A partial revision may be replaced by a later partial or final revision. Once
-  any final revision is accepted for an utterance, later partial revisions for
-  that utterance are stale and must not project into the note.
-- Post-engine stages run only for final engine revisions unless a real stage
-  explicitly declares `runs_on_partials=true` and documents its narrower partial
-  contract.
-- Segment text is canonical. Joined text is a projection.
-- Segment timing is canonical metadata, never rendered timestamp text.
-- Post-engine text stages may drop segments or rewrite text inside existing
-  segment timing boundaries. They must not move boundaries, synthesize new
-  timing, or reflow timestamps in PR 61.
-- Empty final text can be a valid transcript revision after filtering. It must
-  be journaled with stage history and diagnostics. It should not append a blank
-  span into the note.
-
-## PR 61 - Contract Baseline
-
-### 1. Remove Placeholder Stage Behavior
-
-Current PR 61 adds `NoopProcessor`s and emits planned stages as
-`stage_not_implemented` history. Replace that with a real runner contract:
-
-- Keep a stage runner module, but register only real processors.
-- Delete `native/src/stages/noop.rs`.
-- Do not emit history for stages that do not exist yet.
-- Do not add or keep a punctuation setting.
-- Keep the existing `StageId::Punctuation` and `StageId::UserRules` enum values
-  as inert protocol vocabulary. They must not imply registered processors.
-- In PR 61, make `StageEnablement` empty/default-only. PR 3 adds the first real
-  stage toggle when hallucination filtering lands.
-
-Acceptance:
-
-- A transcript with no registered post-engine processors has engine history
-  only.
-- There is no public `stage_not_implemented` outcome.
-- Plugin settings do not contain a punctuation stage toggle.
-
-### 2. Finality and Stage Runner Contract
-
-Add the finality gate that speculative transcription and final-only stages will
-depend on.
-
-- Change `assemble_transcript` to take `is_final: bool`; production calls pass
-  `true` until speculative transcription exists.
-- Store `is_final` in `EngineStagePayload`.
-- Add `runs_on_partials() -> bool` to `StageProcessor`, defaulting to `false`.
-- In `run_post_engine`, skip registered processors with
-  `runs_on_partials=false` when the engine revision is partial.
-- The skip reason for a registered final-only stage on a partial revision is
-  exactly `partial`.
-- Validate stage output before accepting it:
-  - segment ranges must be ordered and non-overlapping;
-  - each returned segment must stay within the utterance duration;
-  - a text stage must preserve existing segment timing boundaries unless a
-    later PR introduces an explicit resegmentation contract.
-- Stage panics remain isolated as failed outcomes.
-
-Acceptance:
-
-- Unit tests cover final revision runs, partial revision skips, partial-safe
-  stage execution, panic isolation, disabled registered stages, and invalid
-  stage output becoming `Failed` without mutating the transcript.
-- Partial revisions stay engine-only when no registered partial-safe stages
-  exist.
-
-### 3. Context Window Contract
-
-Context must be a typed artifact that engines and future stages can consume
-without asking the plugin twice.
-
-- Add `ContextWindowSource::NoteGlossary` for note-derived glossary context.
-- Keep `SessionUtterance` for future journal-derived context.
-- Pass `context: Option<&ContextWindow>` into `StageContext`.
-- Keep `TranscriptionRequest.context` for engine prompt conditioning.
-- Capability-gate context requests in the sidecar:
-  - request note context when the selected family supports initial prompts;
-  - also request it when a registered stage declares it needs context;
-  - otherwise dispatch transcription immediately with `context=None`.
-- `ContextWindow.text` must fit `budget_chars`; truncate at the plugin source
-  before sending, and add sidecar validation that drops over-budget context
-  rather than passing it to an engine or stage.
-- Plugin context responses use the session settings snapshot, not live settings.
-
-Acceptance:
-
-- Whisper still receives glossary context when `useNoteAsContext` was enabled at
-  session start.
-- Cohere does not trigger a context request unless a registered stage requires
-  context.
-- The plugin sends `sources: [{ kind: "note_glossary", ... }]` instead of an
-  empty source list for note context.
-- Toggling `useNoteAsContext` during active dictation affects the next session,
-  not the current one.
-
-### 4. Session-Scoped Settings Snapshot
-
-Advanced feature behavior must not change under an active utterance.
-
-- Create a plugin-side dictation session snapshot at `startDictation`.
-- The snapshot drives:
-  - start-session payload;
-  - note placement options;
-  - context-response policy;
-  - future render/projection settings;
-  - future feature-gating decisions.
-- Do not reread live settings for active-session behavior except for developer
-  logging or UI display that does not affect output.
-- Native session metadata stores the session feature snapshot it receives.
-
-Acceptance:
-
-- Tests flip `useNoteAsContext`, phrase separator, and future-stage-like
-  settings after dictation starts and verify active behavior does not change.
-- Starting a new session uses the new settings.
-
-### 5. Timing and Capability Baseline
-
-Move timing provenance into the contract before VAD and timestamps build on it.
-
-- Add these fields to `FinalizedUtterance` and through worker/app events:
-  - `utterance_index: u64`;
-  - `utterance_start_ms_in_session: u64`;
-  - `utterance_end_ms_in_session: u64`.
-- Add these fields to `TranscriptReadyEvent` and `TranscriptRevision`.
-- Add `session_start_unix_ms` to native `SessionConfig` and the start-session
-  command path.
-- Track retained audio frame positions so pre-speech padding is included in
-  `utterance_start_ms_in_session`.
-- Add segment timing provenance now:
-  - `TimestampSource = engine | vad | interpolated | none`;
-  - `TimestampGranularity = utterance | segment | word`;
-  - `TranscriptSegment.timestamp_source`;
-  - `TranscriptSegment.timestamp_granularity`.
-- Replace `supportsTimedSegments` with:
-  - `supportsSegmentTimestamps`;
-  - `supportsWordTimestamps`.
-- Set current capabilities:
-  - Whisper: segment timestamps true, word timestamps false;
-  - Cohere Transcribe: both false.
-- Populate current segments:
-  - Whisper segments: `source=engine`, `granularity=segment`;
-  - Cohere single utterance segment: `source=vad`, `granularity=utterance`.
-- Do not add timestamp rendering settings or marker insertion in PR 61.
-
-Acceptance:
-
-- Rust and TypeScript protocol parsers round-trip the new timing fields.
-- Existing model-management UI gates from the split capabilities.
-- No TypeScript code infers engine-specific timestamp support by family name.
-- Segment objects never contain rendered timestamp strings.
-
-### 6. Plugin Journal and Projection Rules
-
-Make the plugin side safe for empty finals and future speculative revisions.
-
-- `SessionJournal` rejects or ignores `isFinal=false` revisions that arrive
-  after an accepted final revision for the same utterance.
-- Later `isFinal=true` revisions may replace earlier final revisions when the
-  revision number is newer.
-- Empty final revisions are accepted into the journal.
-- Projection behavior:
-  - empty final with no projected partial: journal only, no note append;
-  - empty final after an unlatched projected partial: replace anchor with empty
-    text so the partial disappears;
-  - empty final after user latch: leave user text untouched and keep the journal
-    revision.
-- User-wins latch remains absolute.
-
-Acceptance:
-
-- Tests cover partial `r0` append, partial `r1` replace, final `r2` replace,
-  and partial `r3` ignored after final.
-- Tests cover empty final journal persistence and the three projection cases
-  above.
-
-### PR 61 Verification
-
-Run:
-
-- `npm test -- --run test/protocol.test.ts test/plugin-settings.test.ts test/dictation-session-controller.test.ts test/session.test.ts test/session-journal.test.ts test/capability-view.test.ts`
-- `cargo test --manifest-path native/Cargo.toml protocol`
-- `cargo test --manifest-path native/Cargo.toml transcription`
-- `cargo test --manifest-path native/Cargo.toml session`
-- `cargo test --manifest-path native/Cargo.toml worker`
-- `cargo test --manifest-path native/Cargo.toml stages`
-- `cargo test --manifest-path native/Cargo.toml`
-
-If full Rust tests hit the known clippy/bindings issue, use the build/test path
-from `docs/lessons.md` and report the exact skipped command.
-
-## PR 2 - VAD Trace Through the Pipeline
-
-### 1. Internal VAD Trace Type
-
-Add `native/src/vad_trace.rs` and export it from `native/src/lib.rs`.
-
-Types:
-
-- `VadTrace`
-  - `frame_duration_ms: u32`
-  - `speech_threshold: f32`
-  - `negative_threshold: f32`
-  - `probabilities: Vec<f32>`
-- `VadSegmentEvidence`
-  - `frame_count: u32`
-  - `voiced_frame_count: u32`
-  - `voiced_fraction: f32`
-  - `mean_probability: f32`
-  - `max_probability: f32`
-  - `voiced_seconds: f32`
-
-Behavior:
-
-- `summarize_ms(start_ms, end_ms, threshold)` floors the start frame, ceils the
-  end frame, clamps to trace duration, and returns `None` when there is no frame
-  overlap.
-- Use `0.35` as the default VAD evidence threshold for `voiced_seconds` and
-  `voiced_fraction`. This is below the normal Silero speech threshold and is
-  deliberately conservative on the side of treating audio as voiced.
-- Raw probabilities stay internal.
-
-Acceptance:
-
-- Tests cover exact-frame ranges, partial-frame rounding, out-of-range clamps,
-  zero-length ranges, empty traces, and no-overlap behavior.
-
-### 2. Capture Frames With VAD Evidence
-
-Update `ListeningSession` so audio and probability cannot drift apart.
-
-- Introduce an internal captured-frame struct containing:
-  - PCM samples for one 20 ms frame;
-  - `start_ms_in_session`;
-  - VAD probability.
-- Replace `pre_speech_frames` and `utterance_frames` element types with that
-  struct.
-- Extend `FinalizedUtterance` with:
-  - `vad_trace: VadTrace`;
-  - the timing fields added by PR 61.
-- Build samples and probabilities from the same retained frame slice.
-- Natural finalization, graceful stop, boundary split, and hard-cap split must
-  slice audio and VAD trace identically.
-
-Acceptance:
-
-- Session tests verify trace length matches retained audio frame count for
-  pre-speech padding, post-speech padding, graceful stop, boundary split, and
-  max-utterance split.
-- Session-relative start/end timings include retained pre-speech padding.
-
-### 3. Move VAD Trace Through App and Worker
-
-Carry the trace by ownership until the worker borrows it for adapters/stages.
-
-- Add `vad_trace` to `PendingContextRequest`.
-- Forward it in `WorkerCommand::TranscribeUtterance`.
-- Add `vad_trace` to `TranscriptionRequest`.
-- Add `vad_trace: &VadTrace` to `StageContext`.
-- Pass the same trace into `assemble_transcript`.
-- Queue overload continues to drop the entire utterance, including trace.
-
-Acceptance:
-
-- App tests verify pending context requests preserve trace and timing fields.
-- Worker tests verify a processor can read `ctx.vad_trace`.
-- Worker tests verify engine stage diagnostics remain aligned with engine
-  segments.
-
-### 4. Compact Segment Diagnostics
-
-Expose compact VAD evidence where downstream consumers already look for segment
-quality data. Do not expose the raw trace on `transcript_ready`.
-
-- Introduce or extend `SegmentDiagnostics` in `native/src/protocol.rs`:
-  - `avg_logprob: Option<f32>`;
-  - `compression_ratio: f32`;
-  - `no_speech_prob: Option<f32>`;
-  - `voiced_seconds: f32`;
-  - `vad: Option<VadSegmentDiagnostics>`.
-- `VadSegmentDiagnostics` mirrors the compact evidence fields that are safe to
-  serialize.
-- Add `segment_diagnostics: Option<Vec<SegmentDiagnostics>>` to
-  `EngineStagePayload`.
-- The diagnostics vector must match engine segments 1:1 when present.
-- `voiced_seconds` is derived from VAD evidence when overlap exists. When no VAD
-  overlap exists, VAD corroboration in later filters must require
-  `vad.frame_count > 0`; a zero value alone is not proof of silence.
-- Update TypeScript parser/test fixtures so stage payload diagnostics survive
-  camelCase parsing.
-
-Acceptance:
-
-- Whisper diagnostics use each engine segment's timestamps against the trace.
-- Cohere diagnostics summarize the full utterance range.
-- Diagnostics are omitted or marked `vad: undefined` for no-overlap ranges
-  instead of treating missing evidence as silence.
-
-### 5. Adapter Behavior
-
-Whisper:
-
-- Keep engine segment timestamps as `source=engine`, `granularity=segment`.
-- Continue using Whisper `avg_logprob`, `no_speech_prob`, and compression.
-- Replace duration-derived `voiced_seconds` with VAD-derived evidence.
-- Clamp out-of-range Whisper timestamps to the trace duration.
-
-Cohere Transcribe:
-
-- Keep single segment timing as `source=vad`, `granularity=utterance`.
-- Keep `avg_logprob=None` and `no_speech_prob=None`.
-- Use VAD evidence across `0..duration_ms` for `voiced_seconds` and
-  `vad` diagnostics.
-
-Acceptance:
-
-- Unit tests cover Whisper helper behavior with in-range, clamped, and
-  zero-overlap timestamps.
-- Unit tests cover Cohere full-utterance evidence.
-
-### PR 2 Verification
-
-Run:
-
-- `cargo test --manifest-path native/Cargo.toml session`
-- `cargo test --manifest-path native/Cargo.toml vad_trace`
-- `cargo test --manifest-path native/Cargo.toml worker`
-- `cargo test --manifest-path native/Cargo.toml adapters`
-- `cargo test --manifest-path native/Cargo.toml stages`
-- `cargo test --manifest-path native/Cargo.toml protocol`
-- `cargo test --manifest-path native/Cargo.toml`
-- `npm test -- --run test/protocol.test.ts test/dictation-session-controller.test.ts test/session.test.ts test/session-journal.test.ts`
-
-## Downstream Impact
-
-PR 62 should not merge as-is after these two PRs. Rebase it onto the VAD trace
-branch and rewrite it as hallucination filter v2:
-
-- HARD artifacts may drop on text alone.
-- SOFT phrases such as `thank you`, `bye`, and `you` require corroborating
-  evidence.
-- VAD corroboration reads compact segment diagnostics or `StageContext.vad_trace`
-  with `frame_count > 0`.
-- Dropped payloads include timing and provenance from the segment contract.
-- Empty filtered finals are journaled by the PR 61 plugin contract.
-
-This keeps the user-visible quality feature small: the filter PR becomes policy
-and thresholds, not infrastructure repair.
-
-## Assumptions
-
-- We are still greenfield. Breaking the wire shape is acceptable.
-- Silero probabilities at the 20 ms session decision cadence are the evidence
-  source; raw ONNX window cadence is not exposed.
-- `session_start_unix_ms` is for future wall-clock rendering only. Elapsed
-  session timing uses `utterance_start_ms_in_session`.
-- Word timings are a future Whisper-only implementation detail. Capability says
-  false until word timing objects are actually populated.
-- Whole-session LLM polish remains separate from transcript revisions.
+- Do not implement hallucination filtering in PR 62.
+- Do not implement timestamp rendering or correction in PR 62.
+- Do not add stage toggles, settings, or feature flags.
+- Do not expose raw VAD traces to the plugin.
+- Do not change transcript segment timestamp semantics in this PR.
+- Do not add compatibility shims for old internal payloads.
+
+## Implementation Steps
+
+1. Introduce `VoiceActivityEvidence`.
+
+   Add serialization derives because the engine stage payload will carry it. Keep helper methods small and domain-specific, for example `duration_ms()`.
+
+2. Update `ListeningSession` buffering.
+
+   Attach start time and probability to every retained frame. Preserve existing boundary behavior and padding tests exactly unless a test is proving new metadata.
+
+3. Build evidence at finalization boundaries.
+
+   `flatten_frames` should flatten samples and derive `VoiceActivityEvidence` from the same frame slice. Handle three boundary paths: normal silence finalization, max-duration split at a silence boundary, and hard max-duration split.
+
+4. Pipe the metadata through `AppState`.
+
+   `enqueue_utterance`, `PendingContextRequest`, timeout dispatch, and context-response dispatch should carry `FinalizedUtterance` as one unit.
+
+5. Pipe the metadata through `TranscriptionWorker`.
+
+   `WorkerCommand::TranscribeUtterance`, `TranscriptAssembly`, and `StageContext` should receive the same `VoiceActivityEvidence`.
+
+6. Extend `EngineStagePayload`.
+
+   Serialize `voiceActivity` alongside `isFinal`. Update `Transcript::is_final` tests and any engine-stage payload fixtures.
+
+7. Update the TypeScript protocol tests.
+
+   Add a fixture with `stageResults[0].payload.voiceActivity` and assert it is preserved. Avoid strict TS modeling unless a real consumer needs it.
+
+8. Update docs.
+
+   `docs/system-architecture.md` should state that VAD evidence becomes part of the engine stage payload and typed stage context, while raw traces remain internal.
+
+## Tests
+
+Rust:
+
+- `ListeningSession` finalization includes audio bounds matching retained sample duration.
+- speech bounds follow the first and last retained voiced frames, including the case where retained pre-pad frames are already voiced.
+- two finalized utterances in one session have monotonically increasing `audio_start_ms`.
+- max-duration split carries correct audio bounds and evidence.
+- `AppState` pending context entries retain the full finalized utterance metadata.
+- `TranscriptionWorker` engine payload includes `voiceActivity`.
+- a fake stage can read `ctx.voice_activity` without touching JSON payload.
+
+TypeScript:
+
+- `parseEventFrame` preserves `stageResults[0].payload.voiceActivity`.
+
+High-signal checks before finishing:
+
+```bash
+cargo test -p local-transcript-sidecar --lib
+node scripts/check-rust.mjs
+npm run typecheck && npm run lint && npm run test && npm run build:frontend
+git diff --check
+```
+
+## Risks And Trade-Offs
+
+- Session-relative VAD timestamps should not silently replace engine segment timestamps. PR 62 preserves both; any correction/rendering policy belongs in a later PR.
+- Mean/max probability is intentionally compact. If a future real processor needs full traces, add that as a targeted change with measured payload and memory impact.
+- `clear_activity` currently resets session activity state. The new session clock must not reset there, or later utterances will appear to start at zero.
+- `EngineStagePayload` becomes a stricter internal contract. That is acceptable for this greenfield sidecar/plugin boundary; update all fixtures instead of adding fallback parsing.
+
+## Success Criteria
+
+PR 62 is complete when:
+
+- VAD evidence is produced once by `ListeningSession`.
+- The evidence stays attached to the utterance through context request, worker dispatch, transcript assembly, stage context, and engine stage payload.
+- Existing transcription behavior and session state behavior are unchanged.
+- The plugin receives the evidence inside `stageResults[0].payload.voiceActivity`.
+- Tests prove the metadata survives the paths that could otherwise drop it.
