@@ -1,6 +1,7 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Instant;
 
+use crate::audio_metadata::VoiceActivityEvidence;
 use crate::engine::capabilities::ModelFamilyCapabilities;
 use crate::panic_util::format_panic_message;
 use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
@@ -15,6 +16,7 @@ pub struct StageContext<'a> {
     pub family_capabilities: &'a ModelFamilyCapabilities,
     pub stage_enabled: &'a StageEnablement,
     pub is_final: bool,
+    pub voice_activity: &'a VoiceActivityEvidence,
 }
 
 pub enum StageProcess {
@@ -193,6 +195,7 @@ fn validate_stage_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_metadata::VoiceActivityEvidence;
     use crate::engine::capabilities::{LanguageSupport, ModelFamilyCapabilities};
     use crate::protocol::{
         EngineStagePayload, TimestampGranularity, TimestampSource, TranscriptSegment,
@@ -225,7 +228,13 @@ mod tests {
             }],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
-                payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+                payload: Some(
+                    serde_json::to_value(EngineStagePayload {
+                        is_final: true,
+                        voice_activity: voice_activity(),
+                    })
+                    .unwrap(),
+                ),
                 revision_in: 0,
                 revision_out: Some(0),
                 stage_id: StageId::Engine,
@@ -266,12 +275,14 @@ mod tests {
     fn run(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
         let caps = whisper_caps();
         let enablement = StageEnablement;
+        let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
             utterance_duration_ms: 1_000,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: true,
+            voice_activity: &voice_activity,
         };
         run_post_engine(transcript, &processors, &ctx);
     }
@@ -279,14 +290,29 @@ mod tests {
     fn run_partial(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
         let caps = whisper_caps();
         let enablement = StageEnablement;
+        let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
             utterance_duration_ms: 1_000,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: false,
+            voice_activity: &voice_activity,
         };
         run_post_engine(transcript, &processors, &ctx);
+    }
+
+    fn voice_activity() -> VoiceActivityEvidence {
+        VoiceActivityEvidence {
+            audio_start_ms: 0,
+            audio_end_ms: 1_000,
+            speech_start_ms: 0,
+            speech_end_ms: 1_000,
+            voiced_ms: 1_000,
+            unvoiced_ms: 0,
+            mean_probability: 0.9,
+            max_probability: 1.0,
+        }
     }
 
     #[test]
@@ -569,7 +595,13 @@ mod tests {
             ],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
-                payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+                payload: Some(
+                    serde_json::to_value(EngineStagePayload {
+                        is_final: true,
+                        voice_activity: voice_activity(),
+                    })
+                    .unwrap(),
+                ),
                 revision_in: 0,
                 revision_out: Some(0),
                 stage_id: StageId::Engine,

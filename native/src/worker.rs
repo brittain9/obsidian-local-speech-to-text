@@ -14,6 +14,7 @@ use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_ad
 use crate::engine::traits::LoadedModel;
 use crate::panic_util::format_panic_message;
 use crate::protocol::{ContextWindow, EngineStagePayload, StageId, StageOutcome, StageStatus};
+use crate::session::FinalizedUtterance;
 use crate::stages::{
     StageContext, StageEnablement, StageProcessor, post_engine_processors, run_post_engine,
 };
@@ -42,13 +43,9 @@ pub enum WorkerCommand {
     Shutdown,
     TranscribeUtterance {
         context: Option<ContextWindow>,
-        duration_ms: u64,
-        samples: Vec<i16>,
         session_id: String,
+        utterance: FinalizedUtterance,
         utterance_id: Uuid,
-        utterance_end_ms_in_session: u64,
-        utterance_index: u64,
-        utterance_start_ms_in_session: u64,
     },
 }
 
@@ -179,13 +176,9 @@ fn worker_main(
             WorkerCommand::Shutdown => break,
             WorkerCommand::TranscribeUtterance {
                 context,
-                duration_ms,
-                samples,
                 session_id,
+                utterance,
                 utterance_id,
-                utterance_end_ms_in_session,
-                utterance_index,
-                utterance_start_ms_in_session,
             } => {
                 let Some(session) = active.as_mut() else {
                     continue;
@@ -195,7 +188,13 @@ fn worker_main(
                     continue;
                 }
 
-                let audio_samples: Vec<f32> = samples
+                let voice_activity = utterance.voice_activity;
+                let utterance_duration_ms = utterance.duration_ms();
+                let utterance_end_ms_in_session = utterance.utterance_end_ms_in_session;
+                let utterance_index = utterance.utterance_index;
+                let utterance_start_ms_in_session = utterance.utterance_start_ms_in_session;
+                let audio_samples: Vec<f32> = utterance
+                    .samples
                     .iter()
                     .map(|&sample| sample as f32 / 32768.0)
                     .collect();
@@ -231,7 +230,8 @@ fn worker_main(
                             engine_output,
                             engine_duration_ms,
                             is_final: true,
-                            utterance_duration_ms: duration_ms,
+                            utterance_duration_ms,
+                            voice_activity,
                             context: stage_context.as_ref(),
                             family_capabilities: &family_capabilities,
                             stage_enablement: &session.metadata.stage_enablement,
@@ -241,7 +241,7 @@ fn worker_main(
                             processing_duration_ms: engine_duration_ms,
                             session_id,
                             transcript,
-                            utterance_duration_ms: duration_ms,
+                            utterance_duration_ms,
                             utterance_end_ms_in_session,
                             utterance_index,
                             utterance_start_ms_in_session,
@@ -282,6 +282,7 @@ struct TranscriptAssembly<'a> {
     engine_duration_ms: u64,
     is_final: bool,
     utterance_duration_ms: u64,
+    voice_activity: crate::audio_metadata::VoiceActivityEvidence,
     context: Option<&'a ContextWindow>,
     family_capabilities: &'a ModelFamilyCapabilities,
     stage_enablement: &'a StageEnablement,
@@ -297,6 +298,7 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
         payload: Some(
             serde_json::to_value(EngineStagePayload {
                 is_final: input.is_final,
+                voice_activity: input.voice_activity,
             })
             .expect("EngineStagePayload serialization is infallible"),
         ),
@@ -319,8 +321,129 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
         family_capabilities: input.family_capabilities,
         stage_enabled: input.stage_enablement,
         is_final: input.is_final,
+        voice_activity: &input.voice_activity,
     };
     run_post_engine(&mut transcript, input.processors, &ctx);
 
     transcript
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::capabilities::LanguageSupport;
+    use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
+    use crate::stages::StageProcess;
+
+    struct VoiceActivityReadingProcessor;
+
+    impl StageProcessor for VoiceActivityReadingProcessor {
+        fn id(&self) -> StageId {
+            StageId::HallucinationFilter
+        }
+
+        fn process(&self, transcript: &Transcript, ctx: &StageContext<'_>) -> StageProcess {
+            StageProcess::Ok {
+                segments: transcript.segments.clone(),
+                payload: Some(serde_json::json!({
+                    "audioStartMs": ctx.voice_activity.audio_start_ms,
+                    "voicedMs": ctx.voice_activity.voiced_ms,
+                })),
+            }
+        }
+    }
+
+    #[test]
+    fn assemble_transcript_includes_voice_activity_in_engine_payload() {
+        let voice_activity = voice_activity();
+        let transcript = assemble_transcript(TranscriptAssembly {
+            context: None,
+            engine_duration_ms: 7,
+            engine_output: engine_output(),
+            family_capabilities: &whisper_caps(),
+            is_final: true,
+            processors: &[],
+            stage_enablement: &StageEnablement,
+            utterance_duration_ms: voice_activity.duration_ms(),
+            utterance_id: Uuid::nil(),
+            voice_activity,
+        });
+
+        let payload = transcript.stage_history[0]
+            .payload
+            .as_ref()
+            .expect("engine stage should carry payload")
+            .clone();
+        assert_eq!(
+            serde_json::from_value::<EngineStagePayload>(payload).unwrap(),
+            EngineStagePayload {
+                is_final: true,
+                voice_activity,
+            }
+        );
+    }
+
+    #[test]
+    fn stage_context_exposes_voice_activity_to_processors() {
+        let voice_activity = voice_activity();
+        let processors: Vec<Box<dyn StageProcessor>> =
+            vec![Box::new(VoiceActivityReadingProcessor)];
+        let transcript = assemble_transcript(TranscriptAssembly {
+            context: None,
+            engine_duration_ms: 7,
+            engine_output: engine_output(),
+            family_capabilities: &whisper_caps(),
+            is_final: true,
+            processors: &processors,
+            stage_enablement: &StageEnablement,
+            utterance_duration_ms: voice_activity.duration_ms(),
+            utterance_id: Uuid::nil(),
+            voice_activity,
+        });
+
+        assert_eq!(
+            transcript.stage_history[1].payload,
+            Some(serde_json::json!({
+                "audioStartMs": voice_activity.audio_start_ms,
+                "voicedMs": voice_activity.voiced_ms,
+            }))
+        );
+    }
+
+    fn engine_output() -> EngineTranscriptOutput {
+        EngineTranscriptOutput {
+            segments: vec![TranscriptSegment {
+                start_ms: 0,
+                end_ms: 1_000,
+                text: "hello".to_string(),
+                timestamp_granularity: TimestampGranularity::Segment,
+                timestamp_source: TimestampSource::Engine,
+            }],
+        }
+    }
+
+    fn voice_activity() -> crate::audio_metadata::VoiceActivityEvidence {
+        crate::audio_metadata::VoiceActivityEvidence {
+            audio_start_ms: 2_000,
+            audio_end_ms: 3_000,
+            speech_start_ms: 2_100,
+            speech_end_ms: 2_900,
+            voiced_ms: 800,
+            unvoiced_ms: 200,
+            mean_probability: 0.75,
+            max_probability: 0.95,
+        }
+    }
+
+    fn whisper_caps() -> ModelFamilyCapabilities {
+        ModelFamilyCapabilities {
+            supports_segment_timestamps: true,
+            supports_word_timestamps: false,
+            supports_initial_prompt: true,
+            supports_language_selection: false,
+            supported_languages: LanguageSupport::EnglishOnly,
+            max_audio_duration_secs: None,
+            produces_punctuation: true,
+        }
+    }
 }

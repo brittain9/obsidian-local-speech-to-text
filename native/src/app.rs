@@ -72,13 +72,9 @@ struct ActiveSession {
 struct PendingContextRequest {
     correlation_id: Uuid,
     deadline: Instant,
-    duration_ms: u64,
-    samples: Vec<i16>,
     session_id: String,
+    utterance: FinalizedUtterance,
     utterance_id: Uuid,
-    utterance_end_ms_in_session: u64,
-    utterance_index: u64,
-    utterance_start_ms_in_session: u64,
 }
 
 struct ResolvedModelSelection {
@@ -815,13 +811,9 @@ impl AppState {
         let pending = PendingContextRequest {
             correlation_id,
             deadline,
-            duration_ms: utterance.duration_ms,
-            samples: utterance.samples,
             session_id: session_id.clone(),
+            utterance,
             utterance_id,
-            utterance_end_ms_in_session: utterance.utterance_end_ms_in_session,
-            utterance_index: utterance.utterance_index,
-            utterance_start_ms_in_session: utterance.utterance_start_ms_in_session,
         };
 
         if active_session.context_required {
@@ -895,13 +887,9 @@ impl AppState {
             .transcription_worker
             .send(WorkerCommand::TranscribeUtterance {
                 context,
-                duration_ms: pending.duration_ms,
-                samples: pending.samples,
                 session_id: pending.session_id.clone(),
+                utterance: pending.utterance,
                 utterance_id: pending.utterance_id,
-                utterance_end_ms_in_session: pending.utterance_end_ms_in_session,
-                utterance_index: pending.utterance_index,
-                utterance_start_ms_in_session: pending.utterance_start_ms_in_session,
             });
 
         if send_result.is_err() {
@@ -1691,7 +1679,7 @@ mod tests {
         assert_eq!(pending.correlation_id, correlation_id);
         assert_eq!(pending.utterance_id, utterance_id);
         assert_eq!(pending.session_id, "session-1");
-        assert_eq!(pending.duration_ms, 1000);
+        assert_eq!(pending.utterance.duration_ms(), 1000);
         assert!(active.transcription_active);
     }
 
@@ -1900,11 +1888,24 @@ mod tests {
 
     fn fake_utterance() -> FinalizedUtterance {
         FinalizedUtterance {
-            duration_ms: 1000,
             samples: vec![0i16; 16000],
             utterance_end_ms_in_session: 1000,
             utterance_index: 0,
             utterance_start_ms_in_session: 0,
+            voice_activity: fake_voice_activity(),
+        }
+    }
+
+    fn fake_voice_activity() -> crate::audio_metadata::VoiceActivityEvidence {
+        crate::audio_metadata::VoiceActivityEvidence {
+            audio_start_ms: 0,
+            audio_end_ms: 1000,
+            speech_start_ms: 100,
+            speech_end_ms: 900,
+            voiced_ms: 800,
+            unvoiced_ms: 200,
+            mean_probability: 0.75,
+            max_probability: 0.95,
         }
     }
 

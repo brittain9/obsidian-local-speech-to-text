@@ -197,6 +197,7 @@ mod tests {
         EngineStagePayload, Transcript, validate_audio_samples, validate_language,
         validate_model_path,
     };
+    use crate::audio_metadata::VoiceActivityEvidence;
     use crate::protocol::{
         StageId, StageOutcome, StageStatus, TimestampGranularity, TimestampSource,
         TranscriptSegment,
@@ -317,7 +318,11 @@ mod tests {
     #[test]
     fn is_final_reads_true_from_engine_stage_payload() {
         let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::to_value(EngineStagePayload { is_final: true }).unwrap(),
+            serde_json::to_value(EngineStagePayload {
+                is_final: true,
+                voice_activity: voice_activity(),
+            })
+            .unwrap(),
         ))]);
 
         assert!(transcript.is_final());
@@ -326,7 +331,11 @@ mod tests {
     #[test]
     fn is_final_reads_false_from_engine_stage_payload() {
         let transcript = transcript_with_stages(vec![engine_stage_with_payload(Some(
-            serde_json::to_value(EngineStagePayload { is_final: false }).unwrap(),
+            serde_json::to_value(EngineStagePayload {
+                is_final: false,
+                voice_activity: voice_activity(),
+            })
+            .unwrap(),
         ))]);
 
         assert!(!transcript.is_final());
@@ -336,7 +345,13 @@ mod tests {
     fn is_final_returns_false_when_first_stage_is_not_engine() {
         let transcript = transcript_with_stages(vec![StageOutcome {
             duration_ms: 0,
-            payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+            payload: Some(
+                serde_json::to_value(EngineStagePayload {
+                    is_final: true,
+                    voice_activity: voice_activity(),
+                })
+                .unwrap(),
+            ),
             revision_in: 0,
             revision_out: Some(0),
             stage_id: StageId::Punctuation,
@@ -367,5 +382,18 @@ mod tests {
         let transcript = transcript_with_stages(Vec::new());
 
         assert!(!transcript.is_final());
+    }
+
+    fn voice_activity() -> VoiceActivityEvidence {
+        VoiceActivityEvidence {
+            audio_start_ms: 0,
+            audio_end_ms: 1_000,
+            speech_start_ms: 100,
+            speech_end_ms: 900,
+            voiced_ms: 800,
+            unvoiced_ms: 200,
+            mean_probability: 0.75,
+            max_probability: 0.95,
+        }
     }
 }
