@@ -214,22 +214,47 @@ unconditionally; this PR replaces that with evidence-based classification.
 `blocklist_soft_corroborated`, `prompt_leak_corroborated`. Filter reads
 `initial_prompt` via `StageContext`.
 
-### PR 4 — Pause accumulation
+### PR 4 — Queuing behavior + pause metadata
 
-Thought-level finalization in always-on mode. Smart separator and timestamp
-rendering both depend on pause metadata, so this PR ships before either.
+Two-part PR. Closes #11 (always-on queuing) and lays the pause field that PR 5
+and PR 6 consume. Endpointing thresholds (`silence_end_frames`) stay as they
+are — current Responsive 400 ms / Balanced 1000 ms / Patient 2000 ms is
+already aligned with Deepgram / Google / iOS practice.
 
-- One-sentence mode unchanged.
-- Always-on mode: short pause keeps accumulating into the same utterance; a
-  sustained low-VAD thought boundary finalizes it. Threshold is driven by
-  `SpeakingStyle`: Responsive 1.5 s / Balanced 2.5 s / Patient 3.5 s.
-- `FinalizedUtterance.pause_ms_before_utterance: Option<u64>`, computed at the
-  current utterance's start; `None` for the first utterance of a session. This
-  lets timestamp and separator projection decide before inserting the current
-  utterance, with no retroactive note edit.
+**Queuing behavior (issue #11).** Today `MAX_QUEUED_UTTERANCES = 1` and
+overflow silently drops audio. Replace with a depth-tiered backpressure model
+that processes in order and never drops audio:
+
+| Queued utterances | Behavior |
+| --- | --- |
+| 0–2 | Silent. Normal. |
+| 3+ | Subtle indicator: "Transcribing… catching up." |
+| 10+ | Visible warning: "Transcription is falling behind — pause to let it catch up." |
+| 30 (hard cap) | Stop session with a clear error. Save what's already transcribed. |
+
+`pause_while_processing` is an independent user setting; it is not
+repurposed as the emergency brake. Hard cap = stop session is the only
+no-audio-drop outcome at saturation.
+
+**Pause metadata (PR 5 / PR 6 prerequisite).**
+
+- `FinalizedUtterance.pause_ms_before_utterance: Option<u64>`, measured
+  speech-to-speech (previous utterance's `speech_end_ms` to the current
+  utterance's `speech_start_ms`). Speech-to-speech is what humans perceive as
+  the pause between thoughts; VAD-bound gaps inflate by trailing silence.
+- `None` for the first utterance of a session.
+- `None` for the continuation half of a `MAX_UTTERANCE_FRAMES` split — that
+  boundary is a length cap, not a thought boundary, and downstream renderers
+  must not treat it as a pause signal.
+- Flows through `WorkerCommand::TranscribeUtterance`, the engine stage
+  payload, and `StageContext` so PR 5's renderer and PR 6's separator can read
+  it without another wire round trip.
 - `MAX_UTTERANCE_FRAMES` cap and boundary-aware split unchanged.
 
-**Contract additions:** `pause_ms_before_utterance` on `FinalizedUtterance`.
+**Contract additions:** `pause_ms_before_utterance` on `FinalizedUtterance`,
+on `WorkerCommand::TranscribeUtterance`, on the engine stage payload, and on
+`StageContext`. New backpressure status surface from the sidecar to the plugin
+(queue depth tier).
 
 ### PR 5 — Timestamp rendering
 
@@ -249,7 +274,20 @@ utterance anchors) landed in PR 2; PR 5 only adds the renderer + settings.
 plugin-side. All required segment metadata and session anchors shipped in
 PR 2.
 
-### PR 6 — Speculative transcription
+### PR 6 — Smart separator
+
+Choose space / newline / paragraph between consecutive utterances.
+
+- Pure plugin-side. Not a transcript stage.
+- Inputs: current utterance's `pause_ms_before_utterance`, user setting (`separator:
+  space_default | newline_short_pause | paragraph_long_pause`).
+- `selectSeparator(prevPauseMs, settings)` returns `" "`, `"\n"`, or `"\n\n"`.
+- When the existing `phraseSeparator` setting is `new_line` or `new_paragraph`,
+  smart separator is disabled.
+
+**Contract additions:** none in the sidecar; pure plugin projection.
+
+### PR 7 — Speculative transcription
 
 Live partials on tiny.en / base.en. Depends on PRs 1-5 for the contract surface.
 
@@ -280,19 +318,6 @@ Live partials on tiny.en / base.en. Depends on PRs 1-5 for the contract surface.
 **Contract additions:** worker becomes the canonical producer of
 `is_final = false` revisions; multiple `TranscriptReady` events per utterance
 with monotonic `revision`.
-
-### PR 7 — Smart separator
-
-Choose space / newline / paragraph between consecutive utterances.
-
-- Pure plugin-side. Not a transcript stage.
-- Inputs: current utterance's `pause_ms_before_utterance`, user setting (`separator:
-  space_default | newline_short_pause | paragraph_long_pause`).
-- `selectSeparator(prevPauseMs, settings)` returns `" "`, `"\n"`, or `"\n\n"`.
-- When the existing `phraseSeparator` setting is `new_line` or `new_paragraph`,
-  smart separator is disabled.
-
-**Contract additions:** none in the sidecar; pure plugin projection.
 
 ### PR 8 — LLM cleanup (experimental, opt-in)
 
