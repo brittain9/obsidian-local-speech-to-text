@@ -108,14 +108,16 @@ Lock the contracts so every later PR plugs into a stable surface.
   so future stages consume note context without an engine round trip.
 - Gate `ContextRequest`: don't ask the plugin for note context when family
   `supports_initial_prompt = false` and no post-engine stage requested it.
-- Session contract carries a stable session t0: `SessionConfig.session_start_unix_ms`,
-  and `FinalizedUtterance.utterance_start_ms_in_session` alongside `duration_ms`.
+- Session contract carries a stable session t0:
+  `SessionConfig.session_start_unix_ms`, and transcript-ready events carry
+  utterance/session anchors derived from canonical audio bounds.
 - Snapshot advanced feature settings at session start. Mid-session settings
   changes apply to the next dictation session only.
 
 **Contract additions:** `runs_on_partials` capability, `Skipped { reason: "partial" }`
-outcome, `is_final` parameter on `assemble_transcript`,
-`utterance_start_ms_in_session`, session-scoped feature snapshot.
+outcome, `is_final` parameter on `assemble_transcript`, typed finality on
+`StageOutcome`, `utterance_start_ms_in_session`, session-scoped feature
+snapshot.
 
 ### PR 2 — VAD evidence through the pipeline
 
@@ -133,7 +135,8 @@ single source. Wire format stays compact; the per-frame trace stays in-process.
   construction.
 - The aggregate flows through `WorkerCommand::TranscribeUtterance`, the engine
   stage payload (`stageResults[0].payload.voiceActivity` on the wire), and
-  `StageContext.voice_activity`.
+  `StageContext.voice_activity`. Finality is carried by typed
+  `StageOutcome.is_final` / `stageResults[].isFinal`, not by the engine payload.
 - The trace flows through worker dispatch into `StageContext.vad_probabilities`
   as a borrowed slice. It is never serialized to the plugin.
 - New helper `voiced_fraction(probabilities, range_start_ms, range_end_ms,
