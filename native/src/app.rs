@@ -442,7 +442,7 @@ impl AppState {
                                 model_file_path: resolved_model.resolved_path.clone(),
                                 session_start_unix_ms,
                                 session_id: session_id.clone(),
-                                stage_enablement: StageEnablement,
+                                stage_enablement: StageEnablement::default(),
                             }))
                             .is_err()
                         {
@@ -1341,6 +1341,7 @@ mod tests {
             _request: &TranscriptionRequest,
         ) -> Result<EngineTranscriptOutput, TranscriptionError> {
             Ok(EngineTranscriptOutput {
+                diagnostics: Vec::new(),
                 segments: Vec::new(),
             })
         }

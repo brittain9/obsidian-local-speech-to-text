@@ -326,6 +326,16 @@ Cargo features: `engine-whisper`, `engine-cohere-transcribe`, `gpu-metal`, `gpu-
 
 During inference, the preset's silence window (400–2000 ms) is fully overlapped with model compute — on smaller models the user is typically still pausing when inference completes.
 
+### Stage 4.5: Hallucination Filter
+
+The first post-engine stage is a conservative hallucination filter in the Rust sidecar. It drops only whole segments and preserves the original timing boundaries for all retained segments. If nothing is dropped, the stage records `Skipped { reason: "no_hallucinations" }`; if segments are dropped, it emits a new revision plus a compact payload under the hallucination-filter stage result.
+
+Signals are segment-aligned and stay in-process unless a drop payload is emitted. Whisper contributes `no_speech_prob`, average token log probability, and token count. Cohere contributes selected-token average log probability, token count, and whether autoregressive decoding reached EOS. The stage combines those model diagnostics with per-segment voiced fraction from the Silero probability trace and utterance-level VAD evidence.
+
+Rules are intentionally narrow. Hard text artifacts such as empty text, punctuation-only output, known bracketed non-speech tags, and caption/source attributions can drop on text alone. Soft artifacts such as courtesy endings, CTAs, bare `you`, and URL-like segments require corroborating model or VAD evidence. Normal-looking text drops as silence only when Whisper silence and VAD silence are both strong. Repetition and prompt-leak rules also require corroboration. Partial revisions run only the hard text subset.
+
+Dropped segment payloads include the reason, raw text, timing provenance, and compact signals. Developer mode logs those payloads to the console for local tuning; normal mode does not surface hallucination diagnostics in user-visible transcript text.
+
 ---
 
 ### Stage 5: Text Insertion

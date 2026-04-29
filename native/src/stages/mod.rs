@@ -5,16 +5,29 @@ use crate::audio_metadata::VoiceActivityEvidence;
 use crate::engine::capabilities::ModelFamilyCapabilities;
 use crate::panic_util::format_panic_message;
 use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
-use crate::transcription::Transcript;
+use crate::transcription::{SegmentDiagnostics, Transcript};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct StageEnablement;
+mod hallucination_filter;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageEnablement {
+    pub hallucination_filter: bool,
+}
+
+impl Default for StageEnablement {
+    fn default() -> Self {
+        Self {
+            hallucination_filter: true,
+        }
+    }
+}
 
 pub struct StageContext<'a> {
     pub context: Option<&'a crate::protocol::ContextWindow>,
     pub family_capabilities: &'a ModelFamilyCapabilities,
     pub stage_enabled: &'a StageEnablement,
     pub is_final: bool,
+    pub segment_diagnostics: &'a [SegmentDiagnostics],
     pub vad_probabilities: &'a [f32],
     pub voice_activity: &'a VoiceActivityEvidence,
 }
@@ -48,7 +61,7 @@ pub trait StageProcessor: Send + Sync {
 /// Build the registered post-engine processor chain in canonical order. The
 /// engine stage outcome is appended separately by `assemble_transcript`.
 pub fn post_engine_processors() -> Vec<Box<dyn StageProcessor>> {
-    Vec::new()
+    vec![Box::new(hallucination_filter::HallucinationFilterStage)]
 }
 
 pub fn any_registered_stage_needs_context() -> bool {
@@ -273,13 +286,14 @@ mod tests {
 
     fn run(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
         let caps = whisper_caps();
-        let enablement = StageEnablement;
+        let enablement = StageEnablement::default();
         let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: true,
+            segment_diagnostics: &[],
             vad_probabilities: &[],
             voice_activity: &voice_activity,
         };
@@ -288,13 +302,14 @@ mod tests {
 
     fn run_partial(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
         let caps = whisper_caps();
-        let enablement = StageEnablement;
+        let enablement = StageEnablement::default();
         let voice_activity = voice_activity();
         let ctx = StageContext {
             context: None,
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: false,
+            segment_diagnostics: &[],
             vad_probabilities: &[],
             voice_activity: &voice_activity,
         };

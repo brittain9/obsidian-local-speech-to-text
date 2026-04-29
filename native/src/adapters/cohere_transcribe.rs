@@ -12,8 +12,8 @@ use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
 use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
 use crate::runtimes::onnx::build_session;
 use crate::transcription::{
-    EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
-    validate_audio_samples, validate_language, validate_model_path,
+    EngineTranscriptOutput, GpuConfig, SegmentDiagnostics, TranscriptionError,
+    TranscriptionRequest, validate_audio_samples, validate_language, validate_model_path,
 };
 
 const NUM_DECODER_LAYERS: usize = 8;
@@ -143,7 +143,7 @@ impl LoadedModel for LoadedCohereModel {
             TranscriptionError::transcription_failure("encoder", "produced no output")
         })?;
 
-        let text = autoregressive_decode(
+        let decode = autoregressive_decode(
             &mut self.decoder,
             &encoder_hidden,
             &self.vocab,
@@ -152,7 +152,7 @@ impl LoadedModel for LoadedCohereModel {
             &self.prompt_tokens,
         )?;
 
-        let trimmed = text.trim().to_string();
+        let trimmed = decode.text.trim().to_string();
         let segments = if trimmed.is_empty() {
             Vec::new()
         } else {
@@ -165,8 +165,21 @@ impl LoadedModel for LoadedCohereModel {
                 timestamp_source: TimestampSource::Vad,
             }]
         };
+        let diagnostics = if segments.is_empty() {
+            Vec::new()
+        } else {
+            vec![SegmentDiagnostics {
+                avg_logprob: decode.avg_logprob,
+                decode_reached_eos: Some(decode.reached_eos),
+                no_speech_prob: None,
+                token_count: Some(decode.token_count),
+            }]
+        };
 
-        Ok(EngineTranscriptOutput { segments })
+        Ok(EngineTranscriptOutput {
+            segments,
+            diagnostics,
+        })
     }
 }
 
@@ -495,6 +508,13 @@ fn decode_bpe_bytes(text: &str) -> String {
 
 type NamedInput<'v> = (Cow<'v, str>, SessionInputValue<'v>);
 
+struct DecodeResult {
+    avg_logprob: Option<f32>,
+    reached_eos: bool,
+    text: String,
+    token_count: u32,
+}
+
 fn autoregressive_decode(
     decoder: &mut Session,
     encoder_hidden: &DynValue,
@@ -502,10 +522,13 @@ fn autoregressive_decode(
     cache_names: &[String],
     use_fp16: bool,
     prompt: &[i64],
-) -> Result<String, TranscriptionError> {
+) -> Result<DecodeResult, TranscriptionError> {
     let mut generated_ids: Vec<i64> = Vec::new();
     let mut kv_cache: Option<Vec<DynValue>> = None;
     let mut past_seq_len: i64 = 0;
+    let mut reached_eos = false;
+    let mut logprob_sum = 0.0_f32;
+    let mut logprob_count = 0_u32;
 
     for step in 0..MAX_SEQ_LEN {
         let input_ids: Vec<i64> = if step == 0 {
@@ -572,13 +595,16 @@ fn autoregressive_decode(
             TranscriptionError::transcription_failure("decoder", "produced no output")
         })?;
 
-        let best_id = greedy_argmax(&logits_value)?;
+        let (best_id, selected_logprob) = greedy_argmax_with_logprob(&logits_value)?;
 
         if best_id == TOKEN_END_OF_TRANSCRIPT {
+            reached_eos = true;
             break;
         }
 
         generated_ids.push(best_id);
+        logprob_sum += selected_logprob;
+        logprob_count += 1;
         past_seq_len += seq_len as i64;
 
         let new_cache: Vec<DynValue> = output_iter.map(|(_, v)| v).collect();
@@ -587,10 +613,15 @@ fn autoregressive_decode(
         }
     }
 
-    Ok(detokenize(&generated_ids, vocab))
+    Ok(DecodeResult {
+        avg_logprob: (logprob_count > 0).then_some(logprob_sum / logprob_count as f32),
+        reached_eos,
+        text: detokenize(&generated_ids, vocab),
+        token_count: generated_ids.len() as u32,
+    })
 }
 
-fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
+fn greedy_argmax_with_logprob(logits_value: &DynValue) -> Result<(i64, f32), TranscriptionError> {
     if let Ok((shape, data)) = logits_value.try_extract_tensor::<f32>() {
         return argmax_from_logits(shape, data);
     }
@@ -601,7 +632,7 @@ fn greedy_argmax(logits_value: &DynValue) -> Result<i64, TranscriptionError> {
     argmax_from_logits(shape, &data_f32)
 }
 
-fn argmax_from_logits(dims: &[i64], logits_data: &[f32]) -> Result<i64, TranscriptionError> {
+fn argmax_from_logits(dims: &[i64], logits_data: &[f32]) -> Result<(i64, f32), TranscriptionError> {
     if dims.len() != 3 || dims[0] != 1 {
         return Err(TranscriptionError::transcription_failure(
             "logits shape",
@@ -618,20 +649,39 @@ fn argmax_from_logits(dims: &[i64], logits_data: &[f32]) -> Result<i64, Transcri
         ));
     }
 
+    // Fused argmax + streaming logsumexp in one O(vocab) pass: as we scan, we
+    // maintain `sum_exp = Σ exp(x_i - running_max)` and rescale when a new max
+    // appears. Because the chosen token's score equals the running max,
+    // `selected_logprob = best_score - logsumexp = -ln(sum_exp)`. Pre-fix this
+    // was three passes (argmax + max + sum) over a 64k vocab per decoded token.
     let last_pos = seq_len - 1;
     let logits_offset = last_pos * vocab_size;
+    let logits = &logits_data[logits_offset..logits_offset + vocab_size];
+
     let mut best_id: i64 = 0;
     let mut best_score = f32::NEG_INFINITY;
+    let mut sum_exp: f32 = 0.0;
 
-    for v in 0..vocab_size {
-        let score = logits_data[logits_offset + v];
+    for (v, &score) in logits.iter().enumerate() {
         if score > best_score {
+            sum_exp = if best_score.is_finite() {
+                sum_exp * (best_score - score).exp() + 1.0
+            } else {
+                1.0
+            };
             best_score = score;
             best_id = v as i64;
+        } else {
+            sum_exp += (score - best_score).exp();
         }
     }
 
-    Ok(best_id)
+    let selected_logprob = if best_score.is_finite() {
+        -sum_exp.ln()
+    } else {
+        f32::NEG_INFINITY
+    };
+    Ok((best_id, selected_logprob))
 }
 
 fn build_prompt_tokens() -> Vec<i64> {
@@ -860,6 +910,38 @@ mod tests {
         assert_eq!(vocab.get(&1), Some(&" world".to_string()));
 
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn argmax_from_logits_returns_index_and_token_logprob() {
+        // Three-class softmax: scores [1.0, 2.0, 3.0]. Expected logprobs
+        // log_softmax = score - logsumexp = [-2.4076, -1.4076, -0.4076].
+        let dims = [1_i64, 1, 3];
+        let logits = [1.0_f32, 2.0, 3.0];
+        let (best_id, logprob) = argmax_from_logits(&dims, &logits).expect("should succeed");
+        assert_eq!(best_id, 2);
+        assert!((logprob - -0.4076059).abs() < 1.0e-5, "got {logprob}");
+    }
+
+    #[test]
+    fn argmax_from_logits_handles_large_positive_scores_without_overflow() {
+        // Streaming form must be numerically stable for huge logits.
+        let dims = [1_i64, 1, 3];
+        let logits = [1000.0_f32, 1001.0, 1002.0];
+        let (best_id, logprob) = argmax_from_logits(&dims, &logits).expect("should succeed");
+        assert_eq!(best_id, 2);
+        assert!(logprob.is_finite(), "logprob must stay finite");
+        assert!((logprob - -0.4076059).abs() < 1.0e-5, "got {logprob}");
+    }
+
+    #[test]
+    fn argmax_from_logits_handles_uniform_logits() {
+        // Uniform distribution over V=4: each token has logprob -ln(4).
+        let dims = [1_i64, 1, 4];
+        let logits = [0.5_f32; 4];
+        let (best_id, logprob) = argmax_from_logits(&dims, &logits).expect("should succeed");
+        assert_eq!(best_id, 0);
+        assert!((logprob - -(4.0_f32).ln()).abs() < 1.0e-5, "got {logprob}");
     }
 
     #[test]
