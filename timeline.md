@@ -94,7 +94,7 @@ they establish. After that, the order optimizes for landing the user-visible
 filter fix (PR 3) early, then layering speculative + UX features on the stable
 finality and timing contracts.
 
-### PR 1 — Infrastructure baseline
+### PR 1 — Infrastructure baseline ✅ shipped (#61)
 
 Lock the contracts so every later PR plugs into a stable surface.
 
@@ -119,7 +119,7 @@ outcome, `is_final` parameter on `assemble_transcript`, typed finality on
 `StageOutcome`, `utterance_start_ms_in_session`, session-scoped feature
 snapshot.
 
-### PR 2 — VAD evidence through the pipeline
+### PR 2 — VAD evidence through the pipeline ✅ shipped (#67)
 
 The VAD signal becomes a first-class pipeline input. Every downstream stage
 that wants it (filter today, timestamp renderer tomorrow) reads it from a
@@ -173,7 +173,7 @@ Cohere adapter wiring that calls `voiced_fraction` per segment land with the
 hallucination filter that consumes them. Defining the wire shape now would
 risk rework when the only real consumer arrives.
 
-### PR 3 — Hallucination filter v2 (HARD / SOFT + corroboration)
+### PR 3 — Hallucination filter v2 (HARD / SOFT + corroboration) ⬅ next
 
 The user-visible quality fix. Today's filter drops `thank you` and `bye`
 unconditionally; this PR replaces that with evidence-based classification.

@@ -30,9 +30,18 @@ pub struct TranscriptionRequest {
 /// What an adapter returns from `transcribe`. Adapters own only the engine
 /// inference output; revisioning, stage history, and identity are added by
 /// the worker as it wraps this into the canonical `Transcript`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EngineTranscriptOutput {
     pub segments: Vec<TranscriptSegment>,
+    pub diagnostics: Vec<SegmentDiagnostics>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SegmentDiagnostics {
+    pub avg_logprob: Option<f32>,
+    pub decode_reached_eos: Option<bool>,
+    pub no_speech_prob: Option<f32>,
+    pub token_count: Option<u32>,
 }
 
 /// Canonical transcript revision. Segments are the source of truth; joined

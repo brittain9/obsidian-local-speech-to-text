@@ -6,6 +6,7 @@ import type { Session } from '../session/session';
 import type { PluginSettings } from '../settings/plugin-settings';
 import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
+import type { StageId } from '../session/session-journal';
 import type {
   ContextRequestEvent,
   ContextWindow,
@@ -459,6 +460,7 @@ export class DictationSessionController {
         `capability gate dropped "${warning.field}": ${warning.reason}`,
       );
     }
+    this.logDroppedHallucinations(event);
 
     const text = event.text.trim();
 
@@ -482,6 +484,22 @@ export class DictationSessionController {
     if (result.kind === 'rejected') {
       this.handleError('Failed to record the local transcript', new Error(result.reason));
       void this.abortSessionAfterError(event.sessionId);
+    }
+  }
+
+  private logDroppedHallucinations(event: TranscriptReadyEvent): void {
+    const targetStageId: StageId = 'hallucination_filter';
+    for (const stage of event.stageResults) {
+      if (stage.stageId !== targetStageId || stage.status.kind !== 'ok') {
+        continue;
+      }
+      const droppedSegments = stage.payload?.droppedSegments;
+      if (!Array.isArray(droppedSegments)) {
+        continue;
+      }
+      for (const segment of droppedSegments) {
+        this.dependencies.logger?.debug('session', 'hallucination segment dropped', segment);
+      }
     }
   }
 

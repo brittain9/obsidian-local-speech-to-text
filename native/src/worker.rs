@@ -295,6 +295,10 @@ struct TranscriptAssembly<'a> {
 fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
     let revision: u32 = 0;
     let mut stage_history: Vec<StageOutcome> = Vec::with_capacity(1 + input.processors.len());
+    let EngineTranscriptOutput {
+        segments,
+        diagnostics,
+    } = input.engine_output;
 
     stage_history.push(StageOutcome {
         duration_ms: input.engine_duration_ms,
@@ -314,7 +318,7 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
     let mut transcript = Transcript {
         utterance_id: input.utterance_id,
         revision,
-        segments: input.engine_output.segments,
+        segments,
         stage_history,
     };
 
@@ -323,6 +327,7 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
         family_capabilities: input.family_capabilities,
         stage_enabled: input.stage_enablement,
         is_final: input.is_final,
+        segment_diagnostics: &diagnostics,
         vad_probabilities: input.vad_probabilities,
         voice_activity: &input.voice_activity,
     };
@@ -392,7 +397,7 @@ mod tests {
             family_capabilities: &whisper_caps(),
             is_final: true,
             processors: &[],
-            stage_enablement: &StageEnablement,
+            stage_enablement: &StageEnablement::default(),
             utterance_id: Uuid::nil(),
             vad_probabilities: &[],
             voice_activity,
@@ -422,7 +427,7 @@ mod tests {
             family_capabilities: &whisper_caps(),
             is_final: true,
             processors: &processors,
-            stage_enablement: &StageEnablement,
+            stage_enablement: &StageEnablement::default(),
             utterance_id: Uuid::nil(),
             vad_probabilities: &[],
             voice_activity,
@@ -453,7 +458,7 @@ mod tests {
             family_capabilities: &whisper_caps(),
             is_final: true,
             processors: &processors,
-            stage_enablement: &StageEnablement,
+            stage_enablement: &StageEnablement::default(),
             utterance_id: Uuid::nil(),
             vad_probabilities: &trace,
             voice_activity,
@@ -469,6 +474,7 @@ mod tests {
 
     fn engine_output() -> EngineTranscriptOutput {
         EngineTranscriptOutput {
+            diagnostics: Vec::new(),
             segments: vec![TranscriptSegment {
                 start_ms: 0,
                 end_ms: 1_000,

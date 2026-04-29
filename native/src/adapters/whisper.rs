@@ -8,8 +8,8 @@ use crate::engine::capabilities::{
 use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
 use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
 use crate::transcription::{
-    EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
-    validate_audio_samples, validate_language, validate_model_path,
+    EngineTranscriptOutput, GpuConfig, SegmentDiagnostics, TranscriptionError,
+    TranscriptionRequest, validate_audio_samples, validate_language, validate_model_path,
 };
 
 #[derive(Default)]
@@ -91,9 +91,11 @@ impl LoadedModel for LoadedWhisperModel {
             })?;
 
         let mut segments = Vec::new();
+        let mut diagnostics = Vec::new();
 
         for segment in state.as_iter() {
             let segment_text = segment.to_string();
+            diagnostics.push(whisper_segment_diagnostics(&segment));
             segments.push(TranscriptSegment {
                 end_ms: whisper_timestamp_to_millis(segment.end_timestamp()),
                 start_ms: whisper_timestamp_to_millis(segment.start_timestamp()),
@@ -103,7 +105,51 @@ impl LoadedModel for LoadedWhisperModel {
             });
         }
 
-        Ok(EngineTranscriptOutput { segments })
+        Ok(EngineTranscriptOutput {
+            segments,
+            diagnostics,
+        })
+    }
+}
+
+fn whisper_segment_diagnostics(segment: &whisper_rs::WhisperSegment<'_>) -> SegmentDiagnostics {
+    let token_count = segment.n_tokens().max(0) as u32;
+    SegmentDiagnostics {
+        avg_logprob: average_token_logprob(segment),
+        decode_reached_eos: None,
+        no_speech_prob: Some(segment.no_speech_probability()),
+        token_count: Some(token_count),
+    }
+}
+
+fn average_token_logprob(segment: &whisper_rs::WhisperSegment<'_>) -> Option<f32> {
+    let mut count = 0_u32;
+    let mut sum = 0.0_f32;
+
+    for index in 0..segment.n_tokens() {
+        let Some(token) = segment.get_token(index) else {
+            continue;
+        };
+        if !token_has_visible_text(&token) {
+            continue;
+        }
+        // Floor to 1e-9 so quantization noise can't drive the running sum to
+        // -inf via ln(0); cap at 1.0 so a slightly-over-one probability does
+        // not produce a positive logprob.
+        sum += token.token_probability().clamp(1.0e-9, 1.0).ln();
+        count += 1;
+    }
+
+    (count > 0).then_some(sum / count as f32)
+}
+
+fn token_has_visible_text(token: &whisper_rs::WhisperToken<'_, '_>) -> bool {
+    // Borrow the raw bytes (no allocation) and skip tokens whose text is empty
+    // or whitespace-only — that matches the prior `to_string().trim().is_empty()`
+    // behavior without churning a String per token.
+    match token.to_bytes() {
+        Ok(bytes) => bytes.iter().any(|byte| !byte.is_ascii_whitespace()),
+        Err(_) => false,
     }
 }
 
