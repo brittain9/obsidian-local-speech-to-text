@@ -143,8 +143,10 @@ impl RuntimeCapabilities {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelFamilyCapabilities {
-    #[serde(rename = "supportsTimedSegments")]
-    pub supports_timed_segments: bool,
+    #[serde(rename = "supportsSegmentTimestamps")]
+    pub supports_segment_timestamps: bool,
+    #[serde(rename = "supportsWordTimestamps")]
+    pub supports_word_timestamps: bool,
     #[serde(rename = "supportsInitialPrompt")]
     pub supports_initial_prompt: bool,
     #[serde(rename = "supportsLanguageSelection")]
@@ -166,7 +168,8 @@ impl ModelFamilyCapabilities {
     /// declared by any registered adapter).
     pub const fn unknown() -> Self {
         Self {
-            supports_timed_segments: false,
+            supports_segment_timestamps: false,
+            supports_word_timestamps: false,
             supports_initial_prompt: false,
             supports_language_selection: false,
             supported_languages: LanguageSupport::Unknown,
@@ -184,7 +187,8 @@ mod tests {
     fn unknown_family_capabilities_are_conservative() {
         let unknown = ModelFamilyCapabilities::unknown();
 
-        assert!(!unknown.supports_timed_segments);
+        assert!(!unknown.supports_segment_timestamps);
+        assert!(!unknown.supports_word_timestamps);
         assert!(!unknown.supports_initial_prompt);
         assert!(!unknown.supports_language_selection);
         assert!(!unknown.produces_punctuation);

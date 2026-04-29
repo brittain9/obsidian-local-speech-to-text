@@ -233,7 +233,8 @@ mod tests {
 
     fn whisper_family_caps() -> ModelFamilyCapabilities {
         ModelFamilyCapabilities {
-            supports_timed_segments: true,
+            supports_segment_timestamps: true,
+            supports_word_timestamps: false,
             supports_initial_prompt: true,
             supports_language_selection: false,
             supported_languages: LanguageSupport::EnglishOnly,
@@ -348,7 +349,8 @@ mod tests {
 
     fn capabilities(supports_initial_prompt: bool) -> ModelFamilyCapabilities {
         ModelFamilyCapabilities {
-            supports_timed_segments: true,
+            supports_segment_timestamps: true,
+            supports_word_timestamps: false,
             supports_initial_prompt,
             supports_language_selection: true,
             supported_languages: LanguageSupport::All,

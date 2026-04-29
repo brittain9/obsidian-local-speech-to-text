@@ -197,7 +197,10 @@ mod tests {
         EngineStagePayload, Transcript, validate_audio_samples, validate_language,
         validate_model_path,
     };
-    use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
+    use crate::protocol::{
+        StageId, StageOutcome, StageStatus, TimestampGranularity, TimestampSource,
+        TranscriptSegment,
+    };
 
     #[test]
     fn validate_language_rejects_non_english() {
@@ -228,11 +231,15 @@ mod tests {
                     end_ms: 0,
                     start_ms: 0,
                     text: " Hello".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
                 },
                 TranscriptSegment {
                     end_ms: 0,
                     start_ms: 0,
                     text: "world ".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
                 },
             ],
             stage_history: Vec::new(),
@@ -251,16 +258,22 @@ mod tests {
                     end_ms: 0,
                     start_ms: 0,
                     text: "Hello".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
                 },
                 TranscriptSegment {
                     end_ms: 0,
                     start_ms: 0,
                     text: "   ".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
                 },
                 TranscriptSegment {
                     end_ms: 0,
                     start_ms: 0,
                     text: "world".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
                 },
             ],
             stage_history: Vec::new(),

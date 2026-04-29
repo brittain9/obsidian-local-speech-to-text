@@ -48,7 +48,8 @@ export function buildCapabilityLabels(caps: EngineCapabilitiesRecord): string[] 
     labels.push(MODEL_FORMAT_LABELS[format]);
   }
 
-  if (caps.family.supportsTimedSegments) labels.push('Timed segments');
+  if (caps.family.supportsSegmentTimestamps) labels.push('Segment timestamps');
+  if (caps.family.supportsWordTimestamps) labels.push('Word timestamps');
   if (caps.family.supportsInitialPrompt) labels.push('Initial prompt');
   if (caps.family.producesPunctuation) labels.push('Punctuation');
 

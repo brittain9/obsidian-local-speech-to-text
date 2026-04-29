@@ -69,15 +69,26 @@ export interface TranscriptSegment {
   endMs: number;
   startMs: number;
   text: string;
+  timestampGranularity: TimestampGranularity;
+  timestampSource: TimestampSource;
 }
 
-export interface ContextWindowSource {
-  endRevision: number;
-  kind: 'session_utterance';
-  text: string;
-  truncated: boolean;
-  utteranceId: UtteranceId;
-}
+export type TimestampSource = 'engine' | 'interpolated' | 'none' | 'vad';
+export type TimestampGranularity = 'segment' | 'utterance' | 'word';
+
+export type ContextWindowSource =
+  | {
+      kind: 'note_glossary';
+      text: string;
+      truncated: boolean;
+    }
+  | {
+      endRevision: number;
+      kind: 'session_utterance';
+      text: string;
+      truncated: boolean;
+      utteranceId: UtteranceId;
+    };
 
 export interface ContextWindow {
   budgetChars: number;
@@ -105,11 +116,6 @@ interface EnvelopeBase<TType extends string> {
 
 export interface HealthCommand extends EnvelopeBase<'health'> {}
 
-export interface StageOverrides {
-  hallucinationFilter?: boolean;
-  punctuation?: boolean;
-}
-
 export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   accelerationPreference: AccelerationPreference;
   language: 'en';
@@ -117,9 +123,9 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   modelSelection: SelectedModel;
   modelStorePathOverride?: string;
   pauseWhileProcessing: boolean;
+  sessionStartUnixMs: number;
   sessionId: string;
   speakingStyle: SpeakingStyle;
-  stageOverrides?: StageOverrides;
 }
 
 export interface ContextResponseCommand extends EnvelopeBase<'context_response'> {
@@ -234,7 +240,10 @@ export interface TranscriptReadyEvent extends EnvelopeBase<'transcript_ready'> {
   stageResults: StageOutcome[];
   text: string;
   utteranceDurationMs: number;
+  utteranceEndMsInSession: number;
   utteranceId: UtteranceId;
+  utteranceIndex: number;
+  utteranceStartMsInSession: number;
   warnings: RequestWarning[];
 }
 
@@ -578,7 +587,16 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
           parsedValue.utteranceDurationMs,
           'event.utteranceDurationMs',
         ),
+        utteranceEndMsInSession: readNonNegativeNumber(
+          parsedValue.utteranceEndMsInSession,
+          'event.utteranceEndMsInSession',
+        ),
         utteranceId: readString(parsedValue.utteranceId, 'event.utteranceId'),
+        utteranceIndex: readNonNegativeInteger(parsedValue.utteranceIndex, 'event.utteranceIndex'),
+        utteranceStartMsInSession: readNonNegativeNumber(
+          parsedValue.utteranceStartMsInSession,
+          'event.utteranceStartMsInSession',
+        ),
         warnings: readRequestWarnings(parsedValue.warnings),
       };
 
@@ -730,6 +748,14 @@ function readSessionStopReason(value: unknown, fieldName: string): SessionStopRe
   return readEnumValue(value, SESSION_STOP_REASONS, fieldName);
 }
 
+function readTimestampSource(value: unknown, fieldName: string): TimestampSource {
+  return readEnumValue(value, ['engine', 'interpolated', 'none', 'vad'] as const, fieldName);
+}
+
+function readTimestampGranularity(value: unknown, fieldName: string): TimestampGranularity {
+  return readEnumValue(value, ['segment', 'utterance', 'word'] as const, fieldName);
+}
+
 function readRuntimeId(value: unknown, fieldName: string): RuntimeId {
   return readEnumValue(value, RUNTIME_IDS, fieldName);
 }
@@ -872,9 +898,13 @@ function readModelFamilyCapabilities(
       record.supportsLanguageSelection,
       `${fieldName}.supportsLanguageSelection`,
     ),
-    supportsTimedSegments: readBoolean(
-      record.supportsTimedSegments,
-      `${fieldName}.supportsTimedSegments`,
+    supportsSegmentTimestamps: readBoolean(
+      record.supportsSegmentTimestamps,
+      `${fieldName}.supportsSegmentTimestamps`,
+    ),
+    supportsWordTimestamps: readBoolean(
+      record.supportsWordTimestamps,
+      `${fieldName}.supportsWordTimestamps`,
     ),
   };
 }
@@ -1019,6 +1049,14 @@ function readTranscriptSegments(value: unknown): TranscriptSegment[] {
       endMs: readNonNegativeNumber(segment.endMs, `event.segments[${index}].endMs`),
       startMs: readNonNegativeNumber(segment.startMs, `event.segments[${index}].startMs`),
       text: readString(segment.text, `event.segments[${index}].text`),
+      timestampGranularity: readTimestampGranularity(
+        segment.timestampGranularity,
+        `event.segments[${index}].timestampGranularity`,
+      ),
+      timestampSource: readTimestampSource(
+        segment.timestampSource,
+        `event.segments[${index}].timestampSource`,
+      ),
     };
   });
 }

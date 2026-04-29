@@ -6,7 +6,7 @@ use crate::engine::capabilities::{
     LanguageSupport, ModelFamilyCapabilities, ModelFamilyId, RuntimeId,
 };
 use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
-use crate::protocol::TranscriptSegment;
+use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
     validate_audio_samples, validate_language, validate_model_path,
@@ -16,7 +16,8 @@ use crate::transcription::{
 pub struct WhisperAdapter;
 
 const CAPABILITIES: ModelFamilyCapabilities = ModelFamilyCapabilities {
-    supports_timed_segments: true,
+    supports_segment_timestamps: true,
+    supports_word_timestamps: false,
     supports_initial_prompt: true,
     supports_language_selection: false,
     supported_languages: LanguageSupport::EnglishOnly,
@@ -97,6 +98,8 @@ impl LoadedModel for LoadedWhisperModel {
                 end_ms: whisper_timestamp_to_millis(segment.end_timestamp()),
                 start_ms: whisper_timestamp_to_millis(segment.start_timestamp()),
                 text: segment_text.trim().to_string(),
+                timestamp_granularity: TimestampGranularity::Segment,
+                timestamp_source: TimestampSource::Engine,
             });
         }
 

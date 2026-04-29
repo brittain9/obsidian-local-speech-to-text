@@ -8,6 +8,7 @@ import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
 import type {
   ContextRequestEvent,
+  ContextWindow,
   SessionState,
   SidecarEvent,
   TranscriptReadyEvent,
@@ -29,6 +30,19 @@ type ControllerSession = Pick<
   Session,
   'acceptTranscript' | 'dispose' | 'readNoteContext' | 'setAnchorMode'
 >;
+
+interface ActiveSessionSnapshot {
+  accelerationPreference: PluginSettings['accelerationPreference'];
+  dictationAnchor: PluginSettings['dictationAnchor'];
+  listeningMode: PluginSettings['listeningMode'];
+  modelSelection: NonNullable<PluginSettings['selectedModel']>;
+  modelStorePathOverride: string;
+  pauseWhileProcessing: boolean;
+  phraseSeparator: PluginSettings['phraseSeparator'];
+  sessionStartUnixMs: number;
+  speakingStyle: PluginSettings['speakingStyle'];
+  useNoteAsContext: boolean;
+}
 
 interface DictationSessionControllerDependencies {
   captureStream: Pick<AudioCaptureStream, 'isCapturing' | 'start' | 'stop'>;
@@ -66,6 +80,7 @@ export class DictationSessionController {
   private readonly releaseSidecarSubscription: () => void;
   private session: ControllerSession | null = null;
   private sessionId: string | null = null;
+  private sessionSnapshot: ActiveSessionSnapshot | null = null;
   private state: DictationControllerState = 'idle';
 
   constructor(private readonly dependencies: DictationSessionControllerDependencies) {
@@ -127,6 +142,18 @@ export class DictationSessionController {
 
     const settings = this.dependencies.getSettings();
     const selectedModel = this.requireSelectedModel(settings);
+    const snapshot: ActiveSessionSnapshot = {
+      accelerationPreference: settings.accelerationPreference,
+      dictationAnchor: settings.dictationAnchor,
+      listeningMode: settings.listeningMode,
+      modelSelection: selectedModel,
+      modelStorePathOverride: settings.modelStorePathOverride,
+      pauseWhileProcessing: settings.pauseWhileProcessing,
+      phraseSeparator: settings.phraseSeparator,
+      sessionStartUnixMs: Date.now(),
+      speakingStyle: settings.speakingStyle,
+      useNoteAsContext: settings.useNoteAsContext,
+    };
     const sessionId = createSessionId();
     let session: ControllerSession;
 
@@ -141,8 +168,8 @@ export class DictationSessionController {
           },
         },
         placement: {
-          anchor: settings.dictationAnchor,
-          separator: settings.phraseSeparator,
+          anchor: snapshot.dictationAnchor,
+          separator: snapshot.phraseSeparator,
         },
         sessionId,
       });
@@ -153,6 +180,7 @@ export class DictationSessionController {
 
     this.sessionId = sessionId;
     this.session = session;
+    this.sessionSnapshot = snapshot;
     this.applyUiState('starting');
     this.dependencies.logger?.debug('session', `starting dictation session ${sessionId}`);
 
@@ -179,19 +207,16 @@ export class DictationSessionController {
       this.pendingStartSessionId = sessionId;
       try {
         await this.dependencies.sidecarConnection.startSession({
-          accelerationPreference: settings.accelerationPreference,
+          accelerationPreference: snapshot.accelerationPreference,
           language: 'en',
-          mode: settings.listeningMode,
-          modelSelection: selectedModel,
-          pauseWhileProcessing: settings.pauseWhileProcessing,
+          mode: snapshot.listeningMode,
+          modelSelection: snapshot.modelSelection,
+          pauseWhileProcessing: snapshot.pauseWhileProcessing,
+          sessionStartUnixMs: snapshot.sessionStartUnixMs,
           sessionId,
-          speakingStyle: settings.speakingStyle,
-          stageOverrides: {
-            hallucinationFilter: settings.stages.hallucinationFilter,
-            punctuation: settings.stages.punctuation,
-          },
-          ...(settings.modelStorePathOverride.length > 0
-            ? { modelStorePathOverride: settings.modelStorePathOverride }
+          speakingStyle: snapshot.speakingStyle,
+          ...(snapshot.modelStorePathOverride.length > 0
+            ? { modelStorePathOverride: snapshot.modelStorePathOverride }
             : {}),
         });
       } finally {
@@ -254,6 +279,7 @@ export class DictationSessionController {
     this.abortingSessionId = null;
     this.pendingStartSessionId = null;
     this.sessionId = null;
+    this.sessionSnapshot = null;
     const session = this.session;
     this.session = null;
     this.clearAnchorTimer();
@@ -386,16 +412,16 @@ export class DictationSessionController {
       return;
     }
 
-    const settings = this.dependencies.getSettings();
-    const note = settings.useNoteAsContext
+    const snapshot = this.sessionSnapshot;
+    const note = snapshot?.useNoteAsContext
       ? (this.session?.readNoteContext(event.budgetChars) ?? null)
       : null;
-    const context =
+    const context: ContextWindow | null =
       note === null
         ? null
         : {
             budgetChars: event.budgetChars,
-            sources: [],
+            sources: [{ kind: 'note_glossary', text: note.text, truncated: note.truncated }],
             text: note.text,
             truncated: note.truncated,
           };
@@ -436,11 +462,6 @@ export class DictationSessionController {
 
     const text = event.text.trim();
 
-    if (text.length === 0) {
-      this.dependencies.logger?.debug('session', 'discarding empty transcript');
-      return;
-    }
-
     const session = this.session;
     if (session === null) {
       return;
@@ -453,7 +474,10 @@ export class DictationSessionController {
       sessionId: event.sessionId,
       stageResults: event.stageResults,
       text,
+      utteranceEndMsInSession: event.utteranceEndMsInSession,
       utteranceId: event.utteranceId,
+      utteranceIndex: event.utteranceIndex,
+      utteranceStartMsInSession: event.utteranceStartMsInSession,
     });
     if (result.kind === 'rejected') {
       this.handleError('Failed to record the local transcript', new Error(result.reason));

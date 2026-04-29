@@ -46,6 +46,7 @@ describe('sidecar protocol', () => {
         runtimeId: 'whisper_cpp',
       },
       pauseWhileProcessing: true,
+      sessionStartUnixMs: 1_700_000_000_000,
       sessionId: 'session-gpu',
       speakingStyle: 'balanced',
     });
@@ -55,30 +56,6 @@ describe('sidecar protocol', () => {
     expect(payload.accelerationPreference).toBe('auto');
     expect(payload).not.toHaveProperty('useGpu');
     expect(payload.sessionId).toBe('session-gpu');
-  });
-
-  it('serializes start_session command with stageOverrides', () => {
-    const command = createStartSessionCommand({
-      accelerationPreference: 'auto',
-      language: 'en',
-      mode: 'always_on',
-      modelSelection: {
-        familyId: 'whisper',
-        filePath: '/tmp/m.bin',
-        kind: 'external_file',
-        runtimeId: 'whisper_cpp',
-      },
-      pauseWhileProcessing: true,
-      sessionId: 'session-stages',
-      speakingStyle: 'balanced',
-      stageOverrides: { hallucinationFilter: false, punctuation: true },
-    });
-    const payload = readPayload(encodeJsonFrame(command)) as Record<string, unknown>;
-
-    expect(payload.stageOverrides).toEqual({
-      hallucinationFilter: false,
-      punctuation: true,
-    });
   });
 
   it('serializes get_system_info command', () => {
@@ -105,7 +82,8 @@ describe('sidecar protocol', () => {
       supportedLanguages: { kind: 'all' as const },
       supportsInitialPrompt: true,
       supportsLanguageSelection: true,
-      supportsTimedSegments: true,
+      supportsSegmentTimestamps: true,
+      supportsWordTimestamps: false,
     };
     const compiledRuntime = {
       displayName: 'whisper.cpp',
@@ -148,7 +126,8 @@ describe('sidecar protocol', () => {
         supportedLanguages: { kind: 'english_only' as const },
         supportsInitialPrompt: true,
         supportsLanguageSelection: false,
-        supportsTimedSegments: true,
+        supportsSegmentTimestamps: true,
+        supportsWordTimestamps: false,
       },
       familyId: 'whisper' as const,
       runtime: {
@@ -262,6 +241,9 @@ describe('sidecar protocol', () => {
           text: 'hello',
           type: 'transcript_ready',
           utteranceDurationMs: 500,
+          utteranceEndMsInSession: 900,
+          utteranceIndex: 0,
+          utteranceStartMsInSession: 0,
           utteranceId: 'utt-1',
           warnings: [],
         }),
@@ -282,6 +264,9 @@ describe('sidecar protocol', () => {
           text: 'hello',
           type: 'transcript_ready',
           utteranceDurationMs: 500,
+          utteranceEndMsInSession: 500,
+          utteranceIndex: 0,
+          utteranceStartMsInSession: 0,
           warnings: [],
         }),
       ),
@@ -308,12 +293,15 @@ describe('sidecar protocol', () => {
             durationMs: 0,
             revisionIn: 0,
             stageId: 'punctuation',
-            status: { kind: 'skipped', reason: 'stage_not_implemented' },
+            status: { kind: 'skipped', reason: 'no_action' },
           },
         ],
         text: 'hello world',
         type: 'transcript_ready',
         utteranceDurationMs: 900,
+        utteranceEndMsInSession: 900,
+        utteranceIndex: 0,
+        utteranceStartMsInSession: 0,
         utteranceId: 'utt-1',
         warnings: [],
       }),
@@ -337,12 +325,15 @@ describe('sidecar protocol', () => {
           durationMs: 0,
           revisionIn: 0,
           stageId: 'punctuation',
-          status: { kind: 'skipped', reason: 'stage_not_implemented' },
+          status: { kind: 'skipped', reason: 'no_action' },
         },
       ],
       text: 'hello world',
       type: 'transcript_ready',
       utteranceDurationMs: 900,
+      utteranceEndMsInSession: 900,
+      utteranceIndex: 0,
+      utteranceStartMsInSession: 0,
       utteranceId: 'utt-1',
       warnings: [],
     });
@@ -417,6 +408,9 @@ describe('sidecar protocol', () => {
       text: 'hello world',
       type: 'transcript_ready',
       utteranceDurationMs: 900,
+      utteranceEndMsInSession: 900,
+      utteranceIndex: 0,
+      utteranceStartMsInSession: 0,
       utteranceId: 'utt-1',
       warnings: [],
     });
@@ -443,6 +437,9 @@ describe('sidecar protocol', () => {
         text: 'hello world',
         type: 'transcript_ready',
         utteranceDurationMs: 900,
+        utteranceEndMsInSession: 900,
+        utteranceIndex: 0,
+        utteranceStartMsInSession: 0,
         utteranceId: 'utt-1',
         warnings: [],
       },

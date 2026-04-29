@@ -20,11 +20,6 @@ export const SPEAKING_STYLES = [
   'patient',
 ] as const satisfies readonly SpeakingStyle[];
 
-export interface StagePipelineSettings {
-  hallucinationFilter: boolean;
-  punctuation: boolean;
-}
-
 export interface PluginSettings {
   accelerationPreference: AccelerationPreference;
   cudaLibraryPath: string;
@@ -39,14 +34,8 @@ export interface PluginSettings {
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
   speakingStyle: SpeakingStyle;
-  stages: StagePipelineSettings;
   useNoteAsContext: boolean;
 }
-
-export const DEFAULT_STAGE_PIPELINE_SETTINGS: StagePipelineSettings = {
-  hallucinationFilter: true,
-  punctuation: true,
-};
 
 export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   accelerationPreference: 'auto',
@@ -62,7 +51,6 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
   speakingStyle: 'balanced',
-  stages: { ...DEFAULT_STAGE_PIPELINE_SETTINGS },
   useNoteAsContext: true,
 };
 
@@ -104,19 +92,7 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
     speakingStyle: isSpeakingStyle(raw.speakingStyle)
       ? raw.speakingStyle
       : DEFAULT_PLUGIN_SETTINGS.speakingStyle,
-    stages: readStagePipelineSettings(raw.stages),
     useNoteAsContext: readBoolean(raw.useNoteAsContext, DEFAULT_PLUGIN_SETTINGS.useNoteAsContext),
-  };
-}
-
-function readStagePipelineSettings(value: unknown): StagePipelineSettings {
-  const raw = isRecord(value) ? value : {};
-  return {
-    hallucinationFilter: readBoolean(
-      raw.hallucinationFilter,
-      DEFAULT_STAGE_PIPELINE_SETTINGS.hallucinationFilter,
-    ),
-    punctuation: readBoolean(raw.punctuation, DEFAULT_STAGE_PIPELINE_SETTINGS.punctuation),
   };
 }
 

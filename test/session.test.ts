@@ -349,7 +349,15 @@ function transcript(
   return {
     isFinal: true,
     revision: 0,
-    segments: [{ endMs: 100, startMs: 0, text: overrides.text }],
+    segments: [
+      {
+        endMs: 100,
+        startMs: 0,
+        text: overrides.text,
+        timestampGranularity: 'segment',
+        timestampSource: 'engine',
+      },
+    ],
     sessionId: 'session-1',
     stageResults: [
       {
@@ -360,6 +368,9 @@ function transcript(
         status: { kind: 'ok' },
       },
     ],
+    utteranceEndMsInSession: 100,
+    utteranceIndex: 0,
+    utteranceStartMsInSession: 0,
     ...overrides,
   };
 }

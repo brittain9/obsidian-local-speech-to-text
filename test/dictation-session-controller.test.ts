@@ -462,7 +462,7 @@ describe('DictationSessionController', () => {
     expect(session.readNoteContext).toHaveBeenCalledWith(384);
     const expected: ContextWindow = {
       budgetChars: 384,
-      sources: [],
+      sources: [{ kind: 'note_glossary', text: 'prior text', truncated: false }],
       text: 'prior text',
       truncated: false,
     };
@@ -521,7 +521,7 @@ describe('DictationSessionController', () => {
     expect(sidecarConnection.sendContextResponse).toHaveBeenCalledWith('corr-off', null);
   });
 
-  it('honors live changes to useNoteAsContext between context_request events', async () => {
+  it('uses the start snapshot for context policy across context_request events', async () => {
     const session = new FakeSession();
     session.readNoteContext.mockReturnValue({ text: 'note text', truncated: false });
     const sidecarConnection = new FakeSidecarConnection();
@@ -559,11 +559,16 @@ describe('DictationSessionController', () => {
 
     expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(1, 'corr-on', {
       budgetChars: 384,
-      sources: [],
+      sources: [{ kind: 'note_glossary', text: 'note text', truncated: false }],
       text: 'note text',
       truncated: false,
     });
-    expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(2, 'corr-off', null);
+    expect(sidecarConnection.sendContextResponse).toHaveBeenNthCalledWith(2, 'corr-off', {
+      budgetChars: 384,
+      sources: [{ kind: 'note_glossary', text: 'note text', truncated: false }],
+      text: 'note text',
+      truncated: false,
+    });
   });
 
   it('ignores context_request for an unrelated session', async () => {
@@ -904,6 +909,9 @@ function transcriptReadyEvent(args: {
     text: args.text,
     type: 'transcript_ready',
     utteranceDurationMs: args.utteranceDurationMs ?? 700,
+    utteranceEndMsInSession: 700,
+    utteranceIndex: 0,
+    utteranceStartMsInSession: 0,
     utteranceId: args.utteranceId,
     warnings: [],
   };

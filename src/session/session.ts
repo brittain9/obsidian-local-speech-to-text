@@ -176,6 +176,10 @@ export class Session {
       return;
     }
 
+    if (revision.isFinal && revision.text.length === 0) {
+      return;
+    }
+
     this.applyAppend(revision);
   }
 

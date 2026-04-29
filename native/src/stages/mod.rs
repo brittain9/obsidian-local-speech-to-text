@@ -1,14 +1,16 @@
-//! Post-engine stage pipeline runner (D-009 / D-015).
+//! Post-engine stage pipeline runner.
 //!
 //! Stages are pure functions of `(Transcript, StageContext) -> StageProcess`.
 //! The runner ([`run_post_engine`]) walks a fixed-order set of processors,
 //! appends a `StageOutcome` per processor, bumps `Transcript.revision` on
 //! `Ok`, and isolates panics so a buggy processor cannot break the chain.
 //!
-//! `StageEnablement` lets the worker disable individual stages without
-//! removing them from the registry — disabled stages emit a uniform
-//! `Skipped { reason: "stage_disabled" }` outcome so the wire keeps a
-//! complete history.
+//! Final-only stages are skipped with reason `partial` on partial revisions;
+//! a stage opts into running on partials by overriding
+//! [`StageProcessor::runs_on_partials`].
+//!
+//! `StageEnablement` carries per-session toggles. It is currently empty —
+//! the first real toggle lands with the first real post-engine stage.
 
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Instant;
@@ -18,43 +20,21 @@ use crate::panic_util::format_panic_message;
 use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
 use crate::transcription::Transcript;
 
-pub mod noop;
-
-/// Runtime knobs supplied per session. Each stage owns the meaning of its
-/// own flag; the runner only reads `is_enabled`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StageEnablement {
-    pub hallucination_filter: bool,
-    pub punctuation: bool,
-}
-
-impl Default for StageEnablement {
-    fn default() -> Self {
-        Self {
-            hallucination_filter: true,
-            punctuation: true,
-        }
-    }
-}
-
-impl StageEnablement {
-    /// Whether the runner should invoke the processor for `stage_id`. Stages
-    /// not represented here (`Engine`, `UserRules`) default to enabled —
-    /// only PR-2/PR-3 ship with real toggles.
-    pub fn is_enabled(&self, stage_id: StageId) -> bool {
-        match stage_id {
-            StageId::HallucinationFilter => self.hallucination_filter,
-            StageId::Punctuation => self.punctuation,
-            StageId::Engine | StageId::UserRules => true,
-        }
-    }
-}
+/// Per-session stage toggles. Empty until the first real post-engine stage
+/// ships; future stages add their own field and read it through the
+/// `StageProcessor`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StageEnablement;
 
 /// Inputs a stage may inspect alongside the transcript revision.
 pub struct StageContext<'a> {
+    pub context: Option<&'a crate::protocol::ContextWindow>,
     pub utterance_duration_ms: u64,
     pub family_capabilities: &'a ModelFamilyCapabilities,
     pub stage_enabled: &'a StageEnablement,
+    /// Whether the engine revision is final. The runner skips processors
+    /// that do not opt into partial revisions when this is `false`.
+    pub is_final: bool,
 }
 
 /// Result of running a single stage. Mirrors `StageStatus` plus the
@@ -80,7 +60,17 @@ pub enum StageProcess {
 /// `(Transcript, StageContext)` — the runner gives them no other inputs.
 pub trait StageProcessor: Send + Sync {
     fn id(&self) -> StageId;
+    fn runs_on_partials(&self) -> bool {
+        false
+    }
+    fn needs_context(&self) -> bool {
+        false
+    }
     fn process(&self, transcript: &Transcript, ctx: &StageContext<'_>) -> StageProcess;
+}
+
+pub fn any_registered_stage_needs_context() -> bool {
+    false
 }
 
 /// Run the post-engine processor chain against `transcript`. Mutates
@@ -101,7 +91,7 @@ pub fn run_post_engine(
         let stage_id = processor.id();
         let revision_in = transcript.revision;
 
-        if !ctx.stage_enabled.is_enabled(stage_id) {
+        if !ctx.is_final && !processor.runs_on_partials() {
             transcript.stage_history.push(StageOutcome {
                 duration_ms: 0,
                 payload: None,
@@ -109,7 +99,7 @@ pub fn run_post_engine(
                 revision_out: None,
                 stage_id,
                 status: StageStatus::Skipped {
-                    reason: "stage_disabled".to_string(),
+                    reason: "partial".to_string(),
                 },
             });
             continue;
@@ -120,19 +110,33 @@ pub fn run_post_engine(
         let duration_ms = started_at.elapsed().as_millis() as u64;
 
         let outcome = match result {
-            Ok(StageProcess::Ok { segments, payload }) => {
-                let revision_out = revision_in.saturating_add(1);
-                transcript.revision = revision_out;
-                transcript.segments = segments;
-                StageOutcome {
+            Ok(StageProcess::Ok { segments, payload }) => match validate_stage_segments(
+                &segments,
+                &transcript.segments,
+                ctx.utterance_duration_ms,
+            ) {
+                Ok(()) => {
+                    let revision_out = revision_in.saturating_add(1);
+                    transcript.revision = revision_out;
+                    transcript.segments = segments;
+                    StageOutcome {
+                        duration_ms,
+                        payload,
+                        revision_in,
+                        revision_out: Some(revision_out),
+                        stage_id,
+                        status: StageStatus::Ok,
+                    }
+                }
+                Err(error) => StageOutcome {
                     duration_ms,
                     payload,
                     revision_in,
-                    revision_out: Some(revision_out),
+                    revision_out: None,
                     stage_id,
-                    status: StageStatus::Ok,
-                }
-            }
+                    status: StageStatus::Failed { error },
+                },
+            },
             Ok(StageProcess::Skipped { reason, payload }) => StageOutcome {
                 duration_ms,
                 payload,
@@ -165,17 +169,70 @@ pub fn run_post_engine(
     }
 }
 
+/// Verify a stage's `Ok` output before promoting it to a new revision. Text
+/// stages may drop segments or rewrite text inside the existing timing
+/// boundaries; they must not move boundaries, overlap, or run past the
+/// utterance duration.
+fn validate_stage_segments(
+    new_segments: &[TranscriptSegment],
+    prior_segments: &[TranscriptSegment],
+    utterance_duration_ms: u64,
+) -> Result<(), String> {
+    for segment in new_segments {
+        if segment.start_ms > segment.end_ms {
+            return Err(format!(
+                "segment {}-{} ms has start past end",
+                segment.start_ms, segment.end_ms,
+            ));
+        }
+        if segment.end_ms > utterance_duration_ms {
+            return Err(format!(
+                "segment {}-{} ms extends past utterance duration {} ms",
+                segment.start_ms, segment.end_ms, utterance_duration_ms,
+            ));
+        }
+    }
+
+    for window in new_segments.windows(2) {
+        let prev = &window[0];
+        let next = &window[1];
+        if next.start_ms < prev.end_ms {
+            return Err(format!(
+                "segments {}-{} ms and {}-{} ms overlap or are out of order",
+                prev.start_ms, prev.end_ms, next.start_ms, next.end_ms,
+            ));
+        }
+    }
+
+    for segment in new_segments {
+        let preserved = prior_segments
+            .iter()
+            .any(|prior| prior.start_ms == segment.start_ms && prior.end_ms == segment.end_ms);
+        if !preserved {
+            return Err(format!(
+                "segment {}-{} ms introduces timing boundaries not in the prior revision",
+                segment.start_ms, segment.end_ms,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::capabilities::{LanguageSupport, ModelFamilyCapabilities};
-    use crate::protocol::{EngineStagePayload, TranscriptSegment};
+    use crate::protocol::{
+        EngineStagePayload, TimestampGranularity, TimestampSource, TranscriptSegment,
+    };
     use serde_json::json;
     use uuid::Uuid;
 
     fn whisper_caps() -> ModelFamilyCapabilities {
         ModelFamilyCapabilities {
-            supports_timed_segments: true,
+            supports_segment_timestamps: true,
+            supports_word_timestamps: false,
             supports_initial_prompt: true,
             supports_language_selection: false,
             supported_languages: LanguageSupport::EnglishOnly,
@@ -192,6 +249,8 @@ mod tests {
                 end_ms: 1_000,
                 start_ms: 0,
                 text: "hello".to_string(),
+                timestamp_granularity: TimestampGranularity::Segment,
+                timestamp_source: TimestampSource::Engine,
             }],
             stage_history: vec![StageOutcome {
                 duration_ms: 0,
@@ -207,11 +266,15 @@ mod tests {
     struct RecordingProcessor {
         id: StageId,
         result: fn() -> StageProcess,
+        runs_on_partials: bool,
     }
 
     impl StageProcessor for RecordingProcessor {
         fn id(&self) -> StageId {
             self.id
+        }
+        fn runs_on_partials(&self) -> bool {
+            self.runs_on_partials
         }
         fn process(&self, _transcript: &Transcript, _ctx: &StageContext<'_>) -> StageProcess {
             (self.result)()
@@ -229,18 +292,41 @@ mod tests {
         }
     }
 
-    fn run(
-        transcript: &mut Transcript,
-        processors: Vec<Box<dyn StageProcessor>>,
-        enablement: StageEnablement,
-    ) {
+    fn run(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
         let caps = whisper_caps();
+        let enablement = StageEnablement;
         let ctx = StageContext {
+            context: None,
             utterance_duration_ms: 1_000,
             family_capabilities: &caps,
             stage_enabled: &enablement,
+            is_final: true,
         };
         run_post_engine(transcript, &processors, &ctx);
+    }
+
+    fn run_partial(transcript: &mut Transcript, processors: Vec<Box<dyn StageProcessor>>) {
+        let caps = whisper_caps();
+        let enablement = StageEnablement;
+        let ctx = StageContext {
+            context: None,
+            utterance_duration_ms: 1_000,
+            family_capabilities: &caps,
+            stage_enabled: &enablement,
+            is_final: false,
+        };
+        run_post_engine(transcript, &processors, &ctx);
+    }
+
+    #[test]
+    fn empty_processor_chain_leaves_engine_history_only() {
+        let mut transcript = fresh_transcript();
+
+        run(&mut transcript, Vec::new());
+
+        assert_eq!(transcript.stage_history.len(), 1);
+        assert_eq!(transcript.stage_history[0].stage_id, StageId::Engine);
+        assert_eq!(transcript.revision, 0);
     }
 
     #[test]
@@ -253,12 +339,15 @@ mod tests {
                     end_ms: 1_000,
                     start_ms: 0,
                     text: "filtered".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
                 }],
                 payload: Some(json!({ "rule": "test" })),
             },
+            runs_on_partials: false,
         })];
 
-        run(&mut transcript, processors, StageEnablement::default());
+        run(&mut transcript, processors);
 
         assert_eq!(transcript.revision, 1);
         assert_eq!(transcript.segments[0].text, "filtered");
@@ -279,9 +368,10 @@ mod tests {
                 reason: "no_action".to_string(),
                 payload: None,
             },
+            runs_on_partials: false,
         })];
 
-        run(&mut transcript, processors, StageEnablement::default());
+        run(&mut transcript, processors);
 
         assert_eq!(transcript.revision, 0);
         assert_eq!(transcript.segments[0].text, "hello");
@@ -300,9 +390,10 @@ mod tests {
                 error: "boom".to_string(),
                 payload: None,
             },
+            runs_on_partials: false,
         })];
 
-        run(&mut transcript, processors, StageEnablement::default());
+        run(&mut transcript, processors);
 
         assert_eq!(transcript.revision, 0);
         let outcome = transcript.stage_history.last().unwrap();
@@ -322,10 +413,11 @@ mod tests {
                     reason: "after_panic".to_string(),
                     payload: None,
                 },
+                runs_on_partials: false,
             }),
         ];
 
-        run(&mut transcript, processors, StageEnablement::default());
+        run(&mut transcript, processors);
 
         assert_eq!(transcript.stage_history.len(), 3);
         let panic_outcome = &transcript.stage_history[1];
@@ -339,32 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn disabled_stage_emits_skipped_without_invoking_processor() {
-        let mut transcript = fresh_transcript();
-        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(RecordingProcessor {
-            id: StageId::HallucinationFilter,
-            // If this ran it would panic, proving the runner skipped it.
-            result: || panic!("disabled stage must not be invoked"),
-        })];
-
-        run(
-            &mut transcript,
-            processors,
-            StageEnablement {
-                hallucination_filter: false,
-                punctuation: true,
-            },
-        );
-
-        assert_eq!(transcript.revision, 0);
-        let outcome = transcript.stage_history.last().unwrap();
-        assert_eq!(outcome.stage_id, StageId::HallucinationFilter);
-        assert!(
-            matches!(&outcome.status, StageStatus::Skipped { reason } if reason == "stage_disabled")
-        );
-    }
-
-    #[test]
     fn processors_run_in_input_order() {
         let mut transcript = fresh_transcript();
         let processors: Vec<Box<dyn StageProcessor>> = vec![
@@ -374,6 +440,7 @@ mod tests {
                     reason: "first".to_string(),
                     payload: None,
                 },
+                runs_on_partials: false,
             }),
             Box::new(RecordingProcessor {
                 id: StageId::Punctuation,
@@ -381,6 +448,7 @@ mod tests {
                     reason: "second".to_string(),
                     payload: None,
                 },
+                runs_on_partials: false,
             }),
             Box::new(RecordingProcessor {
                 id: StageId::UserRules,
@@ -388,15 +456,176 @@ mod tests {
                     reason: "third".to_string(),
                     payload: None,
                 },
+                runs_on_partials: false,
             }),
         ];
 
-        run(&mut transcript, processors, StageEnablement::default());
+        run(&mut transcript, processors);
 
         let post = &transcript.stage_history[1..];
         assert_eq!(post.len(), 3);
         assert_eq!(post[0].stage_id, StageId::HallucinationFilter);
         assert_eq!(post[1].stage_id, StageId::Punctuation);
         assert_eq!(post[2].stage_id, StageId::UserRules);
+    }
+
+    #[test]
+    fn final_only_processor_is_skipped_on_partial_revision() {
+        let mut transcript = fresh_transcript();
+        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(RecordingProcessor {
+            id: StageId::HallucinationFilter,
+            result: || panic!("final-only processor must not run on partials"),
+            runs_on_partials: false,
+        })];
+
+        run_partial(&mut transcript, processors);
+
+        assert_eq!(transcript.revision, 0);
+        let outcome = transcript.stage_history.last().unwrap();
+        assert_eq!(outcome.stage_id, StageId::HallucinationFilter);
+        assert!(matches!(&outcome.status, StageStatus::Skipped { reason } if reason == "partial"));
+    }
+
+    #[test]
+    fn partial_safe_processor_runs_on_partial_revision() {
+        let mut transcript = fresh_transcript();
+        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(RecordingProcessor {
+            id: StageId::HallucinationFilter,
+            result: || StageProcess::Skipped {
+                reason: "partial_safe".to_string(),
+                payload: None,
+            },
+            runs_on_partials: true,
+        })];
+
+        run_partial(&mut transcript, processors);
+
+        let outcome = transcript.stage_history.last().unwrap();
+        assert!(
+            matches!(&outcome.status, StageStatus::Skipped { reason } if reason == "partial_safe")
+        );
+    }
+
+    #[test]
+    fn partial_revision_with_empty_chain_leaves_engine_history_only() {
+        let mut transcript = fresh_transcript();
+
+        run_partial(&mut transcript, Vec::new());
+
+        assert_eq!(transcript.stage_history.len(), 1);
+        assert_eq!(transcript.stage_history[0].stage_id, StageId::Engine);
+        assert_eq!(transcript.revision, 0);
+    }
+
+    #[test]
+    fn out_of_bounds_segment_yields_failed_without_mutating_transcript() {
+        let mut transcript = fresh_transcript();
+        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(RecordingProcessor {
+            id: StageId::HallucinationFilter,
+            result: || StageProcess::Ok {
+                segments: vec![TranscriptSegment {
+                    end_ms: 5_000,
+                    start_ms: 0,
+                    text: "overrun".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
+                }],
+                payload: Some(json!({ "tried": "overrun" })),
+            },
+            runs_on_partials: false,
+        })];
+
+        run(&mut transcript, processors);
+
+        assert_eq!(transcript.revision, 0);
+        assert_eq!(transcript.segments[0].text, "hello");
+        let outcome = transcript.stage_history.last().unwrap();
+        assert_eq!(outcome.stage_id, StageId::HallucinationFilter);
+        assert!(
+            matches!(&outcome.status, StageStatus::Failed { error } if error.contains("utterance duration"))
+        );
+        assert_eq!(outcome.payload, Some(json!({ "tried": "overrun" })));
+    }
+
+    #[test]
+    fn boundary_drift_yields_failed_without_mutating_transcript() {
+        let mut transcript = fresh_transcript();
+        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(RecordingProcessor {
+            id: StageId::HallucinationFilter,
+            result: || StageProcess::Ok {
+                segments: vec![TranscriptSegment {
+                    end_ms: 800,
+                    start_ms: 0,
+                    text: "shrunk".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
+                }],
+                payload: None,
+            },
+            runs_on_partials: false,
+        })];
+
+        run(&mut transcript, processors);
+
+        assert_eq!(transcript.revision, 0);
+        assert_eq!(transcript.segments[0].text, "hello");
+        let outcome = transcript.stage_history.last().unwrap();
+        assert!(
+            matches!(&outcome.status, StageStatus::Failed { error } if error.contains("not in the prior revision"))
+        );
+    }
+
+    #[test]
+    fn dropping_segments_preserves_boundaries_and_succeeds() {
+        let mut transcript = Transcript {
+            utterance_id: Uuid::nil(),
+            revision: 0,
+            segments: vec![
+                TranscriptSegment {
+                    end_ms: 500,
+                    start_ms: 0,
+                    text: "first".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
+                },
+                TranscriptSegment {
+                    end_ms: 1_000,
+                    start_ms: 500,
+                    text: "second".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
+                },
+            ],
+            stage_history: vec![StageOutcome {
+                duration_ms: 0,
+                payload: Some(serde_json::to_value(EngineStagePayload { is_final: true }).unwrap()),
+                revision_in: 0,
+                revision_out: Some(0),
+                stage_id: StageId::Engine,
+                status: StageStatus::Ok,
+            }],
+        };
+        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(RecordingProcessor {
+            id: StageId::HallucinationFilter,
+            result: || StageProcess::Ok {
+                segments: vec![TranscriptSegment {
+                    end_ms: 500,
+                    start_ms: 0,
+                    text: "first".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
+                }],
+                payload: None,
+            },
+            runs_on_partials: false,
+        })];
+
+        run(&mut transcript, processors);
+
+        assert_eq!(transcript.revision, 1);
+        assert_eq!(transcript.segments.len(), 1);
+        assert_eq!(transcript.segments[0].text, "first");
+        let outcome = transcript.stage_history.last().unwrap();
+        assert_eq!(outcome.status, StageStatus::Ok);
     }
 }

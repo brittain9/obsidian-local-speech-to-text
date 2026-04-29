@@ -132,6 +132,25 @@ pub struct TranscriptSegment {
     pub end_ms: u64,
     pub start_ms: u64,
     pub text: String,
+    pub timestamp_granularity: TimestampGranularity,
+    pub timestamp_source: TimestampSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampSource {
+    Engine,
+    Vad,
+    Interpolated,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampGranularity {
+    Utterance,
+    Segment,
+    Word,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,21 +189,11 @@ pub struct EngineStagePayload {
     pub is_final: bool,
 }
 
-/// Per-session toggles for the post-engine stage pipeline (D-015). Absent
-/// fields fall through to each stage's compiled-in default — adding a new
-/// stage does not require older clients to know about it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StageOverrides {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hallucination_filter: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub punctuation: Option<bool>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextWindowSource {
+    #[serde(rename_all = "camelCase")]
+    NoteGlossary { text: String, truncated: bool },
     #[serde(rename_all = "camelCase")]
     SessionUtterance {
         end_revision: u32,
@@ -243,11 +252,10 @@ pub enum Command {
         #[serde(default)]
         model_store_path_override: Option<String>,
         pause_while_processing: bool,
+        session_start_unix_ms: u64,
         session_id: String,
         #[serde(default)]
         speaking_style: SpeakingStyle,
-        #[serde(default)]
-        stage_overrides: Option<StageOverrides>,
     },
     ContextResponse {
         correlation_id: Uuid,
@@ -389,7 +397,10 @@ pub enum Event {
         stage_results: Vec<StageOutcome>,
         text: String,
         utterance_duration_ms: u64,
+        utterance_end_ms_in_session: u64,
         utterance_id: Uuid,
+        utterance_index: u64,
+        utterance_start_ms_in_session: u64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<RequestWarning>,
     },
@@ -548,7 +559,8 @@ mod tests {
                 "filePath": "/tmp/model.bin"
             },
             "language": "en",
-            "pauseWhileProcessing": true
+            "pauseWhileProcessing": true,
+            "sessionStartUnixMs": 1_700_000_000_000_u64
         }))
         .expect("payload should serialize");
         let mut framed = Vec::new();
@@ -571,20 +583,18 @@ mod tests {
                 },
                 model_store_path_override: None,
                 pause_while_processing: true,
+                session_start_unix_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 speaking_style: SpeakingStyle::Balanced,
-                stage_overrides: None,
             })
         );
     }
 
     #[test]
-    fn start_session_round_trip_carries_stage_overrides() {
-        use super::StageOverrides;
-
+    fn start_session_unknown_fields_are_ignored() {
         let payload = serde_json::to_vec(&serde_json::json!({
             "type": "start_session",
-            "sessionId": "session-stages",
+            "sessionId": "session-extra",
             "mode": "always_on",
             "modelSelection": {
                 "kind": "external_file",
@@ -594,10 +604,8 @@ mod tests {
             },
             "language": "en",
             "pauseWhileProcessing": true,
-            "stageOverrides": {
-                "hallucinationFilter": false,
-                "punctuation": true
-            }
+            "sessionStartUnixMs": 1_700_000_000_000_u64,
+            "unknownFutureField": { "anything": true }
         }))
         .expect("payload should serialize");
         let mut framed = Vec::new();
@@ -607,19 +615,10 @@ mod tests {
             .expect("frame should parse")
             .expect("frame should exist");
 
-        let IncomingFrame::Command(Command::StartSession {
-            stage_overrides, ..
-        }) = parsed
-        else {
-            panic!("expected StartSession");
-        };
-        assert_eq!(
-            stage_overrides,
-            Some(StageOverrides {
-                hallucination_filter: Some(false),
-                punctuation: Some(true),
-            })
-        );
+        assert!(matches!(
+            parsed,
+            IncomingFrame::Command(Command::StartSession { .. })
+        ));
     }
 
     #[test]
@@ -641,6 +640,7 @@ mod tests {
                 },
                 "language": "en",
                 "pauseWhileProcessing": true,
+                "sessionStartUnixMs": 1_700_000_000_000_u64,
                 "speakingStyle": wire,
             }))
             .expect("payload should serialize");

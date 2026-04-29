@@ -27,7 +27,6 @@ describe('resolvePluginSettings', () => {
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
         speakingStyle: 'patient',
-        stages: { hallucinationFilter: false, punctuation: false },
         useNoteAsContext: false,
       }),
     ).toEqual({
@@ -49,24 +48,8 @@ describe('resolvePluginSettings', () => {
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
       speakingStyle: 'patient',
-      stages: { hallucinationFilter: false, punctuation: false },
       useNoteAsContext: false,
     });
-  });
-
-  it('defaults the stage pipeline to all stages enabled when missing', () => {
-    expect(resolvePluginSettings(undefined).stages).toEqual({
-      hallucinationFilter: true,
-      punctuation: true,
-    });
-  });
-
-  it('falls back to defaults for stages when persisted entries are invalid', () => {
-    expect(
-      resolvePluginSettings({
-        stages: { hallucinationFilter: 'yes', punctuation: 0 },
-      }).stages,
-    ).toEqual({ hallucinationFilter: true, punctuation: true });
   });
 
   it.each([

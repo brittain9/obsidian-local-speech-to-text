@@ -35,7 +35,7 @@ Post-transcript enrichment adds two pipelines separated by a canonical transcrip
 flowchart TB
     subgraph Plugin ["Obsidian plugin (TypeScript)"]
         MIC["Mic + PCM capture"]
-        CFG["Session config + feature toggles"]
+        CFG["Session config"]
         EDIT["Editor insertion"]
     end
 
@@ -61,7 +61,7 @@ flowchart TB
     end
 
     MIC -->|"stdin: audio frames (binary protocol)"| VAD
-    CFG -->|"stdin: start_session w/ features (binary protocol)"| VAD
+    CFG -->|"stdin: start_session (binary protocol)"| VAD
     RENDER -->|"stdout: transcript_ready w/ stageResults (binary protocol)"| EDIT
 ```
 
@@ -72,7 +72,7 @@ What this architecture makes explicit:
 - **Text stages are segment-preserving.** The contract is that they may rewrite text *within* a segment but never change boundaries or timestamps. That is what makes them composable in any order and individually skippable.
 - **LLM is a dashed side branch**, deliberately outside the text pipeline. It is allowed to rewrite freely, which destroys segment alignment — so nothing else in the architecture depends on its behaviour. Two future modes (per-segment rolling vs whole-transcript batch) both slot into this same branch.
 - **Render is the single endpoint.** "Timestamps off" strips them here; format choice (plain text, timestamped list, speaker-prefixed) is applied here. No earlier stage renders.
-- **stdin still carries both audio and commands.** `start_session` now includes feature toggles (the *request* seam); `transcript_ready` now includes `stageResults[]` reporting which stages ran, were skipped, or failed (the *report* seam). The *inventory* seam — `compiledProcessors[]` alongside the existing `compiledRuntimes[]` and `compiledAdapters[]` — rides on the `system_info` event.
+- **stdin still carries both audio and commands.** `start_session` starts the configured capture session; `transcript_ready` includes `stageResults[]` reporting which stages ran, were skipped, or failed. Stage processor inventory and per-stage toggles land with real processors, not placeholders.
 
 **Total codebase (current):** ~8,500 LOC TypeScript + ~6,600 LOC Rust = ~15,100 LOC
 
