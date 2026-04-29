@@ -1,22 +1,26 @@
-# PR 62 Plan: Carry VAD Evidence Through The Pipeline
+# Timeline PR 2 Plan: Carry VAD Evidence Through The Pipeline
+
+This is the plan for `timeline.md` PR 2 (VAD trace through the pipeline). GitHub PR #67 carries this work. Do not confuse with GitHub PR #62, which is unrelated.
+
+> **Status:** Complete. The aggregate ships on the wire; the per-frame trace and `voiced_fraction` helper land in-process for the PR 3 hallucination filter to consume. `voiced_seconds` redefinition and the per-segment adapter wiring deferred to PR 3 (no consumer in PR 2). After this lands, distill any durable shape into `docs/system-architecture.md` and delete this file.
 
 ## Branching
 
-Branch PR 62 from PR 61 after PR 61's working tree is committed and pushed.
+Branch from the merged Timeline PR 1 (stage pipeline scaffolding) tip on `main`.
 
 Suggested command:
 
 ```bash
-git switch feat/stage-pipeline-scaffolding
+git switch main
 git pull --ff-only
 git switch -c feat/vad-evidence-pipeline
 ```
 
-Do not branch PR 62 directly from `main`; PR 62 depends on PR 61's canonical transcript/stage-runner work.
+Do not branch directly from a stale `main`; this work depends on Timeline PR 1's canonical transcript/stage-runner work.
 
 ## Goal
 
-VAD currently decides utterance boundaries and then most of its evidence is discarded. PR 62 should preserve the useful audio-domain facts so later pipeline stages can use them for timestamp quality, hallucination detection, and other segment-preserving text stages.
+VAD currently decides utterance boundaries and then most of its evidence is discarded. This PR should preserve the useful audio-domain facts so later pipeline stages can use them for timestamp quality, hallucination detection, and other segment-preserving text stages.
 
 The implementation should keep one authoritative VAD evidence object and pass that object through the existing sidecar pipeline. Avoid adding settings, feature toggles, placeholder processors, or UI behavior in this PR.
 
@@ -61,7 +65,7 @@ Semantics:
 - `voiced_ms` and `unvoiced_ms` summarize retained VAD frames using the session's existing speech threshold.
 - `mean_probability` and `max_probability` summarize retained VAD probabilities for future quality stages without serializing a large per-frame trace.
 
-Keep raw per-frame probabilities internal to `ListeningSession` while an utterance is being assembled. Do not put the full trace on the wire in PR 62.
+Keep raw per-frame probabilities internal to `ListeningSession` while an utterance is being assembled. Do not put the full trace on the wire in this PR.
 
 ## Data Flow Changes
 
@@ -110,7 +114,7 @@ Keep raw per-frame probabilities internal to `ListeningSession` while an utteran
 
 9. Keep TypeScript changes minimal.
 
-   The current sidecar parser already preserves `StageOutcome.payload` as a generic record. Add or adjust only the tests needed to prove the engine payload survives parsing. Do not add a plugin UI consumer in PR 62.
+   The current sidecar parser already preserves `StageOutcome.payload` as a generic record. Add or adjust only the tests needed to prove the engine payload survives parsing. Do not add a plugin UI consumer in this PR.
 
 ## Placement
 
@@ -122,8 +126,8 @@ The type should not live in a future hallucination or timestamp module. VAD evid
 
 ## Non-Goals
 
-- Do not implement hallucination filtering in PR 62.
-- Do not implement timestamp rendering or correction in PR 62.
+- Do not implement hallucination filtering in this PR.
+- Do not implement timestamp rendering or correction in this PR.
 - Do not add stage toggles, settings, or feature flags.
 - Do not expose raw VAD traces to the plugin.
 - Do not change transcript segment timestamp semantics in this PR.
@@ -190,14 +194,14 @@ git diff --check
 
 ## Risks And Trade-Offs
 
-- Session-relative VAD timestamps should not silently replace engine segment timestamps. PR 62 preserves both; any correction/rendering policy belongs in a later PR.
+- Session-relative VAD timestamps should not silently replace engine segment timestamps. This PR preserves both; any correction/rendering policy belongs in a later PR.
 - Mean/max probability is intentionally compact. If a future real processor needs full traces, add that as a targeted change with measured payload and memory impact.
 - `clear_activity` currently resets session activity state. The new session clock must not reset there, or later utterances will appear to start at zero.
 - `EngineStagePayload` becomes a stricter internal contract. That is acceptable for this greenfield sidecar/plugin boundary; update all fixtures instead of adding fallback parsing.
 
 ## Success Criteria
 
-PR 62 is complete when:
+This PR is complete when:
 
 - VAD evidence is produced once by `ListeningSession`.
 - The evidence stays attached to the utterance through context request, worker dispatch, transcript assembly, stage context, and engine stage payload.

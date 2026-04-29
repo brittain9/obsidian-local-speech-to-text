@@ -117,29 +117,58 @@ Lock the contracts so every later PR plugs into a stable surface.
 outcome, `is_final` parameter on `assemble_transcript`,
 `utterance_start_ms_in_session`, session-scoped feature snapshot.
 
-### PR 2 — VAD trace through the pipeline
+### PR 2 — VAD evidence through the pipeline
 
 The VAD signal becomes a first-class pipeline input. Every downstream stage
-that wants it (filter today, future stages tomorrow) reads it from a single
-source.
+that wants it (filter today, timestamp renderer tomorrow) reads it from a
+single source. Wire format stays compact; the per-frame trace stays in-process.
 
-- `ListeningSession` records a per-frame Silero probability ring buffer for the
-  active utterance, cleared on finalize.
-- `FinalizedUtterance` carries `vad_probabilities: Vec<f32>` (one per 20 ms PCM
-  frame, 50 Hz).
-- The trace flows through `WorkerCommand::TranscribeUtterance` to the adapter,
-  into the engine stage payload, and into `StageContext` for every downstream
-  stage.
-- New helper `voiced_fraction(start_ms, end_ms, trace, threshold)`. Adapter
-  calls it once per segment when populating `SegmentDiagnostics.voiced_seconds`.
-- `voiced_seconds` semantic: time within `[start_ms, end_ms]` where Silero
-  probability ≥ 0.35 (well below Silero's 0.5 default speech threshold;
-  conservative on the side of "voiced").
-- Cohere adapter populates the same way; its single `[0..duration]` segment
-  naturally degrades to per-utterance voiced fraction.
+- `ListeningSession` attaches start time and Silero probability to every
+  buffered frame (`BufferedAudioFrame`), cleared on finalize.
+- Aggregate `VoiceActivityEvidence` (audio bounds, plain `u64` speech bounds,
+  `voiced_ms` / `unvoiced_ms`, mean / max probability) is built once at
+  `flatten_frames` and lives on `FinalizedUtterance`.
+- Per-frame trace `vad_probabilities: Vec<f32>` (one per 20 ms PCM frame, 50 Hz)
+  also lives on `FinalizedUtterance`. Length is aligned to retained samples by
+  construction.
+- The aggregate flows through `WorkerCommand::TranscribeUtterance`, the engine
+  stage payload (`stageResults[0].payload.voiceActivity` on the wire), and
+  `StageContext.voice_activity`.
+- The trace flows through worker dispatch into `StageContext.vad_probabilities`
+  as a borrowed slice. It is never serialized to the plugin.
+- New helper `voiced_fraction(probabilities, range_start_ms, range_end_ms,
+  threshold)` in `audio_metadata.rs`. Coordinates are utterance-local
+  milliseconds (matches Whisper and Cohere segment timestamps).
+- Aggregate `voiced_ms` / `speech_*_ms` use a fixed 0.35 threshold so ratios
+  are comparable across sessions even when `SpeakingStyle` changes the per-
+  session VAD threshold (0.40 / 0.50 / 0.55).
+- When no retained frame meets the threshold, `speech_start_ms` and
+  `speech_end_ms` collapse to `audio_start_ms`. Consumers detect "no voice"
+  via `speech_end_ms == speech_start_ms`; the renderer-side `TimestampSource`
+  enum carries the same signal at the projection layer.
 
-**Contract additions:** `vad_probabilities` on `FinalizedUtterance`, redefined
-`voiced_seconds` semantic, VAD trace exposed via `StageContext`.
+**Pulled forward from PR 5 (landed here as architectural prerequisites):**
+
+- Capability split: `supports_timed_segments` is replaced with
+  `supports_segment_timestamps` and `supports_word_timestamps`.
+- `TimestampSource = engine | vad | interpolated | none` and
+  `TimestampGranularity = utterance | segment | word` ride on every
+  `TranscriptSegment`. Adapters populate both at the engine boundary.
+- `transcript_ready` carries `session_start_unix_ms`, `utterance_index`,
+  `utterance_start_ms_in_session`, and `utterance_end_ms_in_session` so the
+  PR 5 renderer has everything it needs to anchor `[MM:SS]` markers without
+  another wire round trip.
+
+**Contract additions:** `voiceActivity` on `EngineStagePayload` (wire),
+`voice_activity` and `vad_probabilities` on `StageContext` (in-process),
+fixed 0.35 threshold for aggregate fields, `voiced_fraction` helper,
+capability split, `TimestampSource` / `TimestampGranularity` on
+`TranscriptSegment`, session/utterance anchors on `transcript_ready`.
+
+**Deferred to PR 3:** `SegmentDiagnostics.voiced_seconds` and the Whisper /
+Cohere adapter wiring that calls `voiced_fraction` per segment land with the
+hallucination filter that consumes them. Defining the wire shape now would
+risk rework when the only real consumer arrives.
 
 ### PR 3 — Hallucination filter v2 (HARD / SOFT + corroboration)
 
@@ -201,13 +230,10 @@ rendering both depend on pause metadata, so this PR ships before either.
 
 ### PR 5 — Timestamp rendering
 
-User-facing timestamps with explicit provenance.
+User-facing timestamps with explicit provenance. The metadata surface
+(`TimestampSource`, `TimestampGranularity`, capability split, session/
+utterance anchors) landed in PR 2; PR 5 only adds the renderer + settings.
 
-- Capability split: replace `supports_timed_segments` with
-  `supports_segment_timestamps` and `supports_word_timestamps`.
-- `TimestampSource = engine | vad | interpolated | none`;
-  `TimestampGranularity = utterance | segment | word`. Adapter populates both
-  on each `TranscriptSegment`.
 - Settings: `timestampMode (off | utterance | long_pause | interval)`,
   `timestampFormat ([MM:SS] | [HH:MM:SS])`, `timestampMinIntervalSec`,
   `timestampPlacement (inline_prefix | own_line)`.
@@ -216,8 +242,9 @@ User-facing timestamps with explicit provenance.
 - Render markers only on `is_final = true` revisions.
 - Word-timestamp UI is not surfaced until an engine populates word timing.
 
-**Contract additions:** capability flag split, `TimestampSource` and
-`TimestampGranularity` on `TranscriptSegment`.
+**Contract additions:** none in the sidecar; renderer and settings are
+plugin-side. All required segment metadata and session anchors shipped in
+PR 2.
 
 ### PR 6 — Speculative transcription
 

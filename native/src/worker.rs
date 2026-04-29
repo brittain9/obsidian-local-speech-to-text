@@ -193,6 +193,7 @@ fn worker_main(
                 let utterance_end_ms_in_session = utterance.utterance_end_ms_in_session;
                 let utterance_index = utterance.utterance_index;
                 let utterance_start_ms_in_session = utterance.utterance_start_ms_in_session;
+                let vad_probabilities = utterance.vad_probabilities;
                 let audio_samples: Vec<f32> = utterance
                     .samples
                     .iter()
@@ -231,6 +232,7 @@ fn worker_main(
                             engine_duration_ms,
                             is_final: true,
                             utterance_duration_ms,
+                            vad_probabilities: &vad_probabilities,
                             voice_activity,
                             context: stage_context.as_ref(),
                             family_capabilities: &family_capabilities,
@@ -282,6 +284,7 @@ struct TranscriptAssembly<'a> {
     engine_duration_ms: u64,
     is_final: bool,
     utterance_duration_ms: u64,
+    vad_probabilities: &'a [f32],
     voice_activity: crate::audio_metadata::VoiceActivityEvidence,
     context: Option<&'a ContextWindow>,
     family_capabilities: &'a ModelFamilyCapabilities,
@@ -321,6 +324,7 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
         family_capabilities: input.family_capabilities,
         stage_enabled: input.stage_enablement,
         is_final: input.is_final,
+        vad_probabilities: input.vad_probabilities,
         voice_activity: &input.voice_activity,
     };
     run_post_engine(&mut transcript, input.processors, &ctx);
@@ -331,6 +335,7 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_metadata::voiced_fraction;
     use crate::engine::capabilities::LanguageSupport;
     use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
     use crate::stages::StageProcess;
@@ -353,6 +358,31 @@ mod tests {
         }
     }
 
+    /// Synthesises the consumer pattern PR 3 (hallucination filter v2) will
+    /// use: read the per-frame trace from `StageContext` and compute a
+    /// per-segment voiced fraction. Segment timestamps are utterance-local.
+    struct VoicedFractionProcessor;
+
+    impl StageProcessor for VoicedFractionProcessor {
+        fn id(&self) -> StageId {
+            StageId::HallucinationFilter
+        }
+
+        fn process(&self, transcript: &Transcript, ctx: &StageContext<'_>) -> StageProcess {
+            let segment = &transcript.segments[0];
+            let fraction = voiced_fraction(
+                ctx.vad_probabilities,
+                segment.start_ms,
+                segment.end_ms,
+                0.35,
+            );
+            StageProcess::Ok {
+                segments: transcript.segments.clone(),
+                payload: Some(serde_json::json!({ "voicedFraction": fraction })),
+            }
+        }
+    }
+
     #[test]
     fn assemble_transcript_includes_voice_activity_in_engine_payload() {
         let voice_activity = voice_activity();
@@ -366,6 +396,7 @@ mod tests {
             stage_enablement: &StageEnablement,
             utterance_duration_ms: voice_activity.duration_ms(),
             utterance_id: Uuid::nil(),
+            vad_probabilities: &[],
             voice_activity,
         });
 
@@ -398,6 +429,7 @@ mod tests {
             stage_enablement: &StageEnablement,
             utterance_duration_ms: voice_activity.duration_ms(),
             utterance_id: Uuid::nil(),
+            vad_probabilities: &[],
             voice_activity,
         });
 
@@ -408,6 +440,37 @@ mod tests {
                 "voicedMs": voice_activity.voiced_ms,
             }))
         );
+    }
+
+    #[test]
+    fn stage_context_exposes_per_frame_trace_for_voiced_fraction() {
+        // 50 frames (1 s) where the first 35 are voiced and the last 15
+        // are silent. The single segment covers the full second.
+        let mut trace = vec![1.0_f32; 35];
+        trace.extend(std::iter::repeat_n(0.0_f32, 15));
+        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(VoicedFractionProcessor)];
+
+        let voice_activity = voice_activity();
+        let transcript = assemble_transcript(TranscriptAssembly {
+            context: None,
+            engine_duration_ms: 7,
+            engine_output: engine_output(),
+            family_capabilities: &whisper_caps(),
+            is_final: true,
+            processors: &processors,
+            stage_enablement: &StageEnablement,
+            utterance_duration_ms: voice_activity.duration_ms(),
+            utterance_id: Uuid::nil(),
+            vad_probabilities: &trace,
+            voice_activity,
+        });
+
+        let payload = transcript.stage_history[1]
+            .payload
+            .as_ref()
+            .expect("processor should emit payload")
+            .clone();
+        assert_eq!(payload, serde_json::json!({ "voicedFraction": 0.7_f32 }));
     }
 
     fn engine_output() -> EngineTranscriptOutput {

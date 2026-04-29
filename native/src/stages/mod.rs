@@ -16,6 +16,7 @@ pub struct StageContext<'a> {
     pub family_capabilities: &'a ModelFamilyCapabilities,
     pub stage_enabled: &'a StageEnablement,
     pub is_final: bool,
+    pub vad_probabilities: &'a [f32],
     pub voice_activity: &'a VoiceActivityEvidence,
 }
 
@@ -282,6 +283,7 @@ mod tests {
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: true,
+            vad_probabilities: &[],
             voice_activity: &voice_activity,
         };
         run_post_engine(transcript, &processors, &ctx);
@@ -297,6 +299,7 @@ mod tests {
             family_capabilities: &caps,
             stage_enabled: &enablement,
             is_final: false,
+            vad_probabilities: &[],
             voice_activity: &voice_activity,
         };
         run_post_engine(transcript, &processors, &ctx);
