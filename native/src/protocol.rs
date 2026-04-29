@@ -132,6 +132,25 @@ pub struct TranscriptSegment {
     pub end_ms: u64,
     pub start_ms: u64,
     pub text: String,
+    pub timestamp_granularity: TimestampGranularity,
+    pub timestamp_source: TimestampSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampSource {
+    Engine,
+    Vad,
+    Interpolated,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampGranularity {
+    Utterance,
+    Segment,
+    Word,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +192,8 @@ pub struct EngineStagePayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextWindowSource {
+    #[serde(rename_all = "camelCase")]
+    NoteGlossary { text: String, truncated: bool },
     #[serde(rename_all = "camelCase")]
     SessionUtterance {
         end_revision: u32,
@@ -231,6 +252,7 @@ pub enum Command {
         #[serde(default)]
         model_store_path_override: Option<String>,
         pause_while_processing: bool,
+        session_start_unix_ms: u64,
         session_id: String,
         #[serde(default)]
         speaking_style: SpeakingStyle,
@@ -375,7 +397,10 @@ pub enum Event {
         stage_results: Vec<StageOutcome>,
         text: String,
         utterance_duration_ms: u64,
+        utterance_end_ms_in_session: u64,
         utterance_id: Uuid,
+        utterance_index: u64,
+        utterance_start_ms_in_session: u64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<RequestWarning>,
     },
@@ -534,7 +559,8 @@ mod tests {
                 "filePath": "/tmp/model.bin"
             },
             "language": "en",
-            "pauseWhileProcessing": true
+            "pauseWhileProcessing": true,
+            "sessionStartUnixMs": 1_700_000_000_000_u64
         }))
         .expect("payload should serialize");
         let mut framed = Vec::new();
@@ -557,10 +583,42 @@ mod tests {
                 },
                 model_store_path_override: None,
                 pause_while_processing: true,
+                session_start_unix_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 speaking_style: SpeakingStyle::Balanced,
             })
         );
+    }
+
+    #[test]
+    fn start_session_unknown_fields_are_ignored() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "start_session",
+            "sessionId": "session-extra",
+            "mode": "always_on",
+            "modelSelection": {
+                "kind": "external_file",
+                "runtimeId": "whisper_cpp",
+                "familyId": "whisper",
+                "filePath": "/tmp/model.bin"
+            },
+            "language": "en",
+            "pauseWhileProcessing": true,
+            "sessionStartUnixMs": 1_700_000_000_000_u64,
+            "unknownFutureField": { "anything": true }
+        }))
+        .expect("payload should serialize");
+        let mut framed = Vec::new();
+        write_frame(&mut framed, JSON_FRAME_KIND, &payload).expect("frame should write");
+
+        let parsed = read_frame(&mut framed.as_slice())
+            .expect("frame should parse")
+            .expect("frame should exist");
+
+        assert!(matches!(
+            parsed,
+            IncomingFrame::Command(Command::StartSession { .. })
+        ));
     }
 
     #[test]
@@ -582,6 +640,7 @@ mod tests {
                 },
                 "language": "en",
                 "pauseWhileProcessing": true,
+                "sessionStartUnixMs": 1_700_000_000_000_u64,
                 "speakingStyle": wire,
             }))
             .expect("payload should serialize");

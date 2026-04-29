@@ -21,6 +21,7 @@ use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
     SessionInitError,
 };
+use crate::stages::{StageEnablement, any_registered_stage_needs_context};
 use crate::transcription::GpuConfig;
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
@@ -59,6 +60,7 @@ pub struct AppState {
 
 struct ActiveSession {
     draining: bool,
+    context_required: bool,
     last_reported_state: Option<SessionState>,
     pause_while_processing: bool,
     pending_context_requests: Vec<PendingContextRequest>,
@@ -74,6 +76,9 @@ struct PendingContextRequest {
     samples: Vec<i16>,
     session_id: String,
     utterance_id: Uuid,
+    utterance_end_ms_in_session: u64,
+    utterance_index: u64,
+    utterance_start_ms_in_session: u64,
 }
 
 struct ResolvedModelSelection {
@@ -389,6 +394,7 @@ impl AppState {
                 model_selection,
                 model_store_path_override,
                 pause_while_processing,
+                session_start_unix_ms,
                 session_id,
                 speaking_style,
             } => {
@@ -411,6 +417,7 @@ impl AppState {
                         );
                         let config = SessionConfig {
                             mode,
+                            session_start_unix_ms,
                             session_id: session_id.clone(),
                             style: speaking_style,
                         };
@@ -437,7 +444,9 @@ impl AppState {
                                 gpu_config: GpuConfig { use_gpu },
                                 language,
                                 model_file_path: resolved_model.resolved_path.clone(),
+                                session_start_unix_ms,
                                 session_id: session_id.clone(),
+                                stage_enablement: StageEnablement,
                             }))
                             .is_err()
                         {
@@ -451,6 +460,11 @@ impl AppState {
                         }
 
                         self.active_session = Some(ActiveSession {
+                            context_required: resolved_model_supports_initial_prompt(
+                                self.registry.as_ref(),
+                                resolved_model.runtime_id,
+                                resolved_model.family_id,
+                            ) || any_registered_stage_needs_context(),
                             draining: false,
                             last_reported_state: None,
                             pause_while_processing,
@@ -708,6 +722,9 @@ impl AppState {
                 session_id,
                 transcript,
                 utterance_duration_ms,
+                utterance_end_ms_in_session,
+                utterance_index,
+                utterance_start_ms_in_session,
                 warnings,
             } => {
                 {
@@ -733,7 +750,10 @@ impl AppState {
                     stage_results: transcript.stage_history,
                     text,
                     utterance_duration_ms,
+                    utterance_end_ms_in_session,
                     utterance_id: transcript.utterance_id,
+                    utterance_index,
+                    utterance_start_ms_in_session,
                     warnings,
                 });
 
@@ -792,23 +812,29 @@ impl AppState {
             active_session.transcription_active = true;
         }
 
-        active_session
-            .pending_context_requests
-            .push(PendingContextRequest {
+        let pending = PendingContextRequest {
+            correlation_id,
+            deadline,
+            duration_ms: utterance.duration_ms,
+            samples: utterance.samples,
+            session_id: session_id.clone(),
+            utterance_id,
+            utterance_end_ms_in_session: utterance.utterance_end_ms_in_session,
+            utterance_index: utterance.utterance_index,
+            utterance_start_ms_in_session: utterance.utterance_start_ms_in_session,
+        };
+
+        if active_session.context_required {
+            active_session.pending_context_requests.push(pending);
+            events.push(Event::ContextRequest {
+                budget_chars: CONTEXT_BUDGET_CHARS,
                 correlation_id,
-                deadline,
-                duration_ms: utterance.duration_ms,
-                samples: utterance.samples,
-                session_id: session_id.clone(),
+                session_id,
                 utterance_id,
             });
-
-        events.push(Event::ContextRequest {
-            budget_chars: CONTEXT_BUDGET_CHARS,
-            correlation_id,
-            session_id,
-            utterance_id,
-        });
+        } else {
+            self.dispatch_pending(pending, None, events);
+        }
     }
 
     fn handle_context_response(
@@ -830,6 +856,10 @@ impl AppState {
         };
 
         let pending = active_session.pending_context_requests.remove(index);
+        let context = context.filter(|window| {
+            window.budget_chars <= CONTEXT_BUDGET_CHARS
+                && window.text.chars().count() <= CONTEXT_BUDGET_CHARS as usize
+        });
         self.dispatch_pending(pending, context, events);
     }
 
@@ -869,6 +899,9 @@ impl AppState {
                 samples: pending.samples,
                 session_id: pending.session_id.clone(),
                 utterance_id: pending.utterance_id,
+                utterance_end_ms_in_session: pending.utterance_end_ms_in_session,
+                utterance_index: pending.utterance_index,
+                utterance_start_ms_in_session: pending.utterance_start_ms_in_session,
             });
 
         if send_result.is_err() {
@@ -1101,6 +1134,16 @@ fn advance_transcription_queue(active_session: &mut ActiveSession) {
     }
 }
 
+fn resolved_model_supports_initial_prompt(
+    registry: &EngineRegistry,
+    runtime_id: RuntimeId,
+    family_id: ModelFamilyId,
+) -> bool {
+    registry
+        .adapter(runtime_id, family_id)
+        .is_some_and(|adapter| adapter.capabilities().supports_initial_prompt)
+}
+
 fn derive_session_state(
     transcription_active: bool,
     queued_utterances: usize,
@@ -1284,10 +1327,15 @@ mod tests {
 
     impl FakeAdapter {
         fn new() -> Self {
+            Self::with_initial_prompt(true)
+        }
+
+        fn with_initial_prompt(supports_initial_prompt: bool) -> Self {
             Self {
                 capabilities: ModelFamilyCapabilities {
-                    supports_timed_segments: true,
-                    supports_initial_prompt: true,
+                    supports_segment_timestamps: true,
+                    supports_word_timestamps: false,
+                    supports_initial_prompt,
                     supports_language_selection: false,
                     supported_languages: LanguageSupport::EnglishOnly,
                     max_audio_duration_secs: None,
@@ -1340,6 +1388,13 @@ mod tests {
         let mut registry = EngineRegistry::default();
         registry.register_runtime(Box::new(FakeRuntime::cpu_only()));
         registry.register_adapter(Box::new(FakeAdapter::new()));
+        Arc::new(registry)
+    }
+
+    fn fake_registry_without_context_support() -> Arc<EngineRegistry> {
+        let mut registry = EngineRegistry::default();
+        registry.register_runtime(Box::new(FakeRuntime::cpu_only()));
+        registry.register_adapter(Box::new(FakeAdapter::with_initial_prompt(false)));
         Arc::new(registry)
     }
 
@@ -1641,6 +1696,58 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_utterance_dispatches_immediately_when_context_is_not_supported() {
+        let model_file_path = create_model_file();
+        let mut app = AppState::with_registry(
+            "0.1.0",
+            sample_catalog(),
+            fake_registry_without_context_support(),
+            ListeningSession::new,
+        );
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+
+        assert!(events.is_empty(), "no context_request should be emitted");
+        let active = app.active_session.as_ref().expect("active session");
+        assert!(active.pending_context_requests.is_empty());
+        assert!(active.transcription_active);
+    }
+
+    #[test]
+    fn over_budget_context_response_dispatches_none() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+        let correlation_id = match &events[0] {
+            Event::ContextRequest { correlation_id, .. } => *correlation_id,
+            other => panic!("expected ContextRequest, got {other:?}"),
+        };
+
+        let context_window = ContextWindow {
+            budget_chars: 384,
+            sources: vec![ContextWindowSource::NoteGlossary {
+                text: "x".repeat(385),
+                truncated: true,
+            }],
+            text: "x".repeat(385),
+            truncated: true,
+        };
+        let (_control_flow, response_events) = app.handle_command(Command::ContextResponse {
+            correlation_id,
+            context: Some(context_window),
+        });
+
+        assert!(response_events.is_empty());
+        let active = app.active_session.as_ref().expect("active session");
+        assert!(active.pending_context_requests.is_empty());
+    }
+
+    #[test]
     fn context_response_with_window_clears_pending_request() {
         let model_file_path = create_model_file();
         let mut app = test_app();
@@ -1773,6 +1880,7 @@ mod tests {
             },
             model_store_path_override: None,
             pause_while_processing: true,
+            session_start_unix_ms: 1_700_000_000_000,
             session_id: session_id.to_string(),
             speaking_style: SpeakingStyle::Balanced,
         }
@@ -1794,6 +1902,9 @@ mod tests {
         FinalizedUtterance {
             duration_ms: 1000,
             samples: vec![0i16; 16000],
+            utterance_end_ms_in_session: 1000,
+            utterance_index: 0,
+            utterance_start_ms_in_session: 0,
         }
     }
 

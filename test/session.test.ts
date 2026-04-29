@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AppendResult, NotePlacementOptions, ReplaceResult } from '../src/editor/note-surface';
 import { Session } from '../src/session/session';
-import type { TranscriptRevision, UtteranceId } from '../src/session/session-journal';
+import { transcript } from './fixtures/transcript';
 
 class FakeSurface {
   public readonly appendCalls: Array<{ text: string; utteranceId: string }> = [];
@@ -341,25 +341,4 @@ function fakeFile(path: string): TFile {
     path,
     vault: null,
   } as unknown as TFile;
-}
-
-function transcript(
-  overrides: Partial<TranscriptRevision> & { text: string; utteranceId: UtteranceId },
-): TranscriptRevision {
-  return {
-    isFinal: true,
-    revision: 0,
-    segments: [{ endMs: 100, startMs: 0, text: overrides.text }],
-    sessionId: 'session-1',
-    stageResults: [
-      {
-        durationMs: 10,
-        revisionIn: 0,
-        revisionOut: overrides.revision ?? 0,
-        stageId: 'engine',
-        status: { kind: 'ok' },
-      },
-    ],
-    ...overrides,
-  };
 }

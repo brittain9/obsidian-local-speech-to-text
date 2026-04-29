@@ -8,6 +8,8 @@ export interface TranscriptSegment {
   speaker?: string;
   startMs: number;
   text: string;
+  timestampGranularity: 'segment' | 'utterance' | 'word';
+  timestampSource: 'engine' | 'interpolated' | 'none' | 'vad';
 }
 
 export type StageStatus =
@@ -31,7 +33,10 @@ export interface TranscriptRevision {
   sessionId: string;
   stageResults: readonly StageOutcome[];
   text: string;
+  utteranceEndMsInSession: number;
   utteranceId: UtteranceId;
+  utteranceIndex: number;
+  utteranceStartMsInSession: number;
 }
 
 export type SessionJournalSubscriber = (revision: TranscriptRevision) => void;
@@ -77,6 +82,10 @@ export class SessionJournal {
     const latest = this.latestByUtterance.get(incoming.utteranceId);
 
     if (latest !== undefined) {
+      if (!incoming.isFinal && this.hasAcceptedFinal(incoming.utteranceId)) {
+        return { incoming, kind: 'stale', latest };
+      }
+
       if (incoming.revision < latest.revision) {
         return { incoming, kind: 'stale', latest };
       }
@@ -166,5 +175,9 @@ export class SessionJournal {
     for (const subscriber of this.subscribers) {
       subscriber(revision);
     }
+  }
+
+  private hasAcceptedFinal(utteranceId: UtteranceId): boolean {
+    return (this.historyByUtterance.get(utteranceId) ?? []).some((revision) => revision.isFinal);
   }
 }

@@ -30,7 +30,8 @@ export interface RuntimeCapabilitiesRecord {
 }
 
 export interface ModelFamilyCapabilitiesRecord {
-  supportsTimedSegments: boolean;
+  supportsSegmentTimestamps: boolean;
+  supportsWordTimestamps: boolean;
   supportsInitialPrompt: boolean;
   supportsLanguageSelection: boolean;
   supportedLanguages: LanguageSupport;

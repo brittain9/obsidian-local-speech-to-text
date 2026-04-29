@@ -26,7 +26,7 @@ fn whisper_pair_is_registered_when_compiled() {
     let merged = registry
         .merged_capabilities(RuntimeId::WhisperCpp, ModelFamilyId::Whisper)
         .expect("merged capabilities must be present for compiled pair");
-    assert!(merged.family.supports_timed_segments);
+    assert!(merged.family.supports_segment_timestamps);
     assert!(
         merged
             .runtime
@@ -123,7 +123,7 @@ fn merged_capabilities_falls_back_to_unknown_when_family_adapter_missing() {
     let merged = registry
         .merged_capabilities(runtime_id, family_id)
         .expect("runtime is registered so merge succeeds");
-    assert!(!merged.family.supports_timed_segments);
+    assert!(!merged.family.supports_segment_timestamps);
     assert!(!merged.family.supports_initial_prompt);
     assert!(!merged.family.supports_language_selection);
     assert!(merged.family.max_audio_duration_secs.is_none());

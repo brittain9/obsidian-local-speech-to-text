@@ -9,7 +9,7 @@ use crate::engine::capabilities::{
     LanguageSupport, ModelFamilyCapabilities, ModelFamilyId, RuntimeId,
 };
 use crate::engine::traits::{LoadedModel, ModelFamilyAdapter};
-use crate::protocol::TranscriptSegment;
+use crate::protocol::{TimestampGranularity, TimestampSource, TranscriptSegment};
 use crate::runtimes::onnx::build_session;
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
@@ -47,7 +47,8 @@ const TOKENS_CANDIDATES: &[&str] = &["tokens.txt", "tokenizer.json"];
 pub struct CohereTranscribeAdapter;
 
 const CAPABILITIES: ModelFamilyCapabilities = ModelFamilyCapabilities {
-    supports_timed_segments: false,
+    supports_segment_timestamps: false,
+    supports_word_timestamps: false,
     supports_initial_prompt: false,
     supports_language_selection: false,
     supported_languages: LanguageSupport::EnglishOnly,
@@ -160,6 +161,8 @@ impl LoadedModel for LoadedCohereModel {
                 end_ms: duration_ms,
                 start_ms: 0,
                 text: trimmed,
+                timestamp_granularity: TimestampGranularity::Utterance,
+                timestamp_source: TimestampSource::Vad,
             }]
         };
 

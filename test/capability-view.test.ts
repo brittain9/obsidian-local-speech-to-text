@@ -13,7 +13,8 @@ function sampleCapabilities(
       supportedLanguages: { kind: 'english_only' },
       supportsInitialPrompt: true,
       supportsLanguageSelection: false,
-      supportsTimedSegments: true,
+      supportsSegmentTimestamps: true,
+      supportsWordTimestamps: false,
     },
     familyId: 'whisper',
     runtime: {
@@ -35,7 +36,7 @@ describe('buildCapabilityLabels', () => {
     expect(labels).toEqual([
       'CPU',
       'GGML',
-      'Timed segments',
+      'Segment timestamps',
       'Initial prompt',
       'Punctuation',
       'English only',
@@ -79,12 +80,13 @@ describe('buildCapabilityLabels', () => {
           supportedLanguages: { kind: 'english_only' },
           supportsInitialPrompt: false,
           supportsLanguageSelection: false,
-          supportsTimedSegments: false,
+          supportsSegmentTimestamps: false,
+          supportsWordTimestamps: false,
         },
       }),
     );
 
-    expect(labels).not.toContain('Timed segments');
+    expect(labels).not.toContain('Segment timestamps');
     expect(labels).not.toContain('Initial prompt');
     expect(labels).not.toContain('Punctuation');
   });

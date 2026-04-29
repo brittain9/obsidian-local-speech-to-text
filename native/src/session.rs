@@ -77,6 +77,7 @@ impl SpeakingStyle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
     pub mode: ListeningMode,
+    pub session_start_unix_ms: u64,
     pub session_id: String,
     pub style: SpeakingStyle,
 }
@@ -85,6 +86,9 @@ pub struct SessionConfig {
 pub struct FinalizedUtterance {
     pub duration_ms: u64,
     pub samples: Vec<i16>,
+    pub utterance_end_ms_in_session: u64,
+    pub utterance_index: u64,
+    pub utterance_start_ms_in_session: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,15 +126,17 @@ pub trait VoiceActivityDetector {
 
 pub struct ListeningSession<TVad: VoiceActivityDetector = SileroVadDetector> {
     config: SessionConfig,
+    activity_frames: usize,
     consecutive_above_threshold: usize,
-    elapsed_frames: usize,
     frames_since_confident_speech: usize,
     last_silence_boundary: Option<usize>,
+    next_utterance_index: u64,
     pending_end_start: Option<usize>,
-    pre_speech_frames: VecDeque<Vec<i16>>,
+    pre_speech_frames: VecDeque<(usize, Vec<i16>)>,
+    session_frames: usize,
     speech_started: bool,
     tuning: VadTuning,
-    utterance_frames: Vec<Vec<i16>>,
+    utterance_frames: Vec<(usize, Vec<i16>)>,
     vad: TVad,
 }
 
@@ -147,12 +153,14 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         let tuning = config.style.tuning();
         Self {
             config,
+            activity_frames: 0,
             consecutive_above_threshold: 0,
-            elapsed_frames: 0,
             frames_since_confident_speech: 0,
             last_silence_boundary: None,
+            next_utterance_index: 0,
             pending_end_start: None,
             pre_speech_frames: VecDeque::with_capacity(tuning.pre_speech_pad_frames),
+            session_frames: 0,
             speech_started: false,
             tuning,
             utterance_frames: Vec::new(),
@@ -173,15 +181,19 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     }
 
     pub fn clear_activity(&mut self) {
+        self.clear_activity_state();
+        self.vad.reset();
+    }
+
+    fn clear_activity_state(&mut self) {
         self.consecutive_above_threshold = 0;
-        self.elapsed_frames = 0;
+        self.activity_frames = 0;
         self.frames_since_confident_speech = 0;
         self.last_silence_boundary = None;
         self.pending_end_start = None;
         self.pre_speech_frames.clear();
         self.speech_started = false;
         self.utterance_frames.clear();
-        self.vad.reset();
     }
 
     pub fn config(&self) -> &SessionConfig {
@@ -204,6 +216,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
         }
 
         let frame = decode_pcm_frame(frame_bytes);
+        let frame_start = self.session_frames;
         let probability = self
             .vad
             .speech_probability(&frame)
@@ -216,7 +229,8 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
                 message: "Voice activity detection failed on an audio frame.",
             })?;
 
-        self.elapsed_frames += 1;
+        self.session_frames += 1;
+        self.activity_frames += 1;
 
         if !self.speech_started {
             if probability >= self.tuning.speech_threshold {
@@ -228,16 +242,16 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
                     self.pending_end_start = None;
                     self.utterance_frames
                         .extend(self.pre_speech_frames.drain(..));
-                    self.utterance_frames.push(frame);
+                    self.utterance_frames.push((frame_start, frame));
                 } else {
-                    self.push_pre_speech_frame(frame);
+                    self.push_pre_speech_frame(frame_start, frame);
                 }
             } else {
                 self.consecutive_above_threshold = 0;
-                self.push_pre_speech_frame(frame);
+                self.push_pre_speech_frame(frame_start, frame);
             }
         } else {
-            self.utterance_frames.push(frame);
+            self.utterance_frames.push((frame_start, frame));
 
             if probability >= self.tuning.speech_threshold {
                 self.frames_since_confident_speech = 0;
@@ -268,7 +282,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
 
         if self.config.mode == ListeningMode::OneSentence
             && !self.speech_started
-            && self.elapsed_frames >= ONE_SENTENCE_TIMEOUT_FRAMES
+            && self.activity_frames >= ONE_SENTENCE_TIMEOUT_FRAMES
         {
             return Ok(vec![SessionAction::Stop(SessionStopReason::Timeout)]);
         }
@@ -286,11 +300,12 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             return self.finalize_and_continue_from(len);
         };
 
-        let finalized = flatten_frames(&self.utterance_frames[..idx]);
+        let finalized = flatten_frames(&self.utterance_frames[..idx], self.next_utterance_index);
+        self.next_utterance_index = self.next_utterance_index.saturating_add(1);
 
         self.utterance_frames.drain(..idx);
         if self.utterance_frames.is_empty() {
-            self.clear_activity();
+            self.clear_activity_state();
         } else {
             self.frames_since_confident_speech = 0;
             self.last_silence_boundary = None;
@@ -302,7 +317,11 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
 
     fn finalize_and_continue_from(&mut self, pending_end_start: usize) -> Vec<SessionAction> {
         let finalized = self.finalize_utterance_at(Some(pending_end_start));
-        self.clear_activity();
+        if finalized.is_some() {
+            self.next_utterance_index = self.next_utterance_index.saturating_add(1);
+        }
+        self.clear_activity_state();
+        self.vad.reset();
 
         finalized
             .map(SessionAction::FinalizeUtterance)
@@ -310,8 +329,12 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             .collect()
     }
 
-    pub fn maybe_finalize_utterance(&self) -> Option<FinalizedUtterance> {
-        self.finalize_utterance_at(self.pending_end_start)
+    pub fn maybe_finalize_utterance(&mut self) -> Option<FinalizedUtterance> {
+        let finalized = self.finalize_utterance_at(self.pending_end_start);
+        if finalized.is_some() {
+            self.next_utterance_index = self.next_utterance_index.saturating_add(1);
+        }
+        finalized
     }
 
     fn finalize_utterance_at(
@@ -330,10 +353,13 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             return None;
         }
 
-        Some(flatten_frames(&self.utterance_frames[..retained_frames]))
+        Some(flatten_frames(
+            &self.utterance_frames[..retained_frames],
+            self.next_utterance_index,
+        ))
     }
 
-    fn push_pre_speech_frame(&mut self, frame: Vec<i16>) {
+    fn push_pre_speech_frame(&mut self, frame_start: usize, frame: Vec<i16>) {
         if self.speech_started {
             return;
         }
@@ -342,18 +368,26 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             self.pre_speech_frames.pop_front();
         }
 
-        self.pre_speech_frames.push_back(frame);
+        self.pre_speech_frames.push_back((frame_start, frame));
     }
 }
 
-fn flatten_frames(frames: &[Vec<i16>]) -> FinalizedUtterance {
+fn flatten_frames(frames: &[(usize, Vec<i16>)], utterance_index: u64) -> FinalizedUtterance {
     let mut samples = Vec::with_capacity(frames.len() * PCM_SAMPLES_PER_FRAME);
-    for frame in frames {
+    for (_, frame) in frames {
         samples.extend_from_slice(frame);
     }
+    let start_frame = frames.first().map(|(idx, _)| *idx).unwrap_or(0);
+    let end_frame = frames
+        .last()
+        .map(|(idx, _)| idx.saturating_add(1))
+        .unwrap_or(start_frame);
     FinalizedUtterance {
         duration_ms: (frames.len() * PCM_FRAME_DURATION_MS) as u64,
         samples,
+        utterance_end_ms_in_session: (end_frame * PCM_FRAME_DURATION_MS) as u64,
+        utterance_index,
+        utterance_start_ms_in_session: (start_frame * PCM_FRAME_DURATION_MS) as u64,
     }
 }
 
@@ -460,6 +494,9 @@ mod tests {
         // 2 pre-pad frames + 1 frame that triggered speech + 2 post-pad frames.
         assert_eq!(finalized.duration_ms, 5 * PCM_FRAME_DURATION_MS as u64);
         assert_eq!(finalized.samples.len(), 5 * PCM_SAMPLES_PER_FRAME);
+        assert_eq!(finalized.utterance_index, 0);
+        assert_eq!(finalized.utterance_start_ms_in_session, 80);
+        assert_eq!(finalized.utterance_end_ms_in_session, 180);
     }
 
     #[test]
@@ -508,6 +545,31 @@ mod tests {
         }
 
         assert_eq!(finalized_count, 2);
+    }
+
+    #[test]
+    fn utterance_index_is_monotonic_across_activity_clearing() {
+        let decisions = std::iter::repeat_n(1.0_f32, 5)
+            .chain(std::iter::repeat_n(0.0_f32, 50))
+            .chain(std::iter::repeat_n(1.0_f32, 5))
+            .chain(std::iter::repeat_n(0.0_f32, 50));
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+        let mut indexes = Vec::new();
+
+        for _ in 0..110 {
+            let actions = session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed");
+
+            for action in actions {
+                if let SessionAction::FinalizeUtterance(utterance) = action {
+                    indexes.push(utterance.utterance_index);
+                }
+            }
+        }
+
+        assert_eq!(indexes, vec![0, 1]);
     }
 
     #[test]
@@ -710,6 +772,7 @@ mod tests {
         ListeningSession::with_vad(
             SessionConfig {
                 mode,
+                session_start_unix_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 style: SpeakingStyle::Balanced,
             },
