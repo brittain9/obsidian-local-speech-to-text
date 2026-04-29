@@ -14,7 +14,9 @@ use crate::engine::registry::{EngineRegistry, apply_capability_gates, missing_ad
 use crate::engine::traits::LoadedModel;
 use crate::panic_util::format_panic_message;
 use crate::protocol::{ContextWindow, EngineStagePayload, StageId, StageOutcome, StageStatus};
-use crate::stages::{StageContext, StageEnablement, StageProcessor, run_post_engine};
+use crate::stages::{
+    StageContext, StageEnablement, StageProcessor, post_engine_processors, run_post_engine,
+};
 use crate::transcription::{
     EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
 };
@@ -286,10 +288,6 @@ struct TranscriptAssembly<'a> {
     processors: &'a [Box<dyn StageProcessor>],
 }
 
-/// Wrap raw engine output into a canonical `Transcript` and run the
-/// post-engine stage pipeline. The engine stage is emitted as `Ok` with the
-/// engine finality flag; each post-engine stage's outcome is appended by
-/// [`run_post_engine`].
 fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
     let revision: u32 = 0;
     let mut stage_history: Vec<StageOutcome> = Vec::with_capacity(1 + input.processors.len());
@@ -325,11 +323,4 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
     run_post_engine(&mut transcript, input.processors, &ctx);
 
     transcript
-}
-
-/// Build the registered post-engine processor chain in canonical order.
-/// Returns empty until the first real post-engine stage lands; the engine
-/// stage outcome is appended in [`assemble_transcript`] regardless.
-fn post_engine_processors() -> Vec<Box<dyn StageProcessor>> {
-    Vec::new()
 }

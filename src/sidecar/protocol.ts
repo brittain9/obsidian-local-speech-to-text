@@ -73,8 +73,11 @@ export interface TranscriptSegment {
   timestampSource: TimestampSource;
 }
 
-export type TimestampSource = 'engine' | 'interpolated' | 'none' | 'vad';
-export type TimestampGranularity = 'segment' | 'utterance' | 'word';
+export const TIMESTAMP_SOURCES = ['engine', 'interpolated', 'none', 'vad'] as const;
+export type TimestampSource = (typeof TIMESTAMP_SOURCES)[number];
+
+export const TIMESTAMP_GRANULARITIES = ['segment', 'utterance', 'word'] as const;
+export type TimestampGranularity = (typeof TIMESTAMP_GRANULARITIES)[number];
 
 export type ContextWindowSource =
   | {
@@ -749,11 +752,11 @@ function readSessionStopReason(value: unknown, fieldName: string): SessionStopRe
 }
 
 function readTimestampSource(value: unknown, fieldName: string): TimestampSource {
-  return readEnumValue(value, ['engine', 'interpolated', 'none', 'vad'] as const, fieldName);
+  return readEnumValue(value, TIMESTAMP_SOURCES, fieldName);
 }
 
 function readTimestampGranularity(value: unknown, fieldName: string): TimestampGranularity {
-  return readEnumValue(value, ['segment', 'utterance', 'word'] as const, fieldName);
+  return readEnumValue(value, TIMESTAMP_GRANULARITIES, fieldName);
 }
 
 function readRuntimeId(value: unknown, fieldName: string): RuntimeId {

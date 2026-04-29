@@ -1,17 +1,3 @@
-//! Post-engine stage pipeline runner.
-//!
-//! Stages are pure functions of `(Transcript, StageContext) -> StageProcess`.
-//! The runner ([`run_post_engine`]) walks a fixed-order set of processors,
-//! appends a `StageOutcome` per processor, bumps `Transcript.revision` on
-//! `Ok`, and isolates panics so a buggy processor cannot break the chain.
-//!
-//! Final-only stages are skipped with reason `partial` on partial revisions;
-//! a stage opts into running on partials by overriding
-//! [`StageProcessor::runs_on_partials`].
-//!
-//! `StageEnablement` carries per-session toggles. It is currently empty —
-//! the first real toggle lands with the first real post-engine stage.
-
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Instant;
 
@@ -20,27 +6,17 @@ use crate::panic_util::format_panic_message;
 use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
 use crate::transcription::Transcript;
 
-/// Per-session stage toggles. Empty until the first real post-engine stage
-/// ships; future stages add their own field and read it through the
-/// `StageProcessor`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StageEnablement;
 
-/// Inputs a stage may inspect alongside the transcript revision.
 pub struct StageContext<'a> {
     pub context: Option<&'a crate::protocol::ContextWindow>,
     pub utterance_duration_ms: u64,
     pub family_capabilities: &'a ModelFamilyCapabilities,
     pub stage_enabled: &'a StageEnablement,
-    /// Whether the engine revision is final. The runner skips processors
-    /// that do not opt into partial revisions when this is `false`.
     pub is_final: bool,
 }
 
-/// Result of running a single stage. Mirrors `StageStatus` plus the
-/// stage-private outputs (rewritten segments + a typed payload). The runner
-/// promotes `payload` to `StageOutcome.payload` and `segments` to the next
-/// transcript revision.
 pub enum StageProcess {
     Ok {
         segments: Vec<TranscriptSegment>,
@@ -56,8 +32,6 @@ pub enum StageProcess {
     },
 }
 
-/// Post-engine stage processor. Implementations must be deterministic given
-/// `(Transcript, StageContext)` — the runner gives them no other inputs.
 pub trait StageProcessor: Send + Sync {
     fn id(&self) -> StageId;
     fn runs_on_partials(&self) -> bool {
@@ -69,19 +43,18 @@ pub trait StageProcessor: Send + Sync {
     fn process(&self, transcript: &Transcript, ctx: &StageContext<'_>) -> StageProcess;
 }
 
-pub fn any_registered_stage_needs_context() -> bool {
-    false
+/// Build the registered post-engine processor chain in canonical order. The
+/// engine stage outcome is appended separately by `assemble_transcript`.
+pub fn post_engine_processors() -> Vec<Box<dyn StageProcessor>> {
+    Vec::new()
 }
 
-/// Run the post-engine processor chain against `transcript`. Mutates
-/// `transcript.revision`/`segments`/`stage_history` in place. Panics inside
-/// a processor are caught and surfaced as `StageOutcome { Failed }` so the
-/// rest of the chain still runs.
-///
-/// The engine stage is appended *outside* this function (in
-/// `worker::assemble_transcript`) — `processors` only covers the post-engine
-/// stages and `transcript.stage_history` is expected to already contain the
-/// engine outcome.
+pub fn any_registered_stage_needs_context() -> bool {
+    post_engine_processors()
+        .iter()
+        .any(|processor| processor.needs_context())
+}
+
 pub fn run_post_engine(
     transcript: &mut Transcript,
     processors: &[Box<dyn StageProcessor>],
@@ -169,10 +142,8 @@ pub fn run_post_engine(
     }
 }
 
-/// Verify a stage's `Ok` output before promoting it to a new revision. Text
-/// stages may drop segments or rewrite text inside the existing timing
-/// boundaries; they must not move boundaries, overlap, or run past the
-/// utterance duration.
+/// Text stages may drop segments or rewrite segment text, but must not move
+/// timing boundaries, overlap segments, or run past the utterance duration.
 fn validate_stage_segments(
     new_segments: &[TranscriptSegment],
     prior_segments: &[TranscriptSegment],

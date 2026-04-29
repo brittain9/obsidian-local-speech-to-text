@@ -858,7 +858,7 @@ impl AppState {
         let pending = active_session.pending_context_requests.remove(index);
         let context = context.filter(|window| {
             window.budget_chars <= CONTEXT_BUDGET_CHARS
-                && window.text.chars().count() <= pending_context_budget_chars(&pending) as usize
+                && window.text.chars().count() <= CONTEXT_BUDGET_CHARS as usize
         });
         self.dispatch_pending(pending, context, events);
     }
@@ -1132,10 +1132,6 @@ fn advance_transcription_queue(active_session: &mut ActiveSession) {
     } else {
         active_session.transcription_active = false;
     }
-}
-
-fn pending_context_budget_chars(_pending: &PendingContextRequest) -> u32 {
-    CONTEXT_BUDGET_CHARS
 }
 
 fn resolved_model_supports_initial_prompt(
