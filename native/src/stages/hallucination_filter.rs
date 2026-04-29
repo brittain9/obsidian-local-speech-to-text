@@ -67,9 +67,12 @@ impl StageProcessor for HallucinationFilterStage {
         for (index, segment) in transcript.segments.iter().enumerate() {
             let diagnostics = ctx.segment_diagnostics.get(index);
             let evidence = SegmentEvidence::from_segment(segment, diagnostics, ctx);
-            if let Some(reason) =
-                classify_drop(segment, &evidence, ctx.is_final, normalized_context.as_deref())
-            {
+            if let Some(reason) = classify_drop(
+                segment,
+                &evidence,
+                ctx.is_final,
+                normalized_context.as_deref(),
+            ) {
                 dropped.push(DroppedSegment::from_segment(
                     index,
                     reason,
@@ -194,7 +197,10 @@ impl SegmentEvidence {
         if self.vad_available && self.segment_voiced_fraction < WEAK_VAD_VOICED_FRACTION {
             count += 1;
         }
-        if self.avg_logprob.is_some_and(|value| value <= WEAK_AVG_LOGPROB) {
+        if self
+            .avg_logprob
+            .is_some_and(|value| value <= WEAK_AVG_LOGPROB)
+        {
             count += 1;
         }
         if self.vad_available
@@ -704,9 +710,12 @@ mod tests {
 
     #[test]
     fn bare_you_classifies_soft_and_is_kept_without_corroboration() {
-        assert_eq!(classify_text(&normalize_text("you"), "you"), TextClass::Soft);
-        let result = HallucinationFilterStage
-            .process(&transcript("You."), &ctx(&[], &[], None, true));
+        assert_eq!(
+            classify_text(&normalize_text("you"), "you"),
+            TextClass::Soft
+        );
+        let result =
+            HallucinationFilterStage.process(&transcript("You."), &ctx(&[], &[], None, true));
         assert!(
             matches!(result, StageProcess::Skipped { reason, .. } if reason == "no_hallucinations"),
         );
@@ -788,7 +797,10 @@ mod tests {
             .and_then(|p| p.get("droppedSegments"))
             .and_then(|v| v.as_array())
             .expect("payload has droppedSegments");
-        assert_eq!(dropped[0].get("reason").and_then(|v| v.as_str()), Some("silence"));
+        assert_eq!(
+            dropped[0].get("reason").and_then(|v| v.as_str()),
+            Some("silence")
+        );
     }
 
     #[test]
@@ -820,8 +832,8 @@ mod tests {
         assert!(matches!(result, StageProcess::Ok { .. }));
 
         // Without any corroborator the same pathological run is kept.
-        let result = HallucinationFilterStage
-            .process(&transcript(&text), &ctx(&[], &[], None, true));
+        let result =
+            HallucinationFilterStage.process(&transcript(&text), &ctx(&[], &[], None, true));
         assert!(
             matches!(result, StageProcess::Skipped { reason, .. } if reason == "no_hallucinations"),
         );
@@ -847,8 +859,8 @@ mod tests {
 
     #[test]
     fn dropping_only_segment_returns_ok_with_empty_list() {
-        let result = HallucinationFilterStage
-            .process(&transcript("[music]"), &ctx(&[], &[], None, true));
+        let result =
+            HallucinationFilterStage.process(&transcript("[music]"), &ctx(&[], &[], None, true));
         let StageProcess::Ok { segments, payload } = result else {
             panic!("expected Ok");
         };
@@ -882,8 +894,8 @@ mod tests {
             token_count: Some(4),
             decode_reached_eos: Some(true),
         }];
-        let result = HallucinationFilterStage
-            .process(&transcript, &ctx(&diagnostics, &[], None, true));
+        let result =
+            HallucinationFilterStage.process(&transcript, &ctx(&diagnostics, &[], None, true));
         let StageProcess::Ok { payload, .. } = result else {
             panic!("expected Ok drop");
         };
@@ -920,7 +932,10 @@ mod tests {
             .and_then(|v| v.as_f64())
             .expect("noSpeechProb populated");
         assert!((no_speech - 0.72).abs() < 1.0e-5, "got {no_speech}");
-        assert_eq!(signals.get("decodeReachedEos").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            signals.get("decodeReachedEos").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(signals.get("tokenCount").and_then(|v| v.as_u64()), Some(4));
     }
 

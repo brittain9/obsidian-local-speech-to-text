@@ -3,10 +3,10 @@ import { randomUUID } from 'node:crypto';
 import type { AudioCaptureStream } from '../audio/audio-capture-stream';
 import type { NotePlacementOptions } from '../editor/note-surface';
 import type { Session } from '../session/session';
+import type { StageId } from '../session/session-journal';
 import type { PluginSettings } from '../settings/plugin-settings';
 import { formatErrorMessage } from '../shared/format-utils';
 import type { PluginLogger } from '../shared/plugin-logger';
-import type { StageId } from '../session/session-journal';
 import type {
   ContextRequestEvent,
   ContextWindow,
