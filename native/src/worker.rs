@@ -59,6 +59,7 @@ pub enum WorkerEvent {
         utterance_id: Option<Uuid>,
     },
     TranscriptReady {
+        pause_ms_before_utterance: Option<u64>,
         processing_duration_ms: u64,
         session_id: String,
         transcript: Transcript,
@@ -192,6 +193,7 @@ fn worker_main(
                 let utterance_end_ms_in_session = utterance.utterance_end_ms_in_session();
                 let utterance_start_ms_in_session = utterance.utterance_start_ms_in_session();
                 let FinalizedUtterance {
+                    pause_ms_before_utterance,
                     samples,
                     utterance_index,
                     vad_probabilities,
@@ -233,6 +235,7 @@ fn worker_main(
                             engine_output,
                             engine_duration_ms,
                             is_final: true,
+                            pause_ms_before_utterance,
                             vad_probabilities: &vad_probabilities,
                             voice_activity,
                             context: stage_context.as_ref(),
@@ -241,6 +244,7 @@ fn worker_main(
                             processors: &post_engine_processors(),
                         });
                         let _ = event_tx.send(WorkerEvent::TranscriptReady {
+                            pause_ms_before_utterance,
                             processing_duration_ms: engine_duration_ms,
                             session_id,
                             transcript,
@@ -284,6 +288,7 @@ struct TranscriptAssembly<'a> {
     engine_output: EngineTranscriptOutput,
     engine_duration_ms: u64,
     is_final: bool,
+    pause_ms_before_utterance: Option<u64>,
     vad_probabilities: &'a [f32],
     voice_activity: crate::audio_metadata::VoiceActivityEvidence,
     context: Option<&'a ContextWindow>,
@@ -305,6 +310,7 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
         is_final: input.is_final,
         payload: Some(
             serde_json::to_value(EngineStagePayload {
+                pause_ms_before_utterance: input.pause_ms_before_utterance,
                 voice_activity: input.voice_activity,
             })
             .expect("EngineStagePayload serialization should not fail"),
@@ -327,6 +333,7 @@ fn assemble_transcript(input: TranscriptAssembly<'_>) -> Transcript {
         family_capabilities: input.family_capabilities,
         stage_enabled: input.stage_enablement,
         is_final: input.is_final,
+        pause_ms_before_utterance: input.pause_ms_before_utterance,
         segment_diagnostics: &diagnostics,
         vad_probabilities: input.vad_probabilities,
         voice_activity: &input.voice_activity,
@@ -357,6 +364,23 @@ mod tests {
                 payload: Some(serde_json::json!({
                     "audioStartMs": ctx.voice_activity.audio_start_ms,
                     "voicedMs": ctx.voice_activity.voiced_ms,
+                })),
+            }
+        }
+    }
+
+    struct PauseReadingProcessor;
+
+    impl StageProcessor for PauseReadingProcessor {
+        fn id(&self) -> StageId {
+            StageId::HallucinationFilter
+        }
+
+        fn process(&self, transcript: &Transcript, ctx: &StageContext<'_>) -> StageProcess {
+            StageProcess::Ok {
+                segments: transcript.segments.clone(),
+                payload: Some(serde_json::json!({
+                    "pauseMsBeforeUtterance": ctx.pause_ms_before_utterance,
                 })),
             }
         }
@@ -396,6 +420,7 @@ mod tests {
             engine_output: engine_output(),
             family_capabilities: &whisper_caps(),
             is_final: true,
+            pause_ms_before_utterance: None,
             processors: &[],
             stage_enablement: &StageEnablement::default(),
             utterance_id: Uuid::nil(),
@@ -410,7 +435,10 @@ mod tests {
             .clone();
         assert_eq!(
             serde_json::from_value::<EngineStagePayload>(payload).unwrap(),
-            EngineStagePayload { voice_activity }
+            EngineStagePayload {
+                pause_ms_before_utterance: None,
+                voice_activity
+            }
         );
         assert!(transcript.stage_history[0].is_final);
     }
@@ -426,6 +454,7 @@ mod tests {
             engine_output: engine_output(),
             family_capabilities: &whisper_caps(),
             is_final: true,
+            pause_ms_before_utterance: None,
             processors: &processors,
             stage_enablement: &StageEnablement::default(),
             utterance_id: Uuid::nil(),
@@ -439,6 +468,60 @@ mod tests {
                 "audioStartMs": voice_activity.audio_start_ms,
                 "voicedMs": voice_activity.voiced_ms,
             }))
+        );
+    }
+
+    #[test]
+    fn assemble_transcript_threads_pause_into_engine_payload() {
+        let voice_activity = voice_activity();
+        let transcript = assemble_transcript(TranscriptAssembly {
+            context: None,
+            engine_duration_ms: 7,
+            engine_output: engine_output(),
+            family_capabilities: &whisper_caps(),
+            is_final: true,
+            pause_ms_before_utterance: Some(420),
+            processors: &[],
+            stage_enablement: &StageEnablement::default(),
+            utterance_id: Uuid::nil(),
+            vad_probabilities: &[],
+            voice_activity,
+        });
+
+        let payload = transcript.stage_history[0]
+            .payload
+            .as_ref()
+            .expect("engine stage should carry payload")
+            .clone();
+        assert_eq!(
+            serde_json::from_value::<EngineStagePayload>(payload).unwrap(),
+            EngineStagePayload {
+                pause_ms_before_utterance: Some(420),
+                voice_activity,
+            }
+        );
+    }
+
+    #[test]
+    fn stage_context_exposes_pause_ms_before_utterance_to_processors() {
+        let processors: Vec<Box<dyn StageProcessor>> = vec![Box::new(PauseReadingProcessor)];
+        let transcript = assemble_transcript(TranscriptAssembly {
+            context: None,
+            engine_duration_ms: 7,
+            engine_output: engine_output(),
+            family_capabilities: &whisper_caps(),
+            is_final: true,
+            pause_ms_before_utterance: Some(150),
+            processors: &processors,
+            stage_enablement: &StageEnablement::default(),
+            utterance_id: Uuid::nil(),
+            vad_probabilities: &[],
+            voice_activity: voice_activity(),
+        });
+
+        assert_eq!(
+            transcript.stage_history[1].payload,
+            Some(serde_json::json!({ "pauseMsBeforeUtterance": 150 }))
         );
     }
 
@@ -457,6 +540,7 @@ mod tests {
             engine_output: engine_output(),
             family_capabilities: &whisper_caps(),
             is_final: true,
+            pause_ms_before_utterance: None,
             processors: &processors,
             stage_enablement: &StageEnablement::default(),
             utterance_id: Uuid::nil(),

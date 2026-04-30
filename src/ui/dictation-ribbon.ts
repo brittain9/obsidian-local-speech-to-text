@@ -1,6 +1,7 @@
 import { setIcon } from 'obsidian';
 
 import type { DictationControllerState } from '../dictation/dictation-session-controller';
+import type { QueueBackpressureTier } from '../sidecar/protocol';
 
 type RibbonIcon = 'audio-lines' | 'loader' | 'mic' | 'mic-off';
 type RibbonVisualState =
@@ -12,8 +13,11 @@ type RibbonVisualState =
   | 'error';
 
 export class DictationRibbonController {
+  private state: DictationControllerState = 'idle';
+  private queueTier: QueueBackpressureTier = 'normal';
+
   constructor(private readonly element: HTMLElement) {
-    this.setState('idle');
+    this.render();
   }
 
   getElement(): HTMLElement {
@@ -21,21 +25,34 @@ export class DictationRibbonController {
   }
 
   setState(state: DictationControllerState): void {
-    const { icon, label } = buildRibbonState(state);
+    this.state = state;
+    this.render();
+  }
 
-    setIcon(this.element, icon);
-    this.element.setAttribute('aria-label', label);
-    this.element.setAttribute('data-tooltip-position', 'top');
-    this.element.dataset.localSttState = toVisualState(state);
-    this.element.title = label;
+  setQueueTier(tier: QueueBackpressureTier): void {
+    this.queueTier = tier;
+    this.render();
   }
 
   dispose(): void {
     this.element.remove();
   }
+
+  private render(): void {
+    const { icon, label } = buildRibbonState(this.state, this.queueTier);
+
+    setIcon(this.element, icon);
+    this.element.setAttribute('aria-label', label);
+    this.element.setAttribute('data-tooltip-position', 'top');
+    this.element.dataset.localSttState = toVisualState(this.state);
+    this.element.title = label;
+  }
 }
 
-function buildRibbonState(state: DictationControllerState): {
+function buildRibbonState(
+  state: DictationControllerState,
+  queueTier: QueueBackpressureTier,
+): {
   icon: RibbonIcon;
   label: string;
 } {
@@ -56,10 +73,10 @@ function buildRibbonState(state: DictationControllerState): {
       return { icon: 'audio-lines', label: 'Local Transcript: Hearing speech' };
 
     case 'transcribing':
-      return { icon: 'loader', label: 'Local Transcript: Transcribing...' };
-
     case 'paused':
-      return { icon: 'loader', label: 'Local Transcript: Transcribing...' };
+      return queueTier === 'catching_up'
+        ? { icon: 'loader', label: 'Local Transcript: Catching up...' }
+        : { icon: 'loader', label: 'Local Transcript: Transcribing...' };
 
     case 'error':
       return { icon: 'mic-off', label: 'Local Transcript: Error' };

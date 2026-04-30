@@ -10,6 +10,7 @@ import type { PluginLogger } from '../shared/plugin-logger';
 import type {
   ContextRequestEvent,
   ContextWindow,
+  QueueBackpressureTier,
   SessionState,
   SidecarEvent,
   TranscriptReadyEvent,
@@ -59,6 +60,7 @@ interface DictationSessionControllerDependencies {
   logger?: PluginLogger;
   notice: (message: string) => void;
   onSidecarMissing?: () => void;
+  setRibbonQueueTier: (tier: QueueBackpressureTier) => void;
   setRibbonState: (state: DictationControllerState) => void;
   sidecarConnection: Pick<
     SidecarConnection,
@@ -78,6 +80,7 @@ export class DictationSessionController {
   private abortingSessionId: string | null = null;
   private anchorTimerId: ReturnType<typeof setTimeout> | null = null;
   private pendingStartSessionId: string | null = null;
+  private queueTier: QueueBackpressureTier = 'normal';
   private readonly releaseSidecarSubscription: () => void;
   private session: ControllerSession | null = null;
   private sessionId: string | null = null;
@@ -284,6 +287,7 @@ export class DictationSessionController {
     const session = this.session;
     this.session = null;
     this.clearAnchorTimer();
+    this.resetQueueTier();
 
     if (this.dependencies.captureStream.isCapturing()) {
       await this.dependencies.captureStream.stop();
@@ -387,6 +391,10 @@ export class DictationSessionController {
         await this.handleTranscriptReady(event);
         return;
 
+      case 'transcription_queue_changed':
+        this.handleQueueTierChange(event);
+        return;
+
       case 'context_request':
         this.handleContextRequest(event);
         return;
@@ -406,6 +414,29 @@ export class DictationSessionController {
         await this.handleErrorEvent(event);
         return;
     }
+  }
+
+  private handleQueueTierChange(
+    event: Extract<SidecarEvent, { type: 'transcription_queue_changed' }>,
+  ): void {
+    if (event.sessionId !== this.sessionId) {
+      return;
+    }
+
+    const previousTier = this.queueTier;
+    this.queueTier = event.tier;
+    this.dependencies.setRibbonQueueTier(event.tier);
+
+    if (event.tier === 'falling_behind' && previousTier !== 'falling_behind') {
+      this.dependencies.notice(
+        'Local Transcript: transcription is falling behind — pause to let it catch up.',
+      );
+    }
+  }
+
+  private resetQueueTier(): void {
+    this.queueTier = 'normal';
+    this.dependencies.setRibbonQueueTier('normal');
   }
 
   private handleContextRequest(event: ContextRequestEvent): void {

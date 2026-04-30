@@ -85,6 +85,7 @@ pub struct SessionConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FinalizedUtterance {
+    pub pause_ms_before_utterance: Option<u64>,
     pub samples: Vec<i16>,
     pub utterance_index: u64,
     pub vad_probabilities: Vec<f32>,
@@ -143,8 +144,10 @@ pub struct ListeningSession<TVad: VoiceActivityDetector = SileroVadDetector> {
     activity_frames: usize,
     consecutive_above_threshold: usize,
     frames_since_confident_speech: usize,
+    last_final_speech_end_ms: Option<u64>,
     last_silence_boundary: Option<usize>,
     next_utterance_index: u64,
+    next_utterance_is_continuation: bool,
     pending_end_start: Option<usize>,
     pre_speech_frames: VecDeque<BufferedAudioFrame>,
     session_frames: usize,
@@ -177,8 +180,10 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             activity_frames: 0,
             consecutive_above_threshold: 0,
             frames_since_confident_speech: 0,
+            last_final_speech_end_ms: None,
             last_silence_boundary: None,
             next_utterance_index: 0,
+            next_utterance_is_continuation: false,
             pending_end_start: None,
             pre_speech_frames: VecDeque::with_capacity(tuning.pre_speech_pad_frames),
             session_frames: 0,
@@ -324,10 +329,12 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             .filter(|&idx| len - idx < BOUNDARY_STALENESS_CAP_FRAMES);
 
         let Some(idx) = usable_boundary.filter(|&idx| idx > 0) else {
-            return self.finalize_and_continue_from(len);
+            return self.finalize_and_emit(Some(len), true);
         };
 
-        let finalized = flatten_frames(&self.utterance_frames[..idx], self.next_utterance_index);
+        let mut finalized =
+            flatten_frames(&self.utterance_frames[..idx], self.next_utterance_index);
+        self.apply_pause_metadata(&mut finalized, true);
         self.next_utterance_index = self.next_utterance_index.saturating_add(1);
 
         self.utterance_frames.drain(..idx);
@@ -343,7 +350,15 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     }
 
     fn finalize_and_continue_from(&mut self, pending_end_start: usize) -> Vec<SessionAction> {
-        let finalized = self.finalize_utterance_at(Some(pending_end_start));
+        self.finalize_and_emit(Some(pending_end_start), false)
+    }
+
+    fn finalize_and_emit(
+        &mut self,
+        pending_end_start: Option<usize>,
+        cap_split: bool,
+    ) -> Vec<SessionAction> {
+        let finalized = self.finalize_utterance_at(pending_end_start, cap_split);
         if finalized.is_some() {
             self.next_utterance_index = self.next_utterance_index.saturating_add(1);
         }
@@ -357,7 +372,7 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     }
 
     pub fn maybe_finalize_utterance(&mut self) -> Option<FinalizedUtterance> {
-        let finalized = self.finalize_utterance_at(self.pending_end_start);
+        let finalized = self.finalize_utterance_at(self.pending_end_start, false);
         if finalized.is_some() {
             self.next_utterance_index = self.next_utterance_index.saturating_add(1);
         }
@@ -365,8 +380,9 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     }
 
     fn finalize_utterance_at(
-        &self,
+        &mut self,
         pending_end_start: Option<usize>,
+        cap_split: bool,
     ) -> Option<FinalizedUtterance> {
         if !self.speech_started || self.utterance_frames.is_empty() {
             return None;
@@ -380,10 +396,30 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             return None;
         }
 
-        Some(flatten_frames(
+        let mut finalized = flatten_frames(
             &self.utterance_frames[..retained_frames],
             self.next_utterance_index,
-        ))
+        );
+        self.apply_pause_metadata(&mut finalized, cap_split);
+        Some(finalized)
+    }
+
+    fn apply_pause_metadata(&mut self, finalized: &mut FinalizedUtterance, cap_split: bool) {
+        let voice_activity = &finalized.voice_activity;
+        let current_has_speech = voice_activity.speech_end_ms > voice_activity.speech_start_ms;
+
+        finalized.pause_ms_before_utterance =
+            if self.next_utterance_is_continuation || !current_has_speech {
+                None
+            } else {
+                self.last_final_speech_end_ms
+                    .map(|previous_end| voice_activity.speech_start_ms.saturating_sub(previous_end))
+            };
+
+        if current_has_speech {
+            self.last_final_speech_end_ms = Some(voice_activity.speech_end_ms);
+        }
+        self.next_utterance_is_continuation = cap_split;
     }
 
     fn push_pre_speech_frame(&mut self, frame: BufferedAudioFrame) {
@@ -452,6 +488,7 @@ fn flatten_frames(frames: &[BufferedAudioFrame], utterance_index: u64) -> Finali
     };
 
     FinalizedUtterance {
+        pause_ms_before_utterance: None,
         samples,
         utterance_index,
         vad_probabilities,
@@ -471,9 +508,10 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        ListeningSession, SessionAction, SessionBaseState, SessionConfig, SessionStopReason,
-        SpeakingStyle, VoiceActivityDetector,
+        FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
+        SessionStopReason, SpeakingStyle, VoiceActivityDetector,
     };
+    use crate::audio_metadata::VoiceActivityEvidence;
     use crate::protocol::{
         ListeningMode, PCM_BYTES_PER_FRAME, PCM_FRAME_DURATION_MS, PCM_SAMPLES_PER_FRAME,
     };
@@ -932,5 +970,154 @@ mod tests {
         }
 
         bytes
+    }
+
+    #[test]
+    fn first_natural_utterance_has_no_prior_pause() {
+        let decisions = std::iter::repeat_n(1.0_f32, 5).chain(std::iter::repeat_n(0.0_f32, 50));
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+        let mut finalized = None;
+
+        for _ in 0..55 {
+            for action in session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed")
+            {
+                if let SessionAction::FinalizeUtterance(utterance) = action {
+                    finalized = Some(utterance);
+                }
+            }
+        }
+
+        assert_eq!(
+            finalized.expect("utterance").pause_ms_before_utterance,
+            None
+        );
+    }
+
+    #[test]
+    fn second_natural_utterance_records_speech_to_speech_pause() {
+        let decisions = std::iter::repeat_n(1.0_f32, 5)
+            .chain(std::iter::repeat_n(0.0_f32, 50))
+            .chain(std::iter::repeat_n(1.0_f32, 5))
+            .chain(std::iter::repeat_n(0.0_f32, 50));
+        let mut session =
+            create_session(ListeningMode::AlwaysOn, FakeVad::with_decisions(decisions));
+        let mut finalized = Vec::new();
+
+        for _ in 0..110 {
+            for action in session
+                .ingest_audio_frame(&speech_frame_bytes())
+                .expect("frame should succeed")
+            {
+                if let SessionAction::FinalizeUtterance(utterance) = action {
+                    finalized.push(utterance);
+                }
+            }
+        }
+
+        assert_eq!(finalized.len(), 2);
+        assert_eq!(finalized[0].pause_ms_before_utterance, None);
+        let expected = finalized[1]
+            .voice_activity
+            .speech_start_ms
+            .saturating_sub(finalized[0].voice_activity.speech_end_ms);
+        assert_eq!(finalized[1].pause_ms_before_utterance, Some(expected));
+    }
+
+    #[test]
+    fn pause_metadata_returns_none_when_no_voice_in_current_utterance() {
+        let mut session = create_session(
+            ListeningMode::AlwaysOn,
+            FakeVad::with_decisions(Vec::<f32>::new()),
+        );
+        session.last_final_speech_end_ms = Some(500);
+
+        let mut finalized = FinalizedUtterance {
+            pause_ms_before_utterance: Some(999),
+            samples: Vec::new(),
+            utterance_index: 1,
+            vad_probabilities: Vec::new(),
+            voice_activity: VoiceActivityEvidence {
+                audio_start_ms: 600,
+                audio_end_ms: 700,
+                speech_start_ms: 600,
+                speech_end_ms: 600,
+                voiced_ms: 0,
+                unvoiced_ms: 100,
+                mean_probability: 0.0,
+                max_probability: 0.0,
+            },
+        };
+
+        session.apply_pause_metadata(&mut finalized, false);
+
+        assert_eq!(finalized.pause_ms_before_utterance, None);
+        assert_eq!(session.last_final_speech_end_ms, Some(500));
+    }
+
+    #[test]
+    fn pause_metadata_returns_none_for_continuation_after_cap_split() {
+        let mut session = create_session(
+            ListeningMode::AlwaysOn,
+            FakeVad::with_decisions(Vec::<f32>::new()),
+        );
+        session.last_final_speech_end_ms = Some(500);
+        session.next_utterance_is_continuation = true;
+
+        let mut finalized = FinalizedUtterance {
+            pause_ms_before_utterance: Some(999),
+            samples: Vec::new(),
+            utterance_index: 2,
+            vad_probabilities: Vec::new(),
+            voice_activity: VoiceActivityEvidence {
+                audio_start_ms: 600,
+                audio_end_ms: 800,
+                speech_start_ms: 600,
+                speech_end_ms: 800,
+                voiced_ms: 200,
+                unvoiced_ms: 0,
+                mean_probability: 0.9,
+                max_probability: 1.0,
+            },
+        };
+
+        session.apply_pause_metadata(&mut finalized, false);
+
+        assert_eq!(finalized.pause_ms_before_utterance, None);
+        assert!(!session.next_utterance_is_continuation);
+        assert_eq!(session.last_final_speech_end_ms, Some(800));
+    }
+
+    #[test]
+    fn pause_metadata_marks_continuation_when_cap_split_applied() {
+        let mut session = create_session(
+            ListeningMode::AlwaysOn,
+            FakeVad::with_decisions(Vec::<f32>::new()),
+        );
+
+        let mut finalized = FinalizedUtterance {
+            pause_ms_before_utterance: None,
+            samples: Vec::new(),
+            utterance_index: 0,
+            vad_probabilities: Vec::new(),
+            voice_activity: VoiceActivityEvidence {
+                audio_start_ms: 0,
+                audio_end_ms: 1000,
+                speech_start_ms: 0,
+                speech_end_ms: 1000,
+                voiced_ms: 1000,
+                unvoiced_ms: 0,
+                mean_probability: 0.9,
+                max_probability: 1.0,
+            },
+        };
+
+        session.apply_pause_metadata(&mut finalized, true);
+
+        assert_eq!(finalized.pause_ms_before_utterance, None);
+        assert!(session.next_utterance_is_continuation);
+        assert_eq!(session.last_final_speech_end_ms, Some(1000));
     }
 }

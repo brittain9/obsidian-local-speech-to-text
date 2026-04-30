@@ -14,8 +14,8 @@ use crate::model_store::{
 };
 use crate::protocol::{
     AccelerationPreference, Command, CompiledAdapterInfo, CompiledRuntimeInfo, ContextWindow,
-    Event, HealthStatus, ListeningMode, ModelInstallState, ModelProbeStatus, SelectedModel,
-    SessionState, SessionStopReason, system_info_string,
+    Event, HealthStatus, ListeningMode, ModelInstallState, ModelProbeStatus, QueueBackpressureTier,
+    SelectedModel, SessionState, SessionStopReason, system_info_string,
 };
 use crate::session::{
     FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
@@ -25,7 +25,11 @@ use crate::stages::{StageEnablement, any_registered_stage_needs_context};
 use crate::transcription::GpuConfig;
 use crate::worker::{SessionMetadata, TranscriptionWorker, WorkerCommand, WorkerEvent};
 
-const MAX_QUEUED_UTTERANCES: usize = 1;
+/// Hard cap on waiting utterances behind the active worker item. Reaching
+/// this depth marks the session as `saturated` and triggers an overload
+/// drain (capture stops; queued work finishes; session ends with
+/// `SessionStopReason::QueueOverload`).
+const MAX_QUEUED_UTTERANCES: usize = 30;
 // Whisper's `initial_prompt` is hard-capped at 224 tokens (silently truncated
 // to the final 224 — see OpenAI's Whisper Prompting Guide). 384 chars of
 // glossary content (mostly short identifiers) lands comfortably under that
@@ -59,9 +63,11 @@ pub struct AppState {
 }
 
 struct ActiveSession {
-    draining: bool,
     context_required: bool,
+    draining: bool,
+    last_reported_queue_tier: QueueBackpressureTier,
     last_reported_state: Option<SessionState>,
+    overload_draining: bool,
     pause_while_processing: bool,
     pending_context_requests: Vec<PendingContextRequest>,
     queued_utterances: usize,
@@ -155,7 +161,11 @@ impl AppState {
 
     pub fn handle_audio_frame(&mut self, frame_bytes: Vec<u8>) -> Vec<Event> {
         let mut events = Vec::new();
-        if self.active_session.as_ref().is_some_and(|s| s.draining) {
+        if self
+            .active_session
+            .as_ref()
+            .is_some_and(|s| s.draining || s.overload_draining)
+        {
             return events;
         }
 
@@ -462,7 +472,9 @@ impl AppState {
                                 resolved_model.family_id,
                             ) || any_registered_stage_needs_context(),
                             draining: false,
+                            last_reported_queue_tier: QueueBackpressureTier::Normal,
                             last_reported_state: None,
+                            overload_draining: false,
                             pause_while_processing,
                             pending_context_requests: Vec::new(),
                             queued_utterances: 0,
@@ -651,16 +663,27 @@ impl AppState {
             return false;
         };
 
-        if !active_session.draining || active_session.transcription_active {
+        let draining = active_session.draining;
+        let overload_draining = active_session.overload_draining;
+        if (!draining && !overload_draining)
+            || active_session.transcription_active
+            || active_session.queued_utterances > 0
+        {
             return false;
         }
+
+        let reason = if overload_draining {
+            SessionStopReason::QueueOverload
+        } else {
+            SessionStopReason::UserStop
+        };
 
         self.active_session = None;
         let _ = self.transcription_worker.send(WorkerCommand::EndSession {
             session_id: session_id.to_owned(),
         });
         events.push(Event::SessionStopped {
-            reason: SessionStopReason::UserStop,
+            reason,
             session_id: session_id.to_owned(),
         });
         true
@@ -698,6 +721,7 @@ impl AppState {
                     }
 
                     advance_transcription_queue(active_session);
+                    emit_queue_tier_if_changed(active_session, events);
                 }
 
                 events.push(Event::Error {
@@ -714,6 +738,7 @@ impl AppState {
                 self.emit_state_if_changed(events);
             }
             WorkerEvent::TranscriptReady {
+                pause_ms_before_utterance,
                 processing_duration_ms,
                 session_id,
                 transcript,
@@ -733,12 +758,14 @@ impl AppState {
                     }
 
                     advance_transcription_queue(active_session);
+                    emit_queue_tier_if_changed(active_session, events);
                 }
 
                 let is_final = transcript.is_final();
                 let text = transcript.joined_text();
                 events.push(Event::TranscriptReady {
                     is_final,
+                    pause_ms_before_utterance,
                     processing_duration_ms,
                     revision: transcript.revision,
                     segments: transcript.segments,
@@ -757,10 +784,9 @@ impl AppState {
                     return;
                 }
 
-                let should_stop = self
-                    .active_session
-                    .as_ref()
-                    .is_some_and(|s| s.session.config().mode == ListeningMode::OneSentence);
+                let should_stop = self.active_session.as_ref().is_some_and(|s| {
+                    s.session.config().mode == ListeningMode::OneSentence && !s.overload_draining
+                });
 
                 if should_stop {
                     if let Some(stop_events) =
@@ -782,22 +808,23 @@ impl AppState {
         };
 
         let session_id = active_session.session.config().session_id.clone();
-        let was_transcribing = active_session.transcription_active;
-        let queued_utterances = active_session.queued_utterances;
 
-        if was_transcribing && queued_utterances >= MAX_QUEUED_UTTERANCES {
+        if active_session.overload_draining {
+            // Capture is already stopped; only a buffered finalize (graceful
+            // stop, sentence-complete) can race in here. Drop instead of
+            // queueing past the hard cap.
             events.push(Event::Warning {
-                code: "utterance_queue_overload".to_string(),
-                details: Some(format!(
-                    "queue depth is capped at {MAX_QUEUED_UTTERANCES}"
-                )),
-                message: "Dropped a newly finalized utterance because transcription is already backlogged."
-                    .to_string(),
+                code: "utterance_dropped_during_overload_drain".to_string(),
+                details: None,
+                message:
+                    "Dropped a finalized utterance while draining the transcription queue overload."
+                        .to_string(),
                 session_id: Some(session_id),
             });
             return;
         }
 
+        let was_transcribing = active_session.transcription_active;
         let utterance_id = Uuid::new_v4();
         let correlation_id = Uuid::new_v4();
         let deadline = Instant::now() + CONTEXT_REQUEST_TIMEOUT;
@@ -821,11 +848,29 @@ impl AppState {
             events.push(Event::ContextRequest {
                 budget_chars: CONTEXT_BUDGET_CHARS,
                 correlation_id,
-                session_id,
+                session_id: session_id.clone(),
                 utterance_id,
             });
         } else {
             self.dispatch_pending(pending, None, events);
+        }
+
+        if let Some(active_session) = self.active_session.as_mut() {
+            emit_queue_tier_if_changed(active_session, events);
+
+            if active_session.queued_utterances >= MAX_QUEUED_UTTERANCES
+                && !active_session.overload_draining
+            {
+                active_session.overload_draining = true;
+                events.push(Event::Error {
+                    code: "utterance_queue_overload".to_string(),
+                    details: Some(format!(
+                        "queue depth reached saturation at {MAX_QUEUED_UTTERANCES}"
+                    )),
+                    message: "Local Transcript stopped because the transcription backlog reached capacity. Already accepted utterances will finish processing.".to_string(),
+                    session_id: Some(session_id),
+                });
+            }
         }
     }
 
@@ -902,6 +947,7 @@ impl AppState {
 
             if let Some(active_session) = self.active_session.as_mut() {
                 advance_transcription_queue(active_session);
+                emit_queue_tier_if_changed(active_session, events);
             }
         }
     }
@@ -1122,6 +1168,28 @@ fn advance_transcription_queue(active_session: &mut ActiveSession) {
     }
 }
 
+fn queue_backpressure_tier(queued_utterances: usize) -> QueueBackpressureTier {
+    match queued_utterances {
+        0..=2 => QueueBackpressureTier::Normal,
+        3..=9 => QueueBackpressureTier::CatchingUp,
+        10..=29 => QueueBackpressureTier::FallingBehind,
+        _ => QueueBackpressureTier::Saturated,
+    }
+}
+
+fn emit_queue_tier_if_changed(active_session: &mut ActiveSession, events: &mut Vec<Event>) {
+    let tier = queue_backpressure_tier(active_session.queued_utterances);
+    if active_session.last_reported_queue_tier == tier {
+        return;
+    }
+    active_session.last_reported_queue_tier = tier;
+    events.push(Event::TranscriptionQueueChanged {
+        queued_utterances: active_session.queued_utterances,
+        session_id: active_session.session.config().session_id.clone(),
+        tier,
+    });
+}
+
 fn resolved_model_supports_initial_prompt(
     registry: &EngineRegistry,
     runtime_id: RuntimeId,
@@ -1242,7 +1310,8 @@ mod tests {
     use crate::engine::traits::{LoadedModel, ModelFamilyAdapter, Runtime};
     use crate::protocol::{
         AccelerationPreference, Command, ContextWindow, ContextWindowSource, Event, HealthStatus,
-        ListeningMode, ModelProbeStatus, SelectedModel, SessionState, SessionStopReason,
+        ListeningMode, ModelProbeStatus, QueueBackpressureTier, SelectedModel, SessionState,
+        SessionStopReason,
     };
     use crate::session::{FinalizedUtterance, ListeningSession, SessionInitError, SpeakingStyle};
     use crate::transcription::{
@@ -1857,6 +1926,209 @@ mod tests {
         assert_eq!(active.pending_context_requests.len(), 1);
     }
 
+    #[test]
+    fn queue_backpressure_tier_maps_depths_to_tiers() {
+        assert_eq!(
+            super::queue_backpressure_tier(0),
+            QueueBackpressureTier::Normal
+        );
+        assert_eq!(
+            super::queue_backpressure_tier(2),
+            QueueBackpressureTier::Normal
+        );
+        assert_eq!(
+            super::queue_backpressure_tier(3),
+            QueueBackpressureTier::CatchingUp
+        );
+        assert_eq!(
+            super::queue_backpressure_tier(9),
+            QueueBackpressureTier::CatchingUp
+        );
+        assert_eq!(
+            super::queue_backpressure_tier(10),
+            QueueBackpressureTier::FallingBehind
+        );
+        assert_eq!(
+            super::queue_backpressure_tier(29),
+            QueueBackpressureTier::FallingBehind
+        );
+        assert_eq!(
+            super::queue_backpressure_tier(30),
+            QueueBackpressureTier::Saturated
+        );
+        assert_eq!(
+            super::queue_backpressure_tier(99),
+            QueueBackpressureTier::Saturated
+        );
+    }
+
+    fn count_tier_events(events: &[Event], tier: QueueBackpressureTier) -> usize {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Event::TranscriptionQueueChanged { tier: t, .. } if *t == tier
+                )
+            })
+            .count()
+    }
+
+    fn enqueue_n_utterances(app: &mut AppState, n: usize) -> Vec<Event> {
+        let mut events = Vec::new();
+        for _ in 0..n {
+            app.enqueue_utterance(fake_utterance(), &mut events);
+        }
+        events
+    }
+
+    #[test]
+    fn enqueue_below_catching_up_threshold_emits_no_tier_events() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let events = enqueue_n_utterances(&mut app, 3);
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::TranscriptionQueueChanged { .. }))
+                .count(),
+            0,
+            "no tier events expected while remaining in normal: {events:?}"
+        );
+        let active = app.active_session.as_ref().expect("active session");
+        assert_eq!(active.queued_utterances, 2);
+        assert!(active.transcription_active);
+    }
+
+    #[test]
+    fn enqueue_emits_catching_up_when_queue_reaches_three() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let events = enqueue_n_utterances(&mut app, 4);
+
+        assert_eq!(
+            count_tier_events(&events, QueueBackpressureTier::CatchingUp),
+            1
+        );
+        let last_tier = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                Event::TranscriptionQueueChanged {
+                    tier,
+                    queued_utterances,
+                    ..
+                } => Some((*tier, *queued_utterances)),
+                _ => None,
+            })
+            .expect("expected a tier event");
+        assert_eq!(last_tier, (QueueBackpressureTier::CatchingUp, 3));
+    }
+
+    #[test]
+    fn enqueue_emits_falling_behind_at_depth_ten_only_once() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let events = enqueue_n_utterances(&mut app, 11);
+
+        assert_eq!(
+            count_tier_events(&events, QueueBackpressureTier::CatchingUp),
+            1
+        );
+        assert_eq!(
+            count_tier_events(&events, QueueBackpressureTier::FallingBehind),
+            1
+        );
+    }
+
+    #[test]
+    fn enqueue_at_saturation_accepts_and_enters_overload_drain() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let events = enqueue_n_utterances(&mut app, 31);
+
+        assert_eq!(
+            count_tier_events(&events, QueueBackpressureTier::Saturated),
+            1
+        );
+
+        let overload_errors = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Event::Error { code, .. } if code == "utterance_queue_overload"
+                )
+            })
+            .count();
+        assert_eq!(overload_errors, 1, "exactly one overload error expected");
+
+        let active = app.active_session.as_ref().expect("active session");
+        assert!(active.overload_draining);
+        assert_eq!(active.queued_utterances, 30);
+        assert_eq!(
+            active.pending_context_requests.len(),
+            31,
+            "all accepted utterances should still be tracked through their context flow"
+        );
+    }
+
+    #[test]
+    fn enqueue_during_overload_drain_drops_with_warning() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let _ = enqueue_n_utterances(&mut app, 31);
+
+        let mut events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut events);
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::Warning { code, .. } if code == "utterance_dropped_during_overload_drain"
+        )));
+        let active = app.active_session.as_ref().expect("active session");
+        assert_eq!(
+            active.queued_utterances, 30,
+            "overflow utterance must not bump depth"
+        );
+        assert_eq!(active.pending_context_requests.len(), 31);
+    }
+
+    #[test]
+    fn audio_frames_are_ignored_while_transcription_pause_while_processing_is_true() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        if let Some(active) = app.active_session.as_mut() {
+            active.transcription_active = true;
+        }
+
+        let frame = vec![0_u8; crate::protocol::PCM_BYTES_PER_FRAME];
+        let events = app.handle_audio_frame(frame);
+
+        let paused_event = events.iter().find_map(|event| match event {
+            Event::SessionStateChanged { state, .. } => Some(*state),
+            _ => None,
+        });
+        assert_eq!(
+            paused_event,
+            Some(SessionState::Paused),
+            "pause_while_processing must surface Paused state instead of ingesting the frame"
+        );
+    }
+
     fn start_session_command(session_id: &str, model_file_path: &std::path::Path) -> Command {
         Command::StartSession {
             acceleration_preference: AccelerationPreference::Auto,
@@ -1889,6 +2161,7 @@ mod tests {
 
     fn fake_utterance() -> FinalizedUtterance {
         FinalizedUtterance {
+            pause_ms_before_utterance: None,
             samples: vec![0i16; 16000],
             utterance_index: 0,
             vad_probabilities: Vec::new(),

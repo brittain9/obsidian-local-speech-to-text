@@ -57,6 +57,7 @@ export const SESSION_STATES = [
 export type SessionState = (typeof SESSION_STATES)[number];
 
 export const SESSION_STOP_REASONS = [
+  'queue_overload',
   'sentence_complete',
   'session_replaced',
   'timeout',
@@ -64,6 +65,14 @@ export const SESSION_STOP_REASONS = [
   'user_stop',
 ] as const;
 export type SessionStopReason = (typeof SESSION_STOP_REASONS)[number];
+
+export const QUEUE_BACKPRESSURE_TIERS = [
+  'normal',
+  'catching_up',
+  'falling_behind',
+  'saturated',
+] as const;
+export type QueueBackpressureTier = (typeof QUEUE_BACKPRESSURE_TIERS)[number];
 
 export interface TranscriptSegment {
   endMs: number;
@@ -236,6 +245,7 @@ export interface SessionStateChangedEvent extends EnvelopeBase<'session_state_ch
 
 export interface TranscriptReadyEvent extends EnvelopeBase<'transcript_ready'> {
   isFinal: boolean;
+  pauseMsBeforeUtterance: number | null;
   processingDurationMs: number;
   revision: number;
   segments: TranscriptSegment[];
@@ -248,6 +258,13 @@ export interface TranscriptReadyEvent extends EnvelopeBase<'transcript_ready'> {
   utteranceIndex: number;
   utteranceStartMsInSession: number;
   warnings: RequestWarning[];
+}
+
+export interface TranscriptionQueueChangedEvent
+  extends EnvelopeBase<'transcription_queue_changed'> {
+  queuedUtterances: number;
+  sessionId: string;
+  tier: QueueBackpressureTier;
 }
 
 export interface ContextRequestEvent extends EnvelopeBase<'context_request'> {
@@ -290,6 +307,7 @@ export type SidecarEvent =
   | SessionStateChangedEvent
   | SessionStoppedEvent
   | SystemInfoEvent
+  | TranscriptionQueueChangedEvent
   | TranscriptReadyEvent
   | WarningEvent;
 
@@ -576,6 +594,10 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
     case 'transcript_ready':
       return {
         isFinal: readBoolean(parsedValue.isFinal, 'event.isFinal'),
+        pauseMsBeforeUtterance: readNullableNumber(
+          parsedValue.pauseMsBeforeUtterance,
+          'event.pauseMsBeforeUtterance',
+        ),
         processingDurationMs: readNonNegativeNumber(
           parsedValue.processingDurationMs,
           'event.processingDurationMs',
@@ -601,6 +623,17 @@ export function parseEventFrame(jsonText: string): SidecarEvent {
           'event.utteranceStartMsInSession',
         ),
         warnings: readRequestWarnings(parsedValue.warnings),
+      };
+
+    case 'transcription_queue_changed':
+      return {
+        queuedUtterances: readNonNegativeInteger(
+          parsedValue.queuedUtterances,
+          'event.queuedUtterances',
+        ),
+        sessionId: readString(parsedValue.sessionId, 'event.sessionId'),
+        tier: readQueueBackpressureTier(parsedValue.tier, 'event.tier'),
+        type,
       };
 
     case 'context_request':
@@ -749,6 +782,10 @@ function readSessionState(value: unknown, fieldName: string): SessionState {
 
 function readSessionStopReason(value: unknown, fieldName: string): SessionStopReason {
   return readEnumValue(value, SESSION_STOP_REASONS, fieldName);
+}
+
+function readQueueBackpressureTier(value: unknown, fieldName: string): QueueBackpressureTier {
+  return readEnumValue(value, QUEUE_BACKPRESSURE_TIERS, fieldName);
 }
 
 function readTimestampSource(value: unknown, fieldName: string): TimestampSource {

@@ -234,6 +234,7 @@ describe('sidecar protocol', () => {
       parseEventFrame(
         JSON.stringify({
           isFinal: true,
+          pauseMsBeforeUtterance: null,
           processingDurationMs: 100,
           revision: 0,
           segments: [],
@@ -256,6 +257,7 @@ describe('sidecar protocol', () => {
       parseEventFrame(
         JSON.stringify({
           isFinal: true,
+          pauseMsBeforeUtterance: null,
           processingDurationMs: 100,
           revision: 0,
           segments: [],
@@ -273,10 +275,114 @@ describe('sidecar protocol', () => {
     ).toThrow('event.utteranceId must be a string.');
   });
 
+  it('parses transcript_ready with pauseMsBeforeUtterance set to a number', () => {
+    const event = parseEventFrame(
+      JSON.stringify({
+        isFinal: true,
+        pauseMsBeforeUtterance: 320,
+        processingDurationMs: 100,
+        revision: 0,
+        segments: [],
+        sessionId: 'session-1',
+        stageResults: [],
+        text: 'hello',
+        type: 'transcript_ready',
+        utteranceDurationMs: 500,
+        utteranceEndMsInSession: 500,
+        utteranceIndex: 0,
+        utteranceStartMsInSession: 0,
+        utteranceId: 'utt-1',
+        warnings: [],
+      }),
+    );
+
+    expect(event.type).toBe('transcript_ready');
+    if (event.type === 'transcript_ready') {
+      expect(event.pauseMsBeforeUtterance).toBe(320);
+    }
+  });
+
+  it('parses transcript_ready with pauseMsBeforeUtterance explicitly null', () => {
+    const event = parseEventFrame(
+      JSON.stringify({
+        isFinal: true,
+        pauseMsBeforeUtterance: null,
+        processingDurationMs: 100,
+        revision: 0,
+        segments: [],
+        sessionId: 'session-1',
+        stageResults: [],
+        text: 'hello',
+        type: 'transcript_ready',
+        utteranceDurationMs: 500,
+        utteranceEndMsInSession: 500,
+        utteranceIndex: 0,
+        utteranceStartMsInSession: 0,
+        utteranceId: 'utt-1',
+        warnings: [],
+      }),
+    );
+
+    expect(event.type).toBe('transcript_ready');
+    if (event.type === 'transcript_ready') {
+      expect(event.pauseMsBeforeUtterance).toBeNull();
+    }
+  });
+
+  it('parses transcription_queue_changed event for each known tier', () => {
+    for (const tier of ['normal', 'catching_up', 'falling_behind', 'saturated'] as const) {
+      const event = parseEventFrame(
+        JSON.stringify({
+          queuedUtterances: 7,
+          sessionId: 'session-1',
+          tier,
+          type: 'transcription_queue_changed',
+        }),
+      );
+
+      expect(event).toEqual({
+        queuedUtterances: 7,
+        sessionId: 'session-1',
+        tier,
+        type: 'transcription_queue_changed',
+      });
+    }
+  });
+
+  it('rejects transcription_queue_changed with an unknown tier', () => {
+    expect(() =>
+      parseEventFrame(
+        JSON.stringify({
+          queuedUtterances: 7,
+          sessionId: 'session-1',
+          tier: 'overheating',
+          type: 'transcription_queue_changed',
+        }),
+      ),
+    ).toThrow(/event\.tier must be one of/);
+  });
+
+  it('parses session_stopped with the queue_overload reason', () => {
+    const event = parseEventFrame(
+      JSON.stringify({
+        reason: 'queue_overload',
+        sessionId: 'session-1',
+        type: 'session_stopped',
+      }),
+    );
+
+    expect(event).toEqual({
+      reason: 'queue_overload',
+      sessionId: 'session-1',
+      type: 'session_stopped',
+    });
+  });
+
   it('parses transcript_ready with stage history', () => {
     const event = parseEventFrame(
       JSON.stringify({
         isFinal: true,
+        pauseMsBeforeUtterance: 250,
         processingDurationMs: 125,
         revision: 0,
         segments: [],
@@ -323,6 +429,7 @@ describe('sidecar protocol', () => {
 
     expect(event).toEqual({
       isFinal: true,
+      pauseMsBeforeUtterance: 250,
       processingDurationMs: 125,
       revision: 0,
       segments: [],
@@ -428,6 +535,7 @@ describe('sidecar protocol', () => {
     const parser = new FramedMessageParser(parseEventFrame);
     const transcriptFrame = encodeJsonFrame({
       isFinal: true,
+      pauseMsBeforeUtterance: null,
       processingDurationMs: 125,
       revision: 0,
       segments: [],
@@ -457,6 +565,7 @@ describe('sidecar protocol', () => {
     expect(frames[0]).toEqual({
       envelope: {
         isFinal: true,
+        pauseMsBeforeUtterance: null,
         processingDurationMs: 125,
         revision: 0,
         segments: [],

@@ -75,4 +75,37 @@ describe('DictationRibbonController', () => {
     expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local Transcript: Hearing speech');
     expect(element.title).toBe('Local Transcript: Hearing speech');
   });
+
+  it('shows the catching-up label when transcribing under catching_up backpressure', () => {
+    const { element, setAttribute } = createFakeElement();
+    const controller = new DictationRibbonController(element);
+
+    controller.setState('transcribing');
+    controller.setQueueTier('catching_up');
+
+    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local Transcript: Catching up...');
+    expect(element.title).toBe('Local Transcript: Catching up...');
+  });
+
+  it('returns to the default transcribing label when the queue tier returns to normal', () => {
+    const { element, setAttribute } = createFakeElement();
+    const controller = new DictationRibbonController(element);
+
+    controller.setState('transcribing');
+    controller.setQueueTier('catching_up');
+    controller.setQueueTier('normal');
+
+    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local Transcript: Transcribing...');
+    expect(element.title).toBe('Local Transcript: Transcribing...');
+  });
+
+  it('keeps the listening label even when the queue tier reports catching_up', () => {
+    const { element, setAttribute } = createFakeElement();
+    const controller = new DictationRibbonController(element);
+
+    controller.setState('listening');
+    controller.setQueueTier('catching_up');
+
+    expect(setAttribute).toHaveBeenCalledWith('aria-label', 'Local Transcript: Listening');
+  });
 });
