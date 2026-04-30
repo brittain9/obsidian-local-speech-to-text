@@ -93,7 +93,6 @@ pub enum SessionState {
     SpeechDetected,
     SpeechEnding,
     Transcribing,
-    Paused,
     Error,
 }
 
@@ -264,7 +263,6 @@ pub enum Command {
         model_selection: SelectedModel,
         #[serde(default)]
         model_store_path_override: Option<String>,
-        pause_while_processing: bool,
         session_start_unix_ms: u64,
         session_id: String,
         #[serde(default)]
@@ -579,7 +577,6 @@ mod tests {
                 "filePath": "/tmp/model.bin"
             },
             "language": "en",
-            "pauseWhileProcessing": true,
             "sessionStartUnixMs": 1_700_000_000_000_u64
         }))
         .expect("payload should serialize");
@@ -602,7 +599,6 @@ mod tests {
                     file_path: "/tmp/model.bin".to_string(),
                 },
                 model_store_path_override: None,
-                pause_while_processing: true,
                 session_start_unix_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 speaking_style: SpeakingStyle::Balanced,
@@ -623,7 +619,6 @@ mod tests {
                 "filePath": "/tmp/model.bin"
             },
             "language": "en",
-            "pauseWhileProcessing": true,
             "sessionStartUnixMs": 1_700_000_000_000_u64,
             "unknownFutureField": { "anything": true }
         }))
@@ -659,7 +654,6 @@ mod tests {
                     "filePath": "/tmp/model.bin"
                 },
                 "language": "en",
-                "pauseWhileProcessing": true,
                 "sessionStartUnixMs": 1_700_000_000_000_u64,
                 "speakingStyle": wire,
             }))

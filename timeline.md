@@ -232,9 +232,8 @@ that processes in order and never drops audio:
 | 10+ | Visible warning: "Transcription is falling behind — pause to let it catch up." |
 | 30 (hard cap) | Stop session with a clear error. Save what's already transcribed. |
 
-`pause_while_processing` is an independent user setting; it is not
-repurposed as the emergency brake. Hard cap = stop session is the only
-no-audio-drop outcome at saturation.
+There is no pause-while-processing mode. The hard cap stops the session instead
+of silently dropping audio during normal processing.
 
 **Pause metadata (PR 5 / PR 6 prerequisite).**
 

@@ -68,7 +68,6 @@ struct ActiveSession {
     last_reported_queue_tier: QueueBackpressureTier,
     last_reported_state: Option<SessionState>,
     overload_draining: bool,
-    pause_while_processing: bool,
     pending_context_requests: Vec<PendingContextRequest>,
     queued_utterances: usize,
     session: ListeningSession,
@@ -176,22 +175,6 @@ impl AppState {
                 message: "Received audio without an active listening session.".to_string(),
                 session_id: None,
             });
-            return events;
-        }
-
-        let should_pause = self
-            .active_session
-            .as_ref()
-            .map(|active_session| {
-                active_session.pause_while_processing && active_session.transcription_active
-            })
-            .unwrap_or(false);
-
-        if should_pause {
-            if let Some(active_session) = self.active_session.as_mut() {
-                active_session.session.clear_activity();
-            }
-            self.emit_state_if_changed(&mut events);
             return events;
         }
 
@@ -399,7 +382,6 @@ impl AppState {
                 mode,
                 model_selection,
                 model_store_path_override,
-                pause_while_processing,
                 session_start_unix_ms,
                 session_id,
                 speaking_style,
@@ -475,7 +457,6 @@ impl AppState {
                             last_reported_queue_tier: QueueBackpressureTier::Normal,
                             last_reported_state: None,
                             overload_draining: false,
-                            pause_while_processing,
                             pending_context_requests: Vec::new(),
                             queued_utterances: 0,
                             session,
@@ -597,7 +578,6 @@ impl AppState {
         let next_state = derive_session_state(
             active_session.transcription_active,
             active_session.queued_utterances,
-            active_session.pause_while_processing,
             &active_session.session,
         );
 
@@ -1203,7 +1183,6 @@ fn resolved_model_supports_initial_prompt(
 fn derive_session_state(
     transcription_active: bool,
     queued_utterances: usize,
-    pause_while_processing: bool,
     session: &ListeningSession,
 ) -> SessionState {
     let base_state = session.base_state();
@@ -1217,10 +1196,6 @@ fn derive_session_state(
     }
 
     if transcription_active {
-        if pause_while_processing {
-            return SessionState::Paused;
-        }
-
         return SessionState::Transcribing;
     }
 
@@ -2107,30 +2082,6 @@ mod tests {
     }
 
     #[test]
-    fn audio_frames_are_ignored_while_transcription_pause_while_processing_is_true() {
-        let model_file_path = create_model_file();
-        let mut app = test_app();
-        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
-
-        if let Some(active) = app.active_session.as_mut() {
-            active.transcription_active = true;
-        }
-
-        let frame = vec![0_u8; crate::protocol::PCM_BYTES_PER_FRAME];
-        let events = app.handle_audio_frame(frame);
-
-        let paused_event = events.iter().find_map(|event| match event {
-            Event::SessionStateChanged { state, .. } => Some(*state),
-            _ => None,
-        });
-        assert_eq!(
-            paused_event,
-            Some(SessionState::Paused),
-            "pause_while_processing must surface Paused state instead of ingesting the frame"
-        );
-    }
-
-    #[test]
     fn stop_with_queued_utterances_defers_session_stopped_until_drain() {
         let model_file_path = create_model_file();
         let mut app = test_app();
@@ -2375,7 +2326,6 @@ mod tests {
                 file_path: model_file_path.display().to_string(),
             },
             model_store_path_override: None,
-            pause_while_processing: true,
             session_start_unix_ms: 1_700_000_000_000,
             session_id: session_id.to_string(),
             speaking_style: SpeakingStyle::Balanced,

@@ -27,7 +27,6 @@ export interface PluginSettings {
   dictationAnchor: DictationAnchor;
   listeningMode: ListeningMode;
   modelStorePathOverride: string;
-  pauseWhileProcessing: boolean;
   phraseSeparator: PhraseSeparator;
   selectedModel: SelectedModel | null;
   sidecarPathOverride: string;
@@ -42,9 +41,8 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   cudaLibraryPath: '',
   developerMode: false,
   dictationAnchor: 'at_cursor',
-  listeningMode: 'one_sentence',
+  listeningMode: 'always_on',
   modelStorePathOverride: '',
-  pauseWhileProcessing: true,
   phraseSeparator: 'space',
   selectedModel: null,
   sidecarPathOverride: '',
@@ -68,10 +66,6 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
     modelStorePathOverride: readString(
       raw.modelStorePathOverride,
       DEFAULT_PLUGIN_SETTINGS.modelStorePathOverride,
-    ),
-    pauseWhileProcessing: readBoolean(
-      raw.pauseWhileProcessing,
-      DEFAULT_PLUGIN_SETTINGS.pauseWhileProcessing,
     ),
     phraseSeparator: isPhraseSeparator(raw.phraseSeparator)
       ? raw.phraseSeparator

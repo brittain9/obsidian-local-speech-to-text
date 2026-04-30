@@ -15,7 +15,6 @@ describe('resolvePluginSettings', () => {
         dictationAnchor: 'end_of_note',
         listeningMode: 'always_on',
         modelStorePathOverride: ' /tmp/models ',
-        pauseWhileProcessing: false,
         phraseSeparator: 'new_paragraph',
         selectedModel: {
           familyId: 'whisper',
@@ -36,7 +35,6 @@ describe('resolvePluginSettings', () => {
       dictationAnchor: 'end_of_note',
       listeningMode: 'always_on',
       modelStorePathOverride: '/tmp/models',
-      pauseWhileProcessing: false,
       phraseSeparator: 'new_paragraph',
       selectedModel: {
         familyId: 'whisper',
@@ -81,7 +79,6 @@ describe('resolvePluginSettings', () => {
         dictationAnchor: 'at_end',
         listeningMode: 'unsupported',
         modelStorePathOverride: 42,
-        pauseWhileProcessing: 'sometimes',
         phraseSeparator: 'tab',
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,

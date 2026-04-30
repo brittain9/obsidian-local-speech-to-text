@@ -49,7 +49,6 @@ export const SESSION_STATES = [
   'error',
   'idle',
   'listening',
-  'paused',
   'speech_detected',
   'speech_ending',
   'transcribing',
@@ -134,7 +133,6 @@ export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   mode: ListeningMode;
   modelSelection: SelectedModel;
   modelStorePathOverride?: string;
-  pauseWhileProcessing: boolean;
   sessionStartUnixMs: number;
   sessionId: string;
   speakingStyle: SpeakingStyle;

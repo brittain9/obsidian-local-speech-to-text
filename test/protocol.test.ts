@@ -45,7 +45,6 @@ describe('sidecar protocol', () => {
         kind: 'external_file',
         runtimeId: 'whisper_cpp',
       },
-      pauseWhileProcessing: true,
       sessionStartUnixMs: 1_700_000_000_000,
       sessionId: 'session-gpu',
       speakingStyle: 'balanced',

@@ -296,8 +296,7 @@ Cargo features: `engine-whisper`, `engine-cohere-transcribe`, `gpu-metal`, `gpu-
 - Dedicated thread communicating via two `mpsc` channels (commands in, events out)
 - Holds `Arc<EngineRegistry>`; dispatches via `(runtimeId, familyId)` lookup on each `BeginSession`
 - All inference is **synchronous and blocking** in the worker thread
-- Back-pressure: `MAX_QUEUED_UTTERANCES = 1`. If a transcription is in-flight and 1 is already queued, additional utterances are **dropped** with a warning event
-- `pause_while_processing` setting (default `true`): discards incoming audio frames while the worker is busy, preventing unbounded queue growth
+- Back-pressure: the app queues finalized utterances while inference is in-flight, reports queue tiers, and stops the session at the hard cap instead of silently discarding audio during normal processing
 - Panic safety: `catch_unwind` wraps model loading and inference; panics produce `SessionError` events rather than crashing
 
 **Available models:**
@@ -377,8 +376,7 @@ flowchart LR
 | `listening` | audio-lines | Listening |
 | `speech_detected` | audio-lines | Hearing speech |
 | `speech_ending` | audio-lines | Hearing speech |
-| `transcribing` | audio-lines | Transcribing... |
-| `paused` | audio-lines | Processing... |
+| `transcribing` | loader | Transcribing... |
 | `error` | mic-off | Error |
 
 `speech_ending` fires when `frames_since_confident_speech >= silence_end_frames` *before* finalization runs on the same frame, so in today's flow it is only externally observable when the probability sits in the intermediate range (between the end and start thresholds) rather than true silence. The ribbon and in-note anchor intentionally treat it as part of the speaking phase — the hysteresis detail is internal to the state machine. See architectural seams below.
@@ -387,10 +385,10 @@ flowchart LR
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `listeningMode` | `one_sentence` | Dictation trigger behavior |
-| `insertionMode` | `insert_at_cursor` | Where transcript text lands |
+| `listeningMode` | `always_on` | Dictation trigger behavior |
+| `dictationAnchor` | `at_cursor` | Where transcript text lands |
+| `phraseSeparator` | `space` | How consecutive phrases are joined |
 | `speakingStyle` | `balanced` | UX preset driving the VAD tuning table (Responsive / Balanced / Patient) |
-| `pauseWhileProcessing` | `true` | Discard audio during inference |
 | `accelerationPreference` | `auto` | GPU vs CPU-only |
 | `selectedModel` | `null` | Active model selection |
 | `sidecarRequestTimeoutMs` | 300,000 (5 min) | Command/response timeout |
