@@ -137,7 +137,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Pause while processing')
       .setDesc(
-        'When enabled, incoming audio is discarded while the previous utterance is being transcribed. Disable this only if you want bounded queueing and overload warnings instead.',
+        'When enabled, capture pauses while a previous utterance is being transcribed. Disable to keep capturing — utterances queue in order and the session stops if the queue saturates.',
       )
       .addToggle((toggle) => {
         toggle.setValue(settings.pauseWhileProcessing);

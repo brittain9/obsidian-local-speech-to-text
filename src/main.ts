@@ -81,6 +81,9 @@ export default class LocalSttPlugin extends Plugin {
       setRibbonState: (state) => {
         this.ribbonController?.setState(state);
       },
+      setRibbonQueueTier: (tier) => {
+        this.ribbonController?.setQueueTier(tier);
+      },
       sidecarConnection: this.sidecarConnection,
     });
 

@@ -100,11 +100,21 @@ pub enum SessionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStopReason {
+    QueueOverload,
     SentenceComplete,
     SessionReplaced,
     Timeout,
     UserCancel,
     UserStop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueBackpressureTier {
+    Normal,
+    CatchingUp,
+    FallingBehind,
+    Saturated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +198,7 @@ pub struct StageOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStagePayload {
+    pub pause_ms_before_utterance: Option<u64>,
     pub voice_activity: VoiceActivityEvidence,
 }
 
@@ -392,6 +403,7 @@ pub enum Event {
     },
     TranscriptReady {
         is_final: bool,
+        pause_ms_before_utterance: Option<u64>,
         processing_duration_ms: u64,
         revision: u32,
         segments: Vec<TranscriptSegment>,
@@ -405,6 +417,11 @@ pub enum Event {
         utterance_start_ms_in_session: u64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<RequestWarning>,
+    },
+    TranscriptionQueueChanged {
+        queued_utterances: usize,
+        session_id: String,
+        tier: QueueBackpressureTier,
     },
     ContextRequest {
         budget_chars: u32,
@@ -543,10 +560,11 @@ mod tests {
     use super::{
         AUDIO_FRAME_KIND, AccelerationPreference, Command, Event, EventEnvelope,
         FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, MAX_FRAME_PAYLOAD,
-        PCM_BYTES_PER_FRAME, SelectedModel, SpeakingStyle, read_frame, write_event_frame,
-        write_frame,
+        PCM_BYTES_PER_FRAME, QueueBackpressureTier, SelectedModel, SessionStopReason,
+        SpeakingStyle, read_frame, write_event_frame, write_frame,
     };
     use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
+    use uuid::Uuid;
 
     #[test]
     fn command_frame_round_trip_preserves_start_session_shape() {
@@ -705,6 +723,76 @@ mod tests {
             .expect("frame should exist");
 
         assert_eq!(parsed, IncomingFrame::Audio(payload));
+    }
+
+    #[test]
+    fn transcription_queue_changed_event_round_trips_with_tier_strings() {
+        for (tier, expected) in [
+            (QueueBackpressureTier::Normal, "normal"),
+            (QueueBackpressureTier::CatchingUp, "catching_up"),
+            (QueueBackpressureTier::FallingBehind, "falling_behind"),
+            (QueueBackpressureTier::Saturated, "saturated"),
+        ] {
+            let event = Event::TranscriptionQueueChanged {
+                queued_utterances: 5,
+                session_id: "session-1".to_string(),
+                tier,
+            };
+            let json = serde_json::to_value(&event).expect("event should serialize");
+            assert_eq!(json["type"], "transcription_queue_changed");
+            assert_eq!(json["tier"], expected);
+            let round_tripped: Event =
+                serde_json::from_value(json).expect("event should parse back");
+            assert_eq!(round_tripped, event);
+        }
+    }
+
+    #[test]
+    fn session_stopped_serializes_queue_overload_reason() {
+        let event = Event::SessionStopped {
+            reason: SessionStopReason::QueueOverload,
+            session_id: "session-1".to_string(),
+        };
+        let json = serde_json::to_value(&event).expect("event should serialize");
+        assert_eq!(json["reason"], "queue_overload");
+        let round_tripped: Event = serde_json::from_value(json).expect("event should parse back");
+        assert_eq!(round_tripped, event);
+    }
+
+    #[test]
+    fn transcript_ready_serializes_pause_ms_before_utterance() {
+        let utterance_id = Uuid::new_v4();
+        let make_event = |pause: Option<u64>| Event::TranscriptReady {
+            is_final: true,
+            pause_ms_before_utterance: pause,
+            processing_duration_ms: 12,
+            revision: 0,
+            segments: Vec::new(),
+            session_id: "session-1".to_string(),
+            stage_results: Vec::new(),
+            text: "hello".to_string(),
+            utterance_duration_ms: 1000,
+            utterance_end_ms_in_session: 1100,
+            utterance_id,
+            utterance_index: 0,
+            utterance_start_ms_in_session: 100,
+            warnings: Vec::new(),
+        };
+
+        let with_value = make_event(Some(750));
+        let json = serde_json::to_value(&with_value).expect("event should serialize");
+        assert_eq!(json["pauseMsBeforeUtterance"], 750);
+        let round_tripped: Event = serde_json::from_value(json).expect("event should parse back");
+        assert_eq!(round_tripped, with_value);
+
+        let with_null = make_event(None);
+        let json = serde_json::to_value(&with_null).expect("event should serialize");
+        assert!(
+            json["pauseMsBeforeUtterance"].is_null(),
+            "None must serialize as JSON null, not be omitted: {json}"
+        );
+        let round_tripped: Event = serde_json::from_value(json).expect("event should parse back");
+        assert_eq!(round_tripped, with_null);
     }
 
     #[test]
