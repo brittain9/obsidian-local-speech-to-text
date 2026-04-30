@@ -25,7 +25,6 @@ export type DictationControllerState =
   | 'speech_detected'
   | 'speech_ending'
   | 'transcribing'
-  | 'paused'
   | 'error';
 
 type ControllerSession = Pick<
@@ -39,7 +38,6 @@ interface ActiveSessionSnapshot {
   listeningMode: PluginSettings['listeningMode'];
   modelSelection: NonNullable<PluginSettings['selectedModel']>;
   modelStorePathOverride: string;
-  pauseWhileProcessing: boolean;
   phraseSeparator: PluginSettings['phraseSeparator'];
   sessionStartUnixMs: number;
   speakingStyle: PluginSettings['speakingStyle'];
@@ -152,7 +150,6 @@ export class DictationSessionController {
       listeningMode: settings.listeningMode,
       modelSelection: selectedModel,
       modelStorePathOverride: settings.modelStorePathOverride,
-      pauseWhileProcessing: settings.pauseWhileProcessing,
       phraseSeparator: settings.phraseSeparator,
       sessionStartUnixMs: Date.now(),
       speakingStyle: settings.speakingStyle,
@@ -215,7 +212,6 @@ export class DictationSessionController {
           language: 'en',
           mode: snapshot.listeningMode,
           modelSelection: snapshot.modelSelection,
-          pauseWhileProcessing: snapshot.pauseWhileProcessing,
           sessionStartUnixMs: snapshot.sessionStartUnixMs,
           sessionId,
           speakingStyle: snapshot.speakingStyle,
@@ -609,10 +605,5 @@ function createSessionId(): string {
 }
 
 function isAnchorVisibleSessionState(state: SessionState): boolean {
-  return (
-    state === 'speech_detected' ||
-    state === 'speech_ending' ||
-    state === 'transcribing' ||
-    state === 'paused'
-  );
+  return state === 'speech_detected' || state === 'speech_ending' || state === 'transcribing';
 }

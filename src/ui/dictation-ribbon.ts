@@ -73,7 +73,6 @@ function buildRibbonState(
       return { icon: 'audio-lines', label: 'Local Transcript: Hearing speech' };
 
     case 'transcribing':
-    case 'paused':
       return queueTier === 'catching_up'
         ? { icon: 'loader', label: 'Local Transcript: Catching up...' }
         : { icon: 'loader', label: 'Local Transcript: Transcribing...' };
@@ -92,7 +91,6 @@ function toVisualState(state: DictationControllerState): RibbonVisualState {
     case 'listening':
       return 'listening';
     case 'transcribing':
-    case 'paused':
       return 'working';
     case 'speech_detected':
     case 'speech_ending':

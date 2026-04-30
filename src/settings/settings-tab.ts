@@ -128,23 +128,7 @@ export class LocalSttSettingTab extends PluginSettingTab {
         dropdown.onChange(async (value) => {
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            listeningMode:
-              value === 'always_on' || value === 'one_sentence' ? value : 'one_sentence',
-          });
-        });
-      });
-
-    new Setting(containerEl)
-      .setName('Pause while processing')
-      .setDesc(
-        'When enabled, capture pauses while a previous utterance is being transcribed. Disable to keep capturing — utterances queue in order and the session stops if the queue saturates.',
-      )
-      .addToggle((toggle) => {
-        toggle.setValue(settings.pauseWhileProcessing);
-        toggle.onChange(async (value) => {
-          await this.persistSettings({
-            ...this.dependencies.getSettings(),
-            pauseWhileProcessing: value,
+            listeningMode: value === 'always_on' || value === 'one_sentence' ? value : 'always_on',
           });
         });
       });
