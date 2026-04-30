@@ -912,6 +912,38 @@ describe('DictationSessionController', () => {
     expect(fallingBehindCalls).toHaveLength(1);
   });
 
+  it('suppresses the falling-behind notice when recovering from saturated', async () => {
+    const notice = vi.fn();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      notice,
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+    notice.mockClear();
+
+    sidecarConnection.emit({
+      queuedUtterances: 30,
+      sessionId,
+      tier: 'saturated',
+      type: 'transcription_queue_changed',
+    });
+    sidecarConnection.emit({
+      queuedUtterances: 29,
+      sessionId,
+      tier: 'falling_behind',
+      type: 'transcription_queue_changed',
+    });
+
+    const fallingBehindCalls = notice.mock.calls.filter(
+      ([message]) => typeof message === 'string' && message.includes('falling behind'),
+    );
+    expect(fallingBehindCalls).toHaveLength(0);
+  });
+
   it('ignores transcription_queue_changed events for an unrelated session', async () => {
     const setRibbonQueueTier = vi.fn();
     const notice = vi.fn();
@@ -966,6 +998,45 @@ describe('DictationSessionController', () => {
 
     await vi.waitFor(() => {
       expect(session.dispose).toHaveBeenCalledWith({ deleteRecovery: true });
+      expect(controller.getState()).toBe('idle');
+    });
+    expect(setRibbonQueueTier).toHaveBeenLastCalledWith('normal');
+  });
+
+  it.each([
+    { reason: 'user_stop' as const },
+    { reason: 'user_cancel' as const },
+    { reason: 'timeout' as const },
+    { reason: 'session_replaced' as const },
+  ])('resets the ribbon tier to normal on session_stopped reason=$reason', async ({ reason }) => {
+    const session = new FakeSession();
+    const setRibbonQueueTier = vi.fn();
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      createSession: () => session,
+      getSettings: () => createSettings({ selectedModel: createExternalModelSelection() }),
+      setRibbonQueueTier,
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+    const sessionId = sidecarConnection.lastSessionId ?? 'session-1';
+
+    sidecarConnection.emit({
+      queuedUtterances: 5,
+      sessionId,
+      tier: 'catching_up',
+      type: 'transcription_queue_changed',
+    });
+    expect(setRibbonQueueTier).toHaveBeenLastCalledWith('catching_up');
+
+    sidecarConnection.emit({
+      reason,
+      sessionId,
+      type: 'session_stopped',
+    });
+
+    await vi.waitFor(() => {
       expect(controller.getState()).toBe('idle');
     });
     expect(setRibbonQueueTier).toHaveBeenLastCalledWith('normal');

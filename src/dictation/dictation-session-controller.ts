@@ -427,7 +427,16 @@ export class DictationSessionController {
     this.queueTier = event.tier;
     this.dependencies.setRibbonQueueTier(event.tier);
 
-    if (event.tier === 'falling_behind' && previousTier !== 'falling_behind') {
+    // Only notify on upward entry into falling_behind. Recovering from
+    // `saturated` also passes through this tier, but the session is already
+    // shutting down and the "pause to let it catch up" guidance would be
+    // misleading on top of the saturation error.
+    const recoveringFromSaturation = previousTier === 'saturated';
+    if (
+      event.tier === 'falling_behind' &&
+      previousTier !== 'falling_behind' &&
+      !recoveringFromSaturation
+    ) {
       this.dependencies.notice(
         'Local Transcript: transcription is falling behind — pause to let it catch up.',
       );

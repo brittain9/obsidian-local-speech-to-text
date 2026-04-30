@@ -332,9 +332,8 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             return self.finalize_and_emit(Some(len), true);
         };
 
-        let mut finalized =
-            flatten_frames(&self.utterance_frames[..idx], self.next_utterance_index);
-        self.apply_pause_metadata(&mut finalized, true);
+        let flattened = flatten_frames(&self.utterance_frames[..idx]);
+        let finalized = self.finalize_with_metadata(flattened, true);
         self.next_utterance_index = self.next_utterance_index.saturating_add(1);
 
         self.utterance_frames.drain(..idx);
@@ -396,19 +395,24 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             return None;
         }
 
-        let mut finalized = flatten_frames(
-            &self.utterance_frames[..retained_frames],
-            self.next_utterance_index,
-        );
-        self.apply_pause_metadata(&mut finalized, cap_split);
-        Some(finalized)
+        let flattened = flatten_frames(&self.utterance_frames[..retained_frames]);
+        Some(self.finalize_with_metadata(flattened, cap_split))
     }
 
-    fn apply_pause_metadata(&mut self, finalized: &mut FinalizedUtterance, cap_split: bool) {
-        let voice_activity = &finalized.voice_activity;
+    /// Single producer for `FinalizedUtterance`. Combining the audio flatten
+    /// and pause-metadata steps here makes it impossible to emit a finalized
+    /// utterance without populating `pause_ms_before_utterance` from session
+    /// state — a separate `apply_pause_metadata` step would silently default
+    /// to `None` if a future caller forgot it.
+    fn finalize_with_metadata(
+        &mut self,
+        flattened: FlattenedFrames,
+        cap_split: bool,
+    ) -> FinalizedUtterance {
+        let voice_activity = flattened.voice_activity;
         let current_has_speech = voice_activity.speech_end_ms > voice_activity.speech_start_ms;
 
-        finalized.pause_ms_before_utterance =
+        let pause_ms_before_utterance =
             if self.next_utterance_is_continuation || !current_has_speech {
                 None
             } else {
@@ -420,6 +424,14 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
             self.last_final_speech_end_ms = Some(voice_activity.speech_end_ms);
         }
         self.next_utterance_is_continuation = cap_split;
+
+        FinalizedUtterance {
+            pause_ms_before_utterance,
+            samples: flattened.samples,
+            utterance_index: self.next_utterance_index,
+            vad_probabilities: flattened.vad_probabilities,
+            voice_activity,
+        }
     }
 
     fn push_pre_speech_frame(&mut self, frame: BufferedAudioFrame) {
@@ -435,7 +447,17 @@ impl<TVad: VoiceActivityDetector> ListeningSession<TVad> {
     }
 }
 
-fn flatten_frames(frames: &[BufferedAudioFrame], utterance_index: u64) -> FinalizedUtterance {
+/// Audio-derived components of a finalized utterance, before pause metadata
+/// is applied. Constructing a `FinalizedUtterance` directly from this would
+/// skip the session-state mutation in `finalize_with_metadata`, so this type
+/// is private and only that method consumes it.
+struct FlattenedFrames {
+    samples: Vec<i16>,
+    vad_probabilities: Vec<f32>,
+    voice_activity: VoiceActivityEvidence,
+}
+
+fn flatten_frames(frames: &[BufferedAudioFrame]) -> FlattenedFrames {
     let mut samples = Vec::with_capacity(frames.len() * PCM_SAMPLES_PER_FRAME);
     let mut vad_probabilities = Vec::with_capacity(frames.len());
 
@@ -487,10 +509,8 @@ fn flatten_frames(frames: &[BufferedAudioFrame], utterance_index: u64) -> Finali
         max_probability,
     };
 
-    FinalizedUtterance {
-        pause_ms_before_utterance: None,
+    FlattenedFrames {
         samples,
-        utterance_index,
         vad_probabilities,
         voice_activity,
     }
@@ -508,7 +528,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        FinalizedUtterance, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
+        FlattenedFrames, ListeningSession, SessionAction, SessionBaseState, SessionConfig,
         SessionStopReason, SpeakingStyle, VoiceActivityDetector,
     };
     use crate::audio_metadata::VoiceActivityEvidence;
@@ -1034,10 +1054,8 @@ mod tests {
         );
         session.last_final_speech_end_ms = Some(500);
 
-        let mut finalized = FinalizedUtterance {
-            pause_ms_before_utterance: Some(999),
+        let flattened = FlattenedFrames {
             samples: Vec::new(),
-            utterance_index: 1,
             vad_probabilities: Vec::new(),
             voice_activity: VoiceActivityEvidence {
                 audio_start_ms: 600,
@@ -1051,7 +1069,7 @@ mod tests {
             },
         };
 
-        session.apply_pause_metadata(&mut finalized, false);
+        let finalized = session.finalize_with_metadata(flattened, false);
 
         assert_eq!(finalized.pause_ms_before_utterance, None);
         assert_eq!(session.last_final_speech_end_ms, Some(500));
@@ -1066,10 +1084,8 @@ mod tests {
         session.last_final_speech_end_ms = Some(500);
         session.next_utterance_is_continuation = true;
 
-        let mut finalized = FinalizedUtterance {
-            pause_ms_before_utterance: Some(999),
+        let flattened = FlattenedFrames {
             samples: Vec::new(),
-            utterance_index: 2,
             vad_probabilities: Vec::new(),
             voice_activity: VoiceActivityEvidence {
                 audio_start_ms: 600,
@@ -1083,7 +1099,7 @@ mod tests {
             },
         };
 
-        session.apply_pause_metadata(&mut finalized, false);
+        let finalized = session.finalize_with_metadata(flattened, false);
 
         assert_eq!(finalized.pause_ms_before_utterance, None);
         assert!(!session.next_utterance_is_continuation);
@@ -1097,10 +1113,8 @@ mod tests {
             FakeVad::with_decisions(Vec::<f32>::new()),
         );
 
-        let mut finalized = FinalizedUtterance {
-            pause_ms_before_utterance: None,
+        let flattened = FlattenedFrames {
             samples: Vec::new(),
-            utterance_index: 0,
             vad_probabilities: Vec::new(),
             voice_activity: VoiceActivityEvidence {
                 audio_start_ms: 0,
@@ -1114,7 +1128,7 @@ mod tests {
             },
         };
 
-        session.apply_pause_metadata(&mut finalized, true);
+        let finalized = session.finalize_with_metadata(flattened, true);
 
         assert_eq!(finalized.pause_ms_before_utterance, None);
         assert!(session.next_utterance_is_continuation);

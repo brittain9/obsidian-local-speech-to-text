@@ -1311,13 +1311,14 @@ mod tests {
     use crate::protocol::{
         AccelerationPreference, Command, ContextWindow, ContextWindowSource, Event, HealthStatus,
         ListeningMode, ModelProbeStatus, QueueBackpressureTier, SelectedModel, SessionState,
-        SessionStopReason,
+        SessionStopReason, StageId, StageOutcome, StageStatus,
     };
     use crate::session::{FinalizedUtterance, ListeningSession, SessionInitError, SpeakingStyle};
     use crate::transcription::{
-        EngineTranscriptOutput, GpuConfig, TranscriptionError, TranscriptionRequest,
+        EngineTranscriptOutput, GpuConfig, Transcript, TranscriptionError, TranscriptionRequest,
         validate_model_path,
     };
+    use crate::worker::WorkerEvent;
 
     struct FakeRuntime {
         capabilities: RuntimeCapabilities,
@@ -2129,6 +2130,240 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stop_with_queued_utterances_defers_session_stopped_until_drain() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let _ = enqueue_n_utterances(&mut app, 3);
+
+        let (_, events) = app.handle_command(Command::StopSession);
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::SessionStopped { .. })),
+            "graceful stop must defer SessionStopped until the queue drains: {events:?}"
+        );
+        let active = app
+            .active_session
+            .as_ref()
+            .expect("session should still exist while draining");
+        assert!(active.draining, "graceful_stop must set draining=true");
+        assert!(active.transcription_active);
+        assert_eq!(active.queued_utterances, 2);
+    }
+
+    #[test]
+    fn drain_completes_via_transcript_ready_with_user_stop_reason() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let _ = enqueue_n_utterances(&mut app, 3);
+        let _ = app.handle_command(Command::StopSession);
+
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            app.handle_worker_event(fake_worker_transcript_ready("session-1", None), &mut events);
+        }
+
+        let stop = events
+            .iter()
+            .find(|event| matches!(event, Event::SessionStopped { .. }));
+        assert!(
+            matches!(
+                stop,
+                Some(Event::SessionStopped {
+                    reason: SessionStopReason::UserStop,
+                    ..
+                })
+            ),
+            "drain must complete with UserStop, got: {stop:?}"
+        );
+        assert!(
+            app.active_session.is_none(),
+            "active_session must be cleared when drain completes"
+        );
+    }
+
+    #[test]
+    fn cancel_with_queued_utterances_drops_queue_immediately() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let _ = enqueue_n_utterances(&mut app, 3);
+
+        let (_, events) = app.handle_command(Command::CancelSession);
+
+        let stop = events
+            .iter()
+            .find(|event| matches!(event, Event::SessionStopped { .. }));
+        assert!(
+            matches!(
+                stop,
+                Some(Event::SessionStopped {
+                    reason: SessionStopReason::UserCancel,
+                    ..
+                })
+            ),
+            "cancel must emit SessionStopped{{UserCancel}} immediately, got: {stop:?}"
+        );
+        assert!(
+            app.active_session.is_none(),
+            "cancel must drop the active session and its pending context requests"
+        );
+    }
+
+    #[test]
+    fn overload_drain_completes_with_queue_overload_reason() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let _ = enqueue_n_utterances(&mut app, 31);
+
+        let mut events = Vec::new();
+        for _ in 0..31 {
+            app.handle_worker_event(fake_worker_transcript_ready("session-1", None), &mut events);
+        }
+
+        let stop = events
+            .iter()
+            .find(|event| matches!(event, Event::SessionStopped { .. }));
+        assert!(
+            matches!(
+                stop,
+                Some(Event::SessionStopped {
+                    reason: SessionStopReason::QueueOverload,
+                    ..
+                })
+            ),
+            "overload drain must complete with QueueOverload, got: {stop:?}"
+        );
+        assert!(
+            app.active_session.is_none(),
+            "active_session must be cleared after overload drain completes"
+        );
+    }
+
+    #[test]
+    fn tier_events_fire_on_downward_transitions_during_drain() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut events = enqueue_n_utterances(&mut app, 31);
+        for _ in 0..31 {
+            app.handle_worker_event(fake_worker_transcript_ready("session-1", None), &mut events);
+        }
+
+        let tier_sequence: Vec<QueueBackpressureTier> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::TranscriptionQueueChanged { tier, .. } => Some(*tier),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            tier_sequence,
+            vec![
+                QueueBackpressureTier::CatchingUp,
+                QueueBackpressureTier::FallingBehind,
+                QueueBackpressureTier::Saturated,
+                QueueBackpressureTier::FallingBehind,
+                QueueBackpressureTier::CatchingUp,
+                QueueBackpressureTier::Normal,
+            ],
+            "drain must emit downward tier events as the queue depth crosses each threshold"
+        );
+    }
+
+    #[test]
+    fn cancel_during_overload_drain_reports_user_cancel_not_queue_overload() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let _ = enqueue_n_utterances(&mut app, 31);
+        assert!(
+            app.active_session
+                .as_ref()
+                .map(|s| s.overload_draining)
+                .unwrap_or(false),
+            "test setup must enter overload drain"
+        );
+
+        let (_, events) = app.handle_command(Command::CancelSession);
+
+        let stop = events
+            .iter()
+            .find(|event| matches!(event, Event::SessionStopped { .. }));
+        assert!(
+            matches!(
+                stop,
+                Some(Event::SessionStopped {
+                    reason: SessionStopReason::UserCancel,
+                    ..
+                })
+            ),
+            "cancel must win over the overload state machine, got: {stop:?}"
+        );
+        assert!(app.active_session.is_none());
+    }
+
+    #[test]
+    fn pause_ms_before_utterance_threads_through_transcript_ready_event() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut enqueue_events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut enqueue_events);
+
+        let mut events = Vec::new();
+        app.handle_worker_event(
+            fake_worker_transcript_ready("session-1", Some(320)),
+            &mut events,
+        );
+
+        let pause_ms = events.iter().find_map(|event| match event {
+            Event::TranscriptReady {
+                pause_ms_before_utterance,
+                ..
+            } => Some(*pause_ms_before_utterance),
+            _ => None,
+        });
+        assert_eq!(
+            pause_ms,
+            Some(Some(320)),
+            "pause_ms_before_utterance must thread through to the wire event"
+        );
+    }
+
+    #[test]
+    fn stale_transcript_ready_after_cancel_is_dropped() {
+        let model_file_path = create_model_file();
+        let mut app = test_app();
+        let _ = app.handle_command(start_session_command("session-1", &model_file_path));
+
+        let mut enqueue_events = Vec::new();
+        app.enqueue_utterance(fake_utterance(), &mut enqueue_events);
+        let _ = app.handle_command(Command::CancelSession);
+        assert!(app.active_session.is_none());
+
+        let mut events = Vec::new();
+        app.handle_worker_event(fake_worker_transcript_ready("session-1", None), &mut events);
+
+        assert!(
+            events.is_empty(),
+            "worker events for a cancelled session must be dropped silently: {events:?}"
+        );
+    }
+
     fn start_session_command(session_id: &str, model_file_path: &std::path::Path) -> Command {
         Command::StartSession {
             acceleration_preference: AccelerationPreference::Auto,
@@ -2179,6 +2414,36 @@ mod tests {
             unvoiced_ms: 200,
             mean_probability: 0.75,
             max_probability: 0.95,
+        }
+    }
+
+    fn fake_worker_transcript_ready(
+        session_id: &str,
+        pause_ms_before_utterance: Option<u64>,
+    ) -> WorkerEvent {
+        WorkerEvent::TranscriptReady {
+            pause_ms_before_utterance,
+            processing_duration_ms: 75,
+            session_id: session_id.to_string(),
+            transcript: Transcript {
+                utterance_id: Uuid::new_v4(),
+                revision: 0,
+                segments: Vec::new(),
+                stage_history: vec![StageOutcome {
+                    duration_ms: 75,
+                    is_final: true,
+                    payload: None,
+                    revision_in: 0,
+                    revision_out: Some(0),
+                    stage_id: StageId::Engine,
+                    status: StageStatus::Ok,
+                }],
+            },
+            utterance_duration_ms: 1000,
+            utterance_end_ms_in_session: 1000,
+            utterance_index: 0,
+            utterance_start_ms_in_session: 0,
+            warnings: Vec::new(),
         }
     }
 
