@@ -255,40 +255,57 @@ on `WorkerCommand::TranscribeUtterance`, on the engine stage payload, and on
 `StageContext`. New backpressure status surface from the sidecar to the plugin
 (queue depth tier).
 
-### PR 5 — Timestamp rendering
+### PR 5 — Transcript rendering: smart paragraphs + timestamps ✅ shipped
 
-User-facing timestamps with explicit provenance. The metadata surface
-(`TimestampSource`, `TimestampGranularity`, capability split, session/
-utterance anchors) landed in PR 2; PR 5 only adds the renderer + settings.
+Originally scoped as two PRs (timestamps, then smart separator); shipped as one
+because both are projection concerns that share the same pause classifier and
+the same renderer state, and splitting them would have churned the
+`NoteSurface`/`Session` boundary twice. Pure plugin-side; the metadata surface
+(`pause_ms_before_utterance`, session/utterance anchors,
+`TimestampSource`/`TimestampGranularity`) landed in PRs 2 and 4.
 
-- Settings: `timestampMode (off | utterance | long_pause | interval)`,
-  `timestampFormat ([MM:SS] | [HH:MM:SS])`, `timestampMinIntervalSec`,
-  `timestampPlacement (inline_prefix | own_line)`.
-- Renderer uses `utterance_start_ms_in_session` +
-  `pause_ms_before_utterance` to decide marker emission for `long_pause` mode.
-- Render markers only on `is_final = true` revisions.
-- Word-timestamp UI is not surfaced until an engine populates word timing.
+What shipped:
 
-**Contract additions:** none in the sidecar; renderer and settings are
-plugin-side. All required segment metadata and session anchors shipped in
-PR 2.
+- `transcriptFormatting: smart | space | new_line | new_paragraph`, default
+  `smart`. Smart mode joins utterances with a space when the inter-utterance
+  pause is below the meaningful-pause threshold and with a blank-line paragraph
+  break at or above it. The threshold is a single fixed constant
+  (`SMART_PARAGRAPH_PAUSE_MS = 3000`); no user-facing density knob.
+- `showTimestamps: boolean`, default `false`. When on, sparse inline elapsed-
+  session markers render as `(M:SS)` below one hour and `(H:MM:SS)` at one hour
+  or above. A marker is emitted on the first rendered utterance, after any
+  meaningful pause, and at the next utterance boundary 30 s after the last
+  emitted marker (`TIMESTAMP_LANDMARK_INTERVAL_MS = 30_000`). The same pause
+  classifier drives smart-paragraph boundaries and long-pause timestamp
+  emission — there is no separate timestamp threshold.
+- New plugin-side module `src/transcript/renderer.ts` owns transcript projection
+  state (whether anything has rendered, last emitted timestamp). `Session` owns
+  one `TranscriptRenderer` per dictation session and coordinates
+  `planAppend` → surface write → `commitAppend`. Renderer state is committed
+  only after a successful editor write, so denied appends do not advance
+  timestamp landmarks.
+- `NoteSurface` becomes a prefix-only projection writer. Boundary and timestamp
+  prefixes are stored inside the span (`start..end`), so user edits to either
+  latch the utterance via the existing user-wins rule (D-014). Replacements
+  rewrite only the utterance text region (`textStart..textEnd`); timestamp text
+  and paragraph breaks from the original append remain stable across revisions.
+- The old eager trailing-separator model is gone; nothing leaves dangling blank
+  lines while waiting for the next utterance.
+- `pauseMsBeforeUtterance` is threaded through `TranscriptRevision` and the
+  session journal. `null` (first utterance, cap-split continuation) is not a
+  meaningful-pause signal; cap-split continuations stay as a space in smart
+  mode but the 30-s landmark interval can still fire.
+- Settings: `phraseSeparator` is removed cleanly (greenfield, no migration);
+  unknown persisted fields are ignored by `resolvePluginSettings`.
 
-### PR 6 — Smart separator
+**Contract additions:** none in the sidecar. `TranscriptRevision` gains
+`pauseMsBeforeUtterance`. `NotePlacementOptions` drops separator concerns.
+`NoteSurface` exposes `readProjectionContext()` + `appendProjection()`; renderer
+options are passed separately from placement options on session creation.
 
-Choose space / newline / paragraph between consecutive utterances.
+### PR 6 — Speculative transcription
 
-- Pure plugin-side. Not a transcript stage.
-- Inputs: current utterance's `pause_ms_before_utterance`, user setting (`separator:
-  space_default | newline_short_pause | paragraph_long_pause`).
-- `selectSeparator(prevPauseMs, settings)` returns `" "`, `"\n"`, or `"\n\n"`.
-- When the existing `phraseSeparator` setting is `new_line` or `new_paragraph`,
-  smart separator is disabled.
-
-**Contract additions:** none in the sidecar; pure plugin projection.
-
-### PR 7 — Speculative transcription
-
-Live partials on tiny.en / base.en. Depends on PRs 1-5 for the contract surface.
+Live partials on tiny.en / base.en. Depends on PRs 1-4 for the contract surface.
 
 - Whisper adapter only. Cohere is request-response; nothing to do.
 - Worker partial loop: re-decode-on-grow with an `audio_ctx` ramp. Skip below
@@ -318,9 +335,9 @@ Live partials on tiny.en / base.en. Depends on PRs 1-5 for the contract surface.
 `is_final = false` revisions; multiple `TranscriptReady` events per utterance
 with monotonic `revision`.
 
-### PR 8 — LLM cleanup (experimental, opt-in)
+### PR 7 — LLM cleanup (experimental, opt-in)
 
-Per-utterance disfluency cleanup. Park until PRs 1-7 are stable.
+Per-utterance disfluency cleanup. Park until PRs 1-6 are stable.
 
 - New runtime: `RuntimeId::LlamaCpp` via the `llama-cpp-2` binding (pinned
   exact version).
