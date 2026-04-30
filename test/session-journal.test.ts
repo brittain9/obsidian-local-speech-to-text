@@ -56,6 +56,19 @@ describe('SessionJournal', () => {
     expect(journal.allUtterancesInOrder()).toEqual([u1r1, u2r0]);
   });
 
+  it('retains pause metadata on accepted revisions', () => {
+    const journal = new SessionJournal('session-1');
+    const revision = transcript({
+      pauseMsBeforeUtterance: 4500,
+      text: 'after a pause',
+      utteranceId: 'u1',
+    });
+
+    journal.upsert(revision);
+
+    expect(journal.latestForUtterance('u1')?.pauseMsBeforeUtterance).toBe(4500);
+  });
+
   it('notifies subscribers only for accepted revisions', () => {
     const journal = new SessionJournal('session-1');
     const seen: TranscriptRevision[] = [];

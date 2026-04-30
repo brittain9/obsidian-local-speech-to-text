@@ -13,6 +13,7 @@ import type {
   StartSessionCommand,
 } from '../src/sidecar/protocol';
 import { SidecarNotInstalledError } from '../src/sidecar/sidecar-paths';
+import type { TranscriptRenderOptions } from '../src/transcript/renderer';
 
 class FakeCaptureStream {
   public capturing = false;
@@ -391,28 +392,34 @@ describe('DictationSessionController', () => {
     }
   });
 
-  it('creates the session with the configured note placement', async () => {
+  it('creates the session with configured placement and renderer options', async () => {
     const sidecarConnection = new FakeSidecarConnection();
-    const createdSessions: Array<{ placement: NotePlacementOptions; session: FakeSession }> = [];
+    const createdSessions: Array<{
+      placement: NotePlacementOptions;
+      rendererOptions: TranscriptRenderOptions;
+      session: FakeSession;
+    }> = [];
     const controller = createController({
-      createSession: ({ placement }) => {
+      createSession: ({ placement, rendererOptions }) => {
         const session = new FakeSession();
-        createdSessions.push({ placement, session });
+        createdSessions.push({ placement, rendererOptions, session });
         return session;
       },
       getSettings: () =>
         createSettings({
           dictationAnchor: 'end_of_note',
-          phraseSeparator: 'new_paragraph',
           selectedModel: createExternalModelSelection(),
+          showTimestamps: true,
+          transcriptFormatting: 'new_paragraph',
         }),
       sidecarConnection,
     });
 
     await controller.startDictation();
 
-    expect(createdSessions.map((entry) => entry.placement)).toEqual([
-      { anchor: 'end_of_note', separator: 'new_paragraph' },
+    expect(createdSessions.map((entry) => entry.placement)).toEqual([{ anchor: 'end_of_note' }]);
+    expect(createdSessions.map((entry) => entry.rendererOptions)).toEqual([
+      { showTimestamps: true, transcriptFormatting: 'new_paragraph' },
     ]);
   });
 
@@ -429,6 +436,7 @@ describe('DictationSessionController', () => {
 
     sidecarConnection.emit(
       transcriptReadyEvent({
+        pauseMsBeforeUtterance: 1250,
         sessionId: sidecarConnection.lastSessionId ?? 'session-1',
         text: 'hello obsidian',
         utteranceId: 'utt-from-sidecar',
@@ -438,6 +446,7 @@ describe('DictationSessionController', () => {
     expect(session.acceptTranscript).toHaveBeenCalledWith(
       expect.objectContaining({
         isFinal: true,
+        pauseMsBeforeUtterance: 1250,
         revision: 0,
         sessionId: sidecarConnection.lastSessionId,
         text: 'hello obsidian',
@@ -1051,6 +1060,7 @@ function createController(overrides: {
       onLockedNoteDeleted: () => void;
     };
     placement: NotePlacementOptions;
+    rendererOptions: TranscriptRenderOptions;
     sessionId: string;
   }) => FakeSession;
   getSettings?: () => PluginSettings;
@@ -1091,6 +1101,7 @@ function okEngineStage(durationMs: number): TranscriptRevision['stageResults'][n
 }
 
 function transcriptReadyEvent(args: {
+  pauseMsBeforeUtterance?: number | null;
   processingDurationMs?: number;
   sessionId: string;
   text: string;
@@ -1100,7 +1111,7 @@ function transcriptReadyEvent(args: {
   const processingDurationMs = args.processingDurationMs ?? 75;
   return {
     isFinal: true,
-    pauseMsBeforeUtterance: null,
+    pauseMsBeforeUtterance: args.pauseMsBeforeUtterance ?? null,
     processingDurationMs,
     revision: 0,
     segments: [],

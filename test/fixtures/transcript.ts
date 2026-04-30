@@ -15,6 +15,7 @@ export function transcript(
         timestampSource: 'engine',
       },
     ],
+    pauseMsBeforeUtterance: null,
     sessionId: 'session-1',
     stageResults: [
       {

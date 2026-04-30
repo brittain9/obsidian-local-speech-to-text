@@ -24,10 +24,10 @@ import { renderModelSection } from './model-settings-section';
 import {
   type DictationAnchor,
   isDictationAnchor,
-  isPhraseSeparator,
   isSpeakingStyle,
-  type PhraseSeparator,
+  isTranscriptFormattingMode,
   type PluginSettings,
+  type TranscriptFormattingMode,
 } from './plugin-settings';
 
 interface SettingsTabDependencies {
@@ -47,10 +47,11 @@ const DICTATION_ANCHOR_OPTIONS: Array<{ label: string; value: DictationAnchor }>
   { label: 'End of note', value: 'end_of_note' },
 ];
 
-const PHRASE_SEPARATOR_OPTIONS: Array<{ label: string; value: PhraseSeparator }> = [
+const TRANSCRIPT_FORMATTING_OPTIONS: Array<{ label: string; value: TranscriptFormattingMode }> = [
+  { label: 'Smart paragraphs', value: 'smart' },
   { label: 'Space', value: 'space' },
   { label: 'New line', value: 'new_line' },
-  { label: 'New paragraph (use this if you pause between thoughts)', value: 'new_paragraph' },
+  { label: 'New paragraph', value: 'new_paragraph' },
 ];
 
 const SPEAKING_STYLE_OPTIONS: Array<{ label: string; value: SpeakingStyle }> = [
@@ -176,23 +177,36 @@ export class LocalSttSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Phrase separator')
+      .setName('Transcript formatting')
       .setDesc(
-        'How consecutive phrases are joined within one session. Does not affect the first phrase.',
+        'How dictated utterances are joined within one session. Smart paragraphs use longer pauses as paragraph breaks.',
       )
       .addDropdown((dropdown) => {
-        for (const option of PHRASE_SEPARATOR_OPTIONS) {
+        for (const option of TRANSCRIPT_FORMATTING_OPTIONS) {
           dropdown.addOption(option.value, option.label);
         }
 
-        dropdown.setValue(settings.phraseSeparator);
+        dropdown.setValue(settings.transcriptFormatting);
         dropdown.onChange(async (value) => {
-          if (!isPhraseSeparator(value)) {
+          if (!isTranscriptFormattingMode(value)) {
             return;
           }
           await this.persistSettings({
             ...this.dependencies.getSettings(),
-            phraseSeparator: value,
+            transcriptFormatting: value,
+          });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Show timestamps')
+      .setDesc('Add sparse elapsed-session timestamps before selected utterances.')
+      .addToggle((toggle) => {
+        toggle.setValue(settings.showTimestamps);
+        toggle.onChange(async (value) => {
+          await this.persistSettings({
+            ...this.dependencies.getSettings(),
+            showTimestamps: value,
           });
         });
       });

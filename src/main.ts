@@ -63,11 +63,12 @@ export default class LocalSttPlugin extends Plugin {
     this.ribbonController = new DictationRibbonController(ribbonElement);
     this.dictationController = new DictationSessionController({
       captureStream: this.audioCaptureStream,
-      createSession: ({ callbacks, placement, sessionId }) =>
+      createSession: ({ callbacks, placement, rendererOptions, sessionId }) =>
         Session.createFromActiveEditor(this.app, {
           callbacks,
           logger: this.logger,
           placement,
+          rendererOptions,
           sessionId,
         }),
       getSettings: () => this.settings,

@@ -387,7 +387,8 @@ flowchart LR
 |---------|---------|---------|
 | `listeningMode` | `always_on` | Dictation trigger behavior |
 | `dictationAnchor` | `at_cursor` | Where transcript text lands |
-| `phraseSeparator` | `space` | How consecutive phrases are joined |
+| `transcriptFormatting` | `smart` | How utterance boundaries render in the note |
+| `showTimestamps` | `false` | Whether sparse elapsed-session timestamps render in the note |
 | `speakingStyle` | `balanced` | UX preset driving the VAD tuning table (Responsive / Balanced / Patient) |
 | `accelerationPreference` | `auto` | GPU vs CPU-only |
 | `selectedModel` | `null` | Active model selection |
