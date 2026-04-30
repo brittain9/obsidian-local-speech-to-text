@@ -15,7 +15,6 @@ describe('resolvePluginSettings', () => {
         dictationAnchor: 'end_of_note',
         listeningMode: 'always_on',
         modelStorePathOverride: ' /tmp/models ',
-        phraseSeparator: 'new_paragraph',
         selectedModel: {
           familyId: 'whisper',
           kind: 'catalog_model',
@@ -25,7 +24,9 @@ describe('resolvePluginSettings', () => {
         sidecarPathOverride: ' /tmp/sidecar ',
         sidecarRequestTimeoutMs: 12_000,
         sidecarStartupTimeoutMs: 6_000,
+        showTimestamps: true,
         speakingStyle: 'patient',
+        transcriptFormatting: 'new_paragraph',
         useNoteAsContext: false,
       }),
     ).toEqual({
@@ -35,7 +36,6 @@ describe('resolvePluginSettings', () => {
       dictationAnchor: 'end_of_note',
       listeningMode: 'always_on',
       modelStorePathOverride: '/tmp/models',
-      phraseSeparator: 'new_paragraph',
       selectedModel: {
         familyId: 'whisper',
         kind: 'catalog_model',
@@ -45,7 +45,9 @@ describe('resolvePluginSettings', () => {
       sidecarPathOverride: '/tmp/sidecar',
       sidecarRequestTimeoutMs: 12_000,
       sidecarStartupTimeoutMs: 6_000,
+      showTimestamps: true,
       speakingStyle: 'patient',
+      transcriptFormatting: 'new_paragraph',
       useNoteAsContext: false,
     });
   });
@@ -58,19 +60,26 @@ describe('resolvePluginSettings', () => {
   });
 
   it.each([
+    'smart',
     'space',
     'new_line',
     'new_paragraph',
-  ] as const)('accepts the supported phrase separator %s', (phraseSeparator) => {
-    expect(resolvePluginSettings({ phraseSeparator }).phraseSeparator).toBe(phraseSeparator);
+  ] as const)('accepts the supported transcript formatting mode %s', (transcriptFormatting) => {
+    expect(resolvePluginSettings({ transcriptFormatting }).transcriptFormatting).toBe(
+      transcriptFormatting,
+    );
   });
 
-  it('silently drops the legacy insertionMode field without migrating it', () => {
-    const resolved = resolvePluginSettings({ insertionMode: 'append_as_new_paragraph' });
+  it('silently drops legacy formatting fields without migrating them', () => {
+    const resolved = resolvePluginSettings({
+      insertionMode: 'append_as_new_paragraph',
+      phraseSeparator: 'new_paragraph',
+    });
 
     expect(resolved.dictationAnchor).toBe(DEFAULT_PLUGIN_SETTINGS.dictationAnchor);
-    expect(resolved.phraseSeparator).toBe(DEFAULT_PLUGIN_SETTINGS.phraseSeparator);
+    expect(resolved.transcriptFormatting).toBe(DEFAULT_PLUGIN_SETTINGS.transcriptFormatting);
     expect(resolved).not.toHaveProperty('insertionMode');
+    expect(resolved).not.toHaveProperty('phraseSeparator');
   });
 
   it('falls back when persisted values are invalid', () => {
@@ -79,10 +88,11 @@ describe('resolvePluginSettings', () => {
         dictationAnchor: 'at_end',
         listeningMode: 'unsupported',
         modelStorePathOverride: 42,
-        phraseSeparator: 'tab',
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,
         sidecarStartupTimeoutMs: 'fast',
+        showTimestamps: 'yes',
+        transcriptFormatting: 'tab',
         useNoteAsContext: 'yes',
       }),
     ).toEqual(DEFAULT_PLUGIN_SETTINGS);

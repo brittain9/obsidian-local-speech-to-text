@@ -4,10 +4,16 @@ import type { DictationAnchorMode } from '../editor/dictation-anchor-extension';
 import {
   type AppendResult,
   type NotePlacementOptions,
+  type NoteProjectionContext,
   NoteSurface,
   type ReplaceResult,
 } from '../editor/note-surface';
 import type { PluginLogger } from '../shared/plugin-logger';
+import {
+  type TranscriptInsertProjection,
+  TranscriptRenderer,
+  type TranscriptRenderOptions,
+} from '../transcript/renderer';
 import { SessionJournal, type TranscriptRevision } from './session-journal';
 
 interface EditorWithCm extends Editor {
@@ -47,14 +53,16 @@ export interface SessionDependencies {
   lockedFile: TFile;
   noteSurfaceFactory?: (view: EditorView, placement: NotePlacementOptions) => NoteSurfaceLike;
   placement: NotePlacementOptions;
+  rendererOptions: TranscriptRenderOptions;
   sessionId: string;
   view: EditorView;
 }
 
 interface NoteSurfaceLike {
-  append(utteranceId: string, text: string): AppendResult;
+  appendProjection(utteranceId: string, projection: TranscriptInsertProjection): AppendResult;
   dispose(): void;
   readNoteGlossary(maxChars: number): { text: string; truncated: boolean } | null;
+  readProjectionContext(): NoteProjectionContext;
   replaceAnchor(utteranceId: string, newText: string, expectedOldText: string): ReplaceResult;
   setAnchorMode(mode: DictationAnchorMode): void;
   validateExternalModification(): void;
@@ -62,6 +70,7 @@ interface NoteSurfaceLike {
 
 export class Session {
   private readonly journal: SessionJournal;
+  private readonly renderer: TranscriptRenderer;
   private disposed = false;
   private noteDeleted = false;
   private noteOpen = true;
@@ -77,6 +86,7 @@ export class Session {
       callbacks: SessionLifecycleCallbacks;
       logger?: PluginLogger;
       placement: NotePlacementOptions;
+      rendererOptions: TranscriptRenderOptions;
       sessionId: string;
     },
   ): Session {
@@ -91,6 +101,7 @@ export class Session {
       callbacks: options.callbacks,
       lockedFile: target.file,
       placement: options.placement,
+      rendererOptions: options.rendererOptions,
       sessionId: options.sessionId,
       view: target.view,
       ...(options.logger !== undefined ? { logger: options.logger } : {}),
@@ -99,6 +110,7 @@ export class Session {
 
   constructor(private readonly dependencies: SessionDependencies) {
     this.journal = new SessionJournal(dependencies.sessionId);
+    this.renderer = new TranscriptRenderer(dependencies.rendererOptions);
     this.recoveryFilePath = `${dependencies.app.vault.configDir}/local-transcript/recovery-${dependencies.sessionId}.json`;
     this.surface = (dependencies.noteSurfaceFactory ?? createNoteSurface)(
       dependencies.view,
@@ -184,7 +196,22 @@ export class Session {
   }
 
   private applyAppend(revision: TranscriptRevision): void {
-    const result = this.surface?.append(revision.utteranceId, revision.text);
+    const context = this.surface?.readProjectionContext();
+
+    if (context === undefined) {
+      return;
+    }
+
+    const projection = this.renderer.planAppend(
+      {
+        pauseMsBeforeUtterance: revision.pauseMsBeforeUtterance,
+        text: revision.text,
+        utteranceId: revision.utteranceId,
+        utteranceStartMsInSession: revision.utteranceStartMsInSession,
+      },
+      context,
+    );
+    const result = this.surface?.appendProjection(revision.utteranceId, projection);
 
     if (result === undefined) {
       return;
@@ -194,8 +221,9 @@ export class Session {
       this.projectionByUtterance.set(revision.utteranceId, {
         kind: 'projected',
         lastRevision: revision.revision,
-        projectedText: revision.text,
+        projectedText: projection.insertedText,
       });
+      this.renderer.commitAppend(projection);
       return;
     }
 

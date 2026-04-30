@@ -10,9 +10,9 @@ export const DICTATION_ANCHORS = ['at_cursor', 'end_of_note'] as const;
 
 export type DictationAnchor = (typeof DICTATION_ANCHORS)[number];
 
-export const PHRASE_SEPARATORS = ['space', 'new_line', 'new_paragraph'] as const;
+export const TRANSCRIPT_FORMATTING_MODES = ['smart', 'space', 'new_line', 'new_paragraph'] as const;
 
-export type PhraseSeparator = (typeof PHRASE_SEPARATORS)[number];
+export type TranscriptFormattingMode = (typeof TRANSCRIPT_FORMATTING_MODES)[number];
 
 export const SPEAKING_STYLES = [
   'responsive',
@@ -27,12 +27,13 @@ export interface PluginSettings {
   dictationAnchor: DictationAnchor;
   listeningMode: ListeningMode;
   modelStorePathOverride: string;
-  phraseSeparator: PhraseSeparator;
   selectedModel: SelectedModel | null;
   sidecarPathOverride: string;
   sidecarRequestTimeoutMs: number;
   sidecarStartupTimeoutMs: number;
+  showTimestamps: boolean;
   speakingStyle: SpeakingStyle;
+  transcriptFormatting: TranscriptFormattingMode;
   useNoteAsContext: boolean;
 }
 
@@ -43,12 +44,13 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   dictationAnchor: 'at_cursor',
   listeningMode: 'always_on',
   modelStorePathOverride: '',
-  phraseSeparator: 'space',
   selectedModel: null,
   sidecarPathOverride: '',
   sidecarRequestTimeoutMs: 300_000,
   sidecarStartupTimeoutMs: 4_000,
+  showTimestamps: false,
   speakingStyle: 'balanced',
+  transcriptFormatting: 'smart',
   useNoteAsContext: true,
 };
 
@@ -67,9 +69,6 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.modelStorePathOverride,
       DEFAULT_PLUGIN_SETTINGS.modelStorePathOverride,
     ),
-    phraseSeparator: isPhraseSeparator(raw.phraseSeparator)
-      ? raw.phraseSeparator
-      : DEFAULT_PLUGIN_SETTINGS.phraseSeparator,
     selectedModel: readSelectedModel(raw.selectedModel),
     sidecarPathOverride: readString(
       raw.sidecarPathOverride,
@@ -83,9 +82,13 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       raw.sidecarStartupTimeoutMs,
       DEFAULT_PLUGIN_SETTINGS.sidecarStartupTimeoutMs,
     ),
+    showTimestamps: readBoolean(raw.showTimestamps, DEFAULT_PLUGIN_SETTINGS.showTimestamps),
     speakingStyle: isSpeakingStyle(raw.speakingStyle)
       ? raw.speakingStyle
       : DEFAULT_PLUGIN_SETTINGS.speakingStyle,
+    transcriptFormatting: isTranscriptFormattingMode(raw.transcriptFormatting)
+      ? raw.transcriptFormatting
+      : DEFAULT_PLUGIN_SETTINGS.transcriptFormatting,
     useNoteAsContext: readBoolean(raw.useNoteAsContext, DEFAULT_PLUGIN_SETTINGS.useNoteAsContext),
   };
 }
@@ -118,8 +121,10 @@ export function isDictationAnchor(value: unknown): value is DictationAnchor {
   return typeof value === 'string' && (DICTATION_ANCHORS as readonly string[]).includes(value);
 }
 
-export function isPhraseSeparator(value: unknown): value is PhraseSeparator {
-  return typeof value === 'string' && (PHRASE_SEPARATORS as readonly string[]).includes(value);
+export function isTranscriptFormattingMode(value: unknown): value is TranscriptFormattingMode {
+  return (
+    typeof value === 'string' && (TRANSCRIPT_FORMATTING_MODES as readonly string[]).includes(value)
+  );
 }
 
 function readSelectedModel(selectedModel: unknown): SelectedModel | null {

@@ -29,6 +29,7 @@ export interface StageOutcome {
 
 export interface TranscriptRevision {
   isFinal: boolean;
+  pauseMsBeforeUtterance: number | null;
   revision: number;
   segments: readonly TranscriptSegment[];
   sessionId: string;

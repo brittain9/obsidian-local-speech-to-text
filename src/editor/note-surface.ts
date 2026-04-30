@@ -3,18 +3,22 @@ import { Transaction } from '@codemirror/state';
 import { EditorView, type ViewUpdate } from '@codemirror/view';
 
 import type { UtteranceId } from '../session/session-journal';
-import type { DictationAnchor, PhraseSeparator } from '../settings/plugin-settings';
+import type { DictationAnchor } from '../settings/plugin-settings';
+import type { TranscriptInsertProjection } from '../transcript/renderer';
 import {
   clearAnchorEffect,
   type DictationAnchorMode,
   setAnchorEffect,
   setAnchorModeEffect,
 } from './dictation-anchor-extension';
-import { computeFirstPhrasePrefix, computePhraseSeparators } from './transcript-placement';
+import { computeFirstPhrasePrefix } from './transcript-placement';
 
 export interface NotePlacementOptions {
   anchor: DictationAnchor;
-  separator: PhraseSeparator;
+}
+
+export interface NoteProjectionContext {
+  readonly tailContent: string;
 }
 
 export interface ProjectedSpan {
@@ -85,9 +89,8 @@ export function noteSurfaceUpdateListenerExtension(): Extension {
 
 export class NoteSurface {
   private disposed = false;
-  private firstPhrase = true;
   private initialAnchorPos: number;
-  private pendingTrailingContent = '';
+  private pendingInitialPrefix = '';
   private readonly spans = new Map<UtteranceId, ProjectedSpan>();
 
   constructor(
@@ -126,7 +129,16 @@ export class NoteSurface {
     }
   }
 
-  append(utteranceId: UtteranceId, text: string): AppendResult {
+  readProjectionContext(): NoteProjectionContext {
+    const tail = this.writingRegionTail();
+    const from = Math.max(0, tail - 2);
+
+    return {
+      tailContent: this.view.state.doc.sliceString(from, tail),
+    };
+  }
+
+  appendProjection(utteranceId: UtteranceId, projection: TranscriptInsertProjection): AppendResult {
     if (this.disposed) {
       return { kind: 'denied', reason: 'Note surface is disposed.', utteranceId };
     }
@@ -136,33 +148,25 @@ export class NoteSurface {
     }
 
     const from = this.writingRegionTail();
-    const charBeforeTail = from > 0 ? this.view.state.doc.sliceString(from - 1, from) : null;
-    const { prefix, trailing } = computePhraseSeparators({
-      charBeforeTail,
-      isFirstPhrase: this.firstPhrase,
-      separator: this.placement.separator,
-    });
-    const insertedText = `${prefix}${text}${trailing}`;
-    const textStart = from + prefix.length;
-    const textEnd = textStart + text.length;
-    const to = from + insertedText.length;
+    const textStart = from + projection.textStartOffset;
+    const textEnd = from + projection.textEndOffset;
+    const to = from + projection.projectedText.length;
 
     this.view.dispatch({
-      changes: { from, insert: insertedText },
+      changes: { from, insert: projection.projectedText },
       effects: [setAnchorEffect.of(to), EditorView.scrollIntoView(to, { y: 'nearest' })],
     });
 
     const span: ProjectedSpan = {
       end: to,
-      projectedText: text,
+      projectedText: projection.insertedText,
       start: from,
       textEnd,
       textStart,
       utteranceId,
     };
     this.spans.set(utteranceId, span);
-    this.pendingTrailingContent = trailing;
-    this.firstPhrase = false;
+    this.pendingInitialPrefix = '';
 
     return { kind: 'appended', span: cloneSpan(span) };
   }
@@ -206,7 +210,6 @@ export class NoteSurface {
     span.textEnd = span.textStart + newText.length;
     span.end += delta;
     span.projectedText = newText;
-    this.pendingTrailingContent = this.trailingContentFor(span);
 
     return { kind: 'replaced', span: cloneSpan(span) };
   }
@@ -251,7 +254,7 @@ export class NoteSurface {
     for (const span of spansInRange) {
       this.spans.delete(span.utteranceId);
     }
-    this.pendingTrailingContent = '';
+    this.pendingInitialPrefix = '';
 
     return { kind: 'rewritten', range };
   }
@@ -284,12 +287,12 @@ export class NoteSurface {
     }
   }
 
-  trimPendingTrailingContent(): void {
-    if (this.disposed || this.pendingTrailingContent.length === 0) {
+  trimPendingInitialPrefix(): void {
+    if (this.disposed || this.pendingInitialPrefix.length === 0) {
       return;
     }
 
-    const pending = this.pendingTrailingContent;
+    const pending = this.pendingInitialPrefix;
     const tail = this.writingRegionTail();
     const start = tail - pending.length;
 
@@ -303,11 +306,11 @@ export class NoteSurface {
       }
     }
 
-    this.pendingTrailingContent = '';
+    this.pendingInitialPrefix = '';
   }
 
   dispose(): void {
-    this.trimPendingTrailingContent();
+    this.trimPendingInitialPrefix();
     this.view.dispatch({ effects: clearAnchorEffect.of(null) });
     this.disposed = true;
 
@@ -351,7 +354,7 @@ export class NoteSurface {
     const from = this.initialAnchorPos;
     this.view.dispatch({ changes: { from, insert: prefix } });
     this.initialAnchorPos += prefix.length;
-    this.pendingTrailingContent = prefix;
+    this.pendingInitialPrefix = prefix;
   }
 
   private computePinPosition(): number {
@@ -408,14 +411,6 @@ export class NoteSurface {
       range.to >= range.from &&
       range.to <= this.view.state.doc.length
     );
-  }
-
-  private trailingContentFor(span: ProjectedSpan): string {
-    if (span.end <= span.textEnd) {
-      return '';
-    }
-
-    return this.view.state.doc.sliceString(span.textEnd, span.end);
   }
 }
 

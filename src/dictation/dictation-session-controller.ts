@@ -17,6 +17,7 @@ import type {
 } from '../sidecar/protocol';
 import type { SidecarConnection } from '../sidecar/sidecar-connection';
 import { SidecarNotInstalledError } from '../sidecar/sidecar-paths';
+import type { TranscriptRenderOptions } from '../transcript/renderer';
 
 export type DictationControllerState =
   | 'idle'
@@ -38,10 +39,11 @@ interface ActiveSessionSnapshot {
   listeningMode: PluginSettings['listeningMode'];
   modelSelection: NonNullable<PluginSettings['selectedModel']>;
   modelStorePathOverride: string;
-  phraseSeparator: PluginSettings['phraseSeparator'];
   sessionStartUnixMs: number;
+  showTimestamps: PluginSettings['showTimestamps'];
   speakingStyle: PluginSettings['speakingStyle'];
-  useNoteAsContext: boolean;
+  transcriptFormatting: PluginSettings['transcriptFormatting'];
+  useNoteAsContext: PluginSettings['useNoteAsContext'];
 }
 
 interface DictationSessionControllerDependencies {
@@ -52,6 +54,7 @@ interface DictationSessionControllerDependencies {
       onLockedNoteDeleted: () => void;
     };
     placement: NotePlacementOptions;
+    rendererOptions: TranscriptRenderOptions;
     sessionId: string;
   }) => ControllerSession;
   getSettings: () => PluginSettings;
@@ -150,9 +153,10 @@ export class DictationSessionController {
       listeningMode: settings.listeningMode,
       modelSelection: selectedModel,
       modelStorePathOverride: settings.modelStorePathOverride,
-      phraseSeparator: settings.phraseSeparator,
       sessionStartUnixMs: Date.now(),
+      showTimestamps: settings.showTimestamps,
       speakingStyle: settings.speakingStyle,
+      transcriptFormatting: settings.transcriptFormatting,
       useNoteAsContext: settings.useNoteAsContext,
     };
     const sessionId = createSessionId();
@@ -170,7 +174,10 @@ export class DictationSessionController {
         },
         placement: {
           anchor: snapshot.dictationAnchor,
-          separator: snapshot.phraseSeparator,
+        },
+        rendererOptions: {
+          showTimestamps: snapshot.showTimestamps,
+          transcriptFormatting: snapshot.transcriptFormatting,
         },
         sessionId,
       });
@@ -507,6 +514,7 @@ export class DictationSessionController {
 
     const result = session.acceptTranscript({
       isFinal: event.isFinal,
+      pauseMsBeforeUtterance: event.pauseMsBeforeUtterance,
       revision: event.revision,
       segments: event.segments,
       sessionId: event.sessionId,

@@ -4,10 +4,17 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AppendResult, NotePlacementOptions, ReplaceResult } from '../src/editor/note-surface';
 import { Session } from '../src/session/session';
+import type {
+  TranscriptInsertProjection,
+  TranscriptRenderOptions,
+} from '../src/transcript/renderer';
 import { transcript } from './fixtures/transcript';
 
 class FakeSurface {
-  public readonly appendCalls: Array<{ text: string; utteranceId: string }> = [];
+  public readonly appendCalls: Array<{
+    projection: TranscriptInsertProjection;
+    utteranceId: string;
+  }> = [];
   public readonly replaceCalls: Array<{
     expectedOldText: string;
     newText: string;
@@ -22,18 +29,24 @@ class FakeSurface {
   public nextAppendResult: AppendResult | null = null;
   public nextReplaceResult: ReplaceResult | null = null;
 
-  append(utteranceId: string, text: string): AppendResult {
-    this.appendCalls.push({ text, utteranceId });
+  public projectionContext = { tailContent: '' };
+
+  readProjectionContext(): { tailContent: string } {
+    return this.projectionContext;
+  }
+
+  appendProjection(utteranceId: string, projection: TranscriptInsertProjection): AppendResult {
+    this.appendCalls.push({ projection, utteranceId });
 
     return (
       this.nextAppendResult ?? {
         kind: 'appended',
         span: {
-          end: text.length,
-          projectedText: text,
+          end: projection.projectedText.length,
+          projectedText: projection.insertedText,
           start: 0,
-          textEnd: text.length,
-          textStart: 0,
+          textEnd: projection.textEndOffset,
+          textStart: projection.textStartOffset,
           utteranceId,
         },
       }
@@ -74,7 +87,11 @@ describe('Session', () => {
       kind: 'accepted',
     });
 
-    expect(surface.appendCalls).toEqual([{ text: 'rough', utteranceId: 'u1' }]);
+    expect(surface.appendCalls).toHaveLength(1);
+    expect(surface.appendCalls[0]).toMatchObject({
+      projection: { insertedText: 'rough', projectedText: 'rough' },
+      utteranceId: 'u1',
+    });
     expect(surface.replaceCalls).toEqual([
       { expectedOldText: 'rough', newText: 'polished', utteranceId: 'u1' },
     ]);
@@ -132,6 +149,31 @@ describe('Session', () => {
     expect(surface.replaceCalls).toHaveLength(0);
   });
 
+  it('commits renderer timestamp state only after a successful append', () => {
+    const { session, surface } = createSessionHarness({
+      rendererOptions: { showTimestamps: true, transcriptFormatting: 'space' },
+    });
+
+    surface.nextAppendResult = {
+      kind: 'denied',
+      reason: 'Locked note is not open.',
+      utteranceId: 'u1',
+    };
+    session.acceptTranscript(
+      transcript({ text: 'first', utteranceId: 'u1', utteranceStartMsInSession: 0 }),
+    );
+    surface.nextAppendResult = null;
+    session.acceptTranscript(
+      transcript({ text: 'second', utteranceId: 'u2', utteranceStartMsInSession: 10_000 }),
+    );
+
+    expect(surface.appendCalls).toHaveLength(2);
+    expect(surface.appendCalls[1]).toMatchObject({
+      projection: { projectedText: '(0:10) second' },
+      utteranceId: 'u2',
+    });
+  });
+
   it('keeps projecting to the locked background note when the active tab changes', () => {
     const { callbacks, lockedFile, session, surface, workspace } = createSessionHarness();
     const otherFile = fakeFile('other.md');
@@ -141,7 +183,11 @@ describe('Session', () => {
     session.acceptTranscript(transcript({ text: 'background write', utteranceId: 'u1' }));
 
     expect(callbacks.onLockedNoteClosed).not.toHaveBeenCalled();
-    expect(surface.appendCalls).toEqual([{ text: 'background write', utteranceId: 'u1' }]);
+    expect(surface.appendCalls).toHaveLength(1);
+    expect(surface.appendCalls[0]).toMatchObject({
+      projection: { insertedText: 'background write', projectedText: 'background write' },
+      utteranceId: 'u1',
+    });
     expect(workspace.leaves[0]?.view?.file).toBe(lockedFile);
   });
 
@@ -177,7 +223,11 @@ describe('Session', () => {
     session.acceptTranscript(transcript({ text: 'after rename', utteranceId: 'u1' }));
 
     expect(surface.validateExternalModification).toHaveBeenCalledTimes(1);
-    expect(surface.appendCalls).toEqual([{ text: 'after rename', utteranceId: 'u1' }]);
+    expect(surface.appendCalls).toHaveLength(1);
+    expect(surface.appendCalls[0]).toMatchObject({
+      projection: { insertedText: 'after rename', projectedText: 'after rename' },
+      utteranceId: 'u1',
+    });
   });
 
   it('proxies readNoteContext to the active surface', () => {
@@ -221,9 +271,30 @@ describe('Session', () => {
       '.obsidian/local-transcript/recovery-session-1.json',
     );
   });
+
+  it('persists pause metadata in recovery snapshots', async () => {
+    const { adapter, session } = createSessionHarness();
+
+    session.acceptTranscript(
+      transcript({
+        pauseMsBeforeUtterance: 3200,
+        text: 'recover pause',
+        utteranceId: 'u1',
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(adapter.write).toHaveBeenCalledTimes(1);
+    });
+
+    const payload = JSON.parse(adapter.write.mock.calls[0]?.[1] ?? '{}') as {
+      latest?: Array<{ pauseMsBeforeUtterance?: number | null }>;
+    };
+    expect(payload.latest?.[0]?.pauseMsBeforeUtterance).toBe(3200);
+  });
 });
 
-function createSessionHarness(): {
+function createSessionHarness(options: { rendererOptions?: TranscriptRenderOptions } = {}): {
   adapter: FakeAdapter;
   callbacks: {
     onLockedNoteClosed: ReturnType<typeof vi.fn>;
@@ -248,13 +319,17 @@ function createSessionHarness(): {
     onLockedNoteDeleted: vi.fn(),
   };
   const app = { vault, workspace } as unknown as Pick<App, 'vault' | 'workspace'>;
-  const placement: NotePlacementOptions = { anchor: 'at_cursor', separator: 'space' };
+  const placement: NotePlacementOptions = { anchor: 'at_cursor' };
   const session = new Session({
     app,
     callbacks,
     lockedFile,
     noteSurfaceFactory: () => surface,
     placement,
+    rendererOptions: options.rendererOptions ?? {
+      showTimestamps: false,
+      transcriptFormatting: 'space',
+    },
     sessionId: 'session-1',
     view: {} as EditorView,
   });

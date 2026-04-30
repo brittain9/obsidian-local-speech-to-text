@@ -12,7 +12,8 @@ import {
   dictationAnchorStateField,
 } from '../src/editor/dictation-anchor-extension';
 import { NoteSurface } from '../src/editor/note-surface';
-import type { DictationAnchor, PhraseSeparator } from '../src/settings/plugin-settings';
+import type { DictationAnchor } from '../src/settings/plugin-settings';
+import { TranscriptRenderer, type TranscriptRenderOptions } from '../src/transcript/renderer';
 
 class FakeEditorView {
   public state: EditorState;
@@ -47,18 +48,51 @@ function createSurface({
   doc = '',
   extensions = [],
   selectionHead = 0,
-  separator = 'space',
 }: {
   anchor?: DictationAnchor;
   doc?: string;
   extensions?: Extension;
   selectionHead?: number;
-  separator?: PhraseSeparator;
 } = {}): { surface: NoteSurface; view: FakeEditorView } {
   const view = new FakeEditorView(doc, selectionHead, extensions);
-  const surface = new NoteSurface(view as unknown as EditorView, { anchor, separator });
+  const surface = new NoteSurface(view as unknown as EditorView, { anchor });
 
   return { surface, view };
+}
+
+function append(
+  surface: NoteSurface,
+  utteranceId: string,
+  text: string,
+  options: TranscriptRenderOptions = { showTimestamps: false, transcriptFormatting: 'space' },
+  input: { pauseMsBeforeUtterance?: number | null; utteranceStartMsInSession?: number } = {},
+): ReturnType<NoteSurface['appendProjection']> {
+  return appendWithRenderer(surface, new TranscriptRenderer(options), utteranceId, text, input);
+}
+
+function appendWithRenderer(
+  surface: NoteSurface,
+  renderer: TranscriptRenderer,
+  utteranceId: string,
+  text: string,
+  input: { pauseMsBeforeUtterance?: number | null; utteranceStartMsInSession?: number } = {},
+): ReturnType<NoteSurface['appendProjection']> {
+  const projection = renderer.planAppend(
+    {
+      pauseMsBeforeUtterance: input.pauseMsBeforeUtterance ?? null,
+      text,
+      utteranceId,
+      utteranceStartMsInSession: input.utteranceStartMsInSession ?? 0,
+    },
+    surface.readProjectionContext(),
+  );
+  const result = surface.appendProjection(utteranceId, projection);
+
+  if (result.kind === 'appended') {
+    renderer.commitAppend(projection);
+  }
+
+  return result;
 }
 
 function doc(view: FakeEditorView): string {
@@ -76,7 +110,7 @@ describe('NoteSurface', () => {
       }),
     );
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
 
     expect(doc(view)).toBe('hello first');
   });
@@ -84,28 +118,67 @@ describe('NoteSurface', () => {
   it('appends dictated text at the writing-region tail after user text typed at the old anchor', () => {
     const { surface, view } = createSurface({ doc: 'start ', selectionHead: 6 });
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
     surface.observeTransaction(
       view.apply({
         annotations: Transaction.userEvent.of('input.type'),
         changes: { from: 11, insert: ' USER' },
       }),
     );
-    expect(surface.append('u2', 'second').kind).toBe('appended');
+    expect(append(surface, 'u2', 'second').kind).toBe('appended');
 
     expect(doc(view)).toBe('start first USER second');
   });
 
-  it('preserves phrase separator and trailing cleanup behavior', () => {
-    const { surface, view } = createSurface({ separator: 'new_paragraph' });
+  it('inserts paragraph boundaries as prefixes without dangling trailing separators', () => {
+    const { surface, view } = createSurface();
+    const renderer = new TranscriptRenderer({
+      showTimestamps: false,
+      transcriptFormatting: 'new_paragraph',
+    });
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
-    expect(surface.append('u2', 'second').kind).toBe('appended');
-    expect(doc(view)).toBe('first\n\nsecond\n\n');
-
-    surface.trimPendingTrailingContent();
+    expect(appendWithRenderer(surface, renderer, 'u1', 'first').kind).toBe('appended');
+    expect(appendWithRenderer(surface, renderer, 'u2', 'second').kind).toBe('appended');
 
     expect(doc(view)).toBe('first\n\nsecond');
+  });
+
+  it('stores timestamp and boundary prefixes inside the span while replacing only utterance text', () => {
+    const { surface, view } = createSurface();
+    const renderer = new TranscriptRenderer({
+      showTimestamps: true,
+      transcriptFormatting: 'new_paragraph',
+    });
+
+    expect(appendWithRenderer(surface, renderer, 'u1', 'first').kind).toBe('appended');
+    expect(
+      appendWithRenderer(surface, renderer, 'u2', 'second', {
+        pauseMsBeforeUtterance: 3000,
+        utteranceStartMsInSession: 70_000,
+      }).kind,
+    ).toBe('appended');
+    expect(surface.replaceAnchor('u2', 'SECOND', 'second').kind).toBe('replaced');
+
+    expect(doc(view)).toBe('(0:00) first\n\n(1:10) SECOND');
+  });
+
+  it('latches replacements when a user edits the timestamp prefix', () => {
+    const { surface, view } = createSurface();
+
+    expect(
+      append(surface, 'u1', 'first', {
+        showTimestamps: true,
+        transcriptFormatting: 'space',
+      }).kind,
+    ).toBe('appended');
+    surface.observeTransaction(
+      view.apply({
+        annotations: Transaction.userEvent.of('input.type'),
+        changes: { from: 1, to: 2, insert: '9' },
+      }),
+    );
+
+    expect(surface.replaceAnchor('u1', 'FIRST', 'first').kind).toBe('denied');
   });
 
   it('keeps the visible anchor marker on the locked note surface', () => {
@@ -116,7 +189,7 @@ describe('NoteSurface', () => {
     surface.setAnchorMode('visible');
     expect(view.state.field(dictationAnchorStateField)).toEqual({ mode: 'visible', pos: 0 });
 
-    surface.append('u1', 'first');
+    append(surface, 'u1', 'first');
     expect(view.state.field(dictationAnchorStateField)).toEqual({ mode: 'visible', pos: 5 });
 
     surface.dispose();
@@ -132,7 +205,7 @@ describe('NoteSurface', () => {
 
     expect(doc(view)).toBe('alpha\n');
 
-    surface.trimPendingTrailingContent();
+    surface.trimPendingInitialPrefix();
 
     expect(doc(view)).toBe('alpha');
   });
@@ -140,7 +213,7 @@ describe('NoteSurface', () => {
   it('maps spans when text is inserted before them', () => {
     const { surface, view } = createSurface({ doc: 'tail', selectionHead: 4 });
 
-    expect(surface.append('u1', 'voice ').kind).toBe('appended');
+    expect(append(surface, 'u1', 'voice ').kind).toBe('appended');
     surface.observeTransaction(
       view.apply({
         annotations: Transaction.userEvent.of('input.type'),
@@ -155,8 +228,8 @@ describe('NoteSurface', () => {
   it('latches only spans intersected by a user edit', () => {
     const { surface, view } = createSurface();
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
-    expect(surface.append('u2', 'second').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u2', 'second').kind).toBe('appended');
     surface.observeTransaction(
       view.apply({
         annotations: Transaction.userEvent.of('input.type'),
@@ -172,7 +245,7 @@ describe('NoteSurface', () => {
   it('does not latch on undo or redo user events', () => {
     const { surface, view } = createSurface({ doc: 'tail', selectionHead: 4 });
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
     surface.observeTransaction(
       view.apply({
         annotations: Transaction.userEvent.of('undo.selection'),
@@ -186,7 +259,7 @@ describe('NoteSurface', () => {
   it('treats IME composition commits as latchable user edits', () => {
     const { surface, view } = createSurface();
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
     surface.observeTransaction(
       view.apply({
         annotations: Transaction.userEvent.of('input.type.compose'),
@@ -200,7 +273,7 @@ describe('NoteSurface', () => {
   it('denies replace when the recorded bytes no longer match the note', () => {
     const { surface, view } = createSurface();
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
     surface.observeTransaction(view.apply({ changes: { from: 0, to: 1, insert: 'F' } }));
 
     const result = surface.replaceAnchor('u1', 'FIRST', 'first');
@@ -212,8 +285,8 @@ describe('NoteSurface', () => {
   it('selectively latches externally modified spans by byte identity', () => {
     const { surface, view } = createSurface();
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
-    expect(surface.append('u2', 'second').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u2', 'second').kind).toBe('appended');
     surface.observeTransaction(view.apply({ changes: { from: 0, to: 1, insert: 'F' } }));
     surface.validateExternalModification();
 
@@ -224,7 +297,7 @@ describe('NoteSurface', () => {
   it('latches all spans on request', () => {
     const { surface } = createSurface();
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
     surface.latchAll('closed');
 
     expect(surface.replaceAnchor('u1', 'FIRST', 'first')).toMatchObject({
@@ -236,8 +309,8 @@ describe('NoteSurface', () => {
   it('rewrites an intact region and drops old anchors', () => {
     const { surface, view } = createSurface();
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
-    expect(surface.append('u2', 'second').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u2', 'second').kind).toBe('appended');
 
     expect(surface.rewriteRegion({ from: 0, to: 5 }, 'FIRST', [])).toEqual({
       kind: 'rewritten',
@@ -251,7 +324,7 @@ describe('NoteSurface', () => {
   it('denies rewrites that cut through an utterance span', () => {
     const { surface } = createSurface();
 
-    expect(surface.append('u1', 'first').kind).toBe('appended');
+    expect(append(surface, 'u1', 'first').kind).toBe('appended');
 
     expect(surface.rewriteRegion({ from: 1, to: 4 }, 'ir', [])).toEqual({
       kind: 'denied',
