@@ -168,6 +168,7 @@ pub enum TimestampGranularity {
 pub enum StageId {
     Engine,
     HallucinationFilter,
+    LlmTransform,
     Punctuation,
     UserRules,
 }
@@ -224,6 +225,14 @@ pub struct ContextWindow {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmTransformConfig {
+    pub developer_mode: bool,
+    pub model: String,
+    pub prompt: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompiledRuntimeInfo {
@@ -259,6 +268,8 @@ pub enum Command {
         #[serde(default)]
         acceleration_preference: AccelerationPreference,
         language: String,
+        #[serde(default)]
+        llm_transform: Option<LlmTransformConfig>,
         mode: ListeningMode,
         model_selection: SelectedModel,
         #[serde(default)]
@@ -559,7 +570,7 @@ mod tests {
         AUDIO_FRAME_KIND, AccelerationPreference, Command, Event, EventEnvelope,
         FRAME_HEADER_LENGTH, IncomingFrame, JSON_FRAME_KIND, ListeningMode, MAX_FRAME_PAYLOAD,
         PCM_BYTES_PER_FRAME, QueueBackpressureTier, SelectedModel, SessionStopReason,
-        SpeakingStyle, read_frame, write_event_frame, write_frame,
+        SpeakingStyle, StageId, read_frame, write_event_frame, write_frame,
     };
     use crate::engine::capabilities::{ModelFamilyId, RuntimeId};
     use uuid::Uuid;
@@ -598,11 +609,20 @@ mod tests {
                     family_id: ModelFamilyId::Whisper,
                     file_path: "/tmp/model.bin".to_string(),
                 },
+                llm_transform: None,
                 model_store_path_override: None,
                 session_start_unix_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 speaking_style: SpeakingStyle::Balanced,
             })
+        );
+    }
+
+    #[test]
+    fn stage_id_llm_transform_serializes_as_snake_case() {
+        assert_eq!(
+            serde_json::to_value(StageId::LlmTransform).unwrap(),
+            serde_json::json!("llm_transform")
         );
     }
 

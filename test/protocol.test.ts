@@ -57,6 +57,37 @@ describe('sidecar protocol', () => {
     expect(payload.sessionId).toBe('session-gpu');
   });
 
+  it('serializes start_session command with llmTransform config', () => {
+    const command = createStartSessionCommand({
+      accelerationPreference: 'auto',
+      language: 'en',
+      llmTransform: {
+        developerMode: true,
+        model: 'llama3.2:latest',
+        prompt: 'Clean it.',
+      },
+      mode: 'always_on',
+      modelSelection: {
+        familyId: 'whisper',
+        filePath: '/tmp/m.bin',
+        kind: 'external_file',
+        runtimeId: 'whisper_cpp',
+      },
+      sessionStartUnixMs: 1_700_000_000_000,
+      sessionId: 'session-llm',
+      speakingStyle: 'balanced',
+    });
+
+    expect(readPayload(encodeJsonFrame(command))).toMatchObject({
+      llmTransform: {
+        developerMode: true,
+        model: 'llama3.2:latest',
+        prompt: 'Clean it.',
+      },
+      type: 'start_session',
+    });
+  });
+
   it('serializes get_system_info command', () => {
     const frame = encodeJsonFrame(createGetSystemInfoCommand());
 

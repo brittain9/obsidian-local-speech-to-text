@@ -157,6 +157,50 @@ describe('DictationSessionController', () => {
     expect(sidecarConnection.startSession.mock.calls[0]?.[0]).not.toHaveProperty('useGpu');
   });
 
+  it('includes llmTransform in the session snapshot when enabled with timestamps off', async () => {
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      getSettings: () =>
+        createSettings({
+          llmTransformEnabled: true,
+          llmTransformDeveloperMode: true,
+          llmTransformModel: ' llama3.2:latest ',
+          llmTransformPrompt: 'Clean it.',
+          selectedModel: createExternalModelSelection(),
+          showTimestamps: false,
+        }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(sidecarConnection.startSession.mock.calls[0]?.[0]).toMatchObject({
+      llmTransform: {
+        developerMode: true,
+        model: 'llama3.2:latest',
+        prompt: 'Clean it.',
+      },
+    });
+  });
+
+  it('omits llmTransform from the session snapshot when timestamps are enabled', async () => {
+    const sidecarConnection = new FakeSidecarConnection();
+    const controller = createController({
+      getSettings: () =>
+        createSettings({
+          llmTransformEnabled: true,
+          llmTransformModel: 'llama3.2:latest',
+          selectedModel: createExternalModelSelection(),
+          showTimestamps: true,
+        }),
+      sidecarConnection,
+    });
+
+    await controller.startDictation();
+
+    expect(sidecarConnection.startSession.mock.calls[0]?.[0]).not.toHaveProperty('llmTransform');
+  });
+
   it('recovers from capture startup failures without staying busy', async () => {
     const captureStream = new FakeCaptureStream();
     const sidecarConnection = new FakeSidecarConnection();

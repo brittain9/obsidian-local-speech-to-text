@@ -29,7 +29,7 @@ flowchart LR
 
 ### Proposed
 
-Post-transcript enrichment adds two pipelines separated by a canonical transcript struct. The **audio pipeline** (VAD → diarization → inference → normalize) runs in the audio domain. The **text pipeline** (hallucination filter → punctuation → user rules) runs on the normalized transcript and preserves segment boundaries. An **LLM post-processor** sits outside the text pipeline as an experimental side branch because it may restructure text freely and destroy alignment. A final **render** stage applies the user's timestamp and format choices.
+Post-transcript enrichment adds two pipelines separated by a canonical transcript struct. The **audio pipeline** (VAD → diarization → inference → normalize) runs in the audio domain. The **text pipeline** (hallucination filter → LLM transform → punctuation → user rules) runs on the normalized transcript. Most text stages preserve segment boundaries; `llm_transform` is the explicit exception and may collapse one utterance to a single synthetic segment. Whole-session LLM rewrite remains a separate experimental artifact, not a transcript stage. A final **render** stage applies the user's timestamp and format choices.
 
 ```mermaid
 flowchart TB
@@ -47,17 +47,15 @@ flowchart TB
             VAD["VAD"] --> DIA["Diarization<br/>(optional, capability-gated)"] --> INF["Inference<br/>(engine registry)"] --> NORM["Normalize →<br/>canonical transcript"]
         end
 
-        subgraph Text ["Text pipeline · segment-preserving"]
+        subgraph Text ["Text pipeline"]
             direction LR
-            FILT["Hallucination<br/>filter"] --> PUNCT["Punctuation"] --> RULES["User rules"]
+            FILT["Hallucination<br/>filter"] --> LLM["LLM transform<br/>(optional · boundary-collapsing)"] --> PUNCT["Punctuation"] --> RULES["User rules"]
         end
 
-        LLM["LLM post-processor<br/>(experimental · structure-destroying)"]
         RENDER["Render<br/>(apply timestamp mode + format)"]
 
         NORM --> FILT
         RULES --> RENDER
-        RULES -.-> LLM -.-> RENDER
     end
 
     MIC -->|"stdin: audio frames (binary protocol)"| VAD

@@ -4,10 +4,11 @@ use std::time::Instant;
 use crate::audio_metadata::VoiceActivityEvidence;
 use crate::engine::capabilities::ModelFamilyCapabilities;
 use crate::panic_util::format_panic_message;
-use crate::protocol::{StageId, StageOutcome, StageStatus, TranscriptSegment};
+use crate::protocol::{LlmTransformConfig, StageId, StageOutcome, StageStatus, TranscriptSegment};
 use crate::transcription::{SegmentDiagnostics, Transcript};
 
 mod hallucination_filter;
+mod llm_transform;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StageEnablement {
@@ -23,12 +24,15 @@ impl Default for StageEnablement {
 }
 
 pub struct StageContext<'a> {
+    pub cancel_rx: &'a tokio::sync::watch::Receiver<bool>,
     pub context: Option<&'a crate::protocol::ContextWindow>,
     pub family_capabilities: &'a ModelFamilyCapabilities,
-    pub stage_enabled: &'a StageEnablement,
     pub is_final: bool,
+    pub llm_transform: Option<&'a LlmTransformConfig>,
     pub pause_ms_before_utterance: Option<u64>,
     pub segment_diagnostics: &'a [SegmentDiagnostics],
+    pub stage_enabled: &'a StageEnablement,
+    pub tokio_runtime: &'a tokio::runtime::Runtime,
     pub vad_probabilities: &'a [f32],
     pub voice_activity: &'a VoiceActivityEvidence,
 }
@@ -56,13 +60,19 @@ pub trait StageProcessor: Send + Sync {
     fn needs_context(&self) -> bool {
         false
     }
+    fn collapses_segment_boundaries(&self) -> bool {
+        false
+    }
     fn process(&self, transcript: &Transcript, ctx: &StageContext<'_>) -> StageProcess;
 }
 
 /// Build the registered post-engine processor chain in canonical order. The
 /// engine stage outcome is appended separately by `assemble_transcript`.
 pub fn post_engine_processors() -> Vec<Box<dyn StageProcessor>> {
-    vec![Box::new(hallucination_filter::HallucinationFilterStage)]
+    vec![
+        Box::new(hallucination_filter::HallucinationFilterStage),
+        Box::new(llm_transform::LlmTransformStage::new()),
+    ]
 }
 
 pub fn any_registered_stage_needs_context() -> bool {
@@ -104,6 +114,7 @@ pub fn run_post_engine(
                 &segments,
                 &transcript.segments,
                 ctx.voice_activity.duration_ms(),
+                processor.collapses_segment_boundaries(),
             ) {
                 Ok(()) => {
                     let revision_out = revision_in.saturating_add(1);
@@ -170,6 +181,7 @@ fn validate_stage_segments(
     new_segments: &[TranscriptSegment],
     prior_segments: &[TranscriptSegment],
     utterance_duration_ms: u64,
+    boundary_collapsing: bool,
 ) -> Result<(), String> {
     for segment in new_segments {
         if segment.start_ms > segment.end_ms {
@@ -197,15 +209,17 @@ fn validate_stage_segments(
         }
     }
 
-    for segment in new_segments {
-        let preserved = prior_segments
-            .iter()
-            .any(|prior| prior.start_ms == segment.start_ms && prior.end_ms == segment.end_ms);
-        if !preserved {
-            return Err(format!(
-                "segment {}-{} ms introduces timing boundaries not in the prior revision",
-                segment.start_ms, segment.end_ms,
-            ));
+    if !boundary_collapsing {
+        for segment in new_segments {
+            let preserved = prior_segments
+                .iter()
+                .any(|prior| prior.start_ms == segment.start_ms && prior.end_ms == segment.end_ms);
+            if !preserved {
+                return Err(format!(
+                    "segment {}-{} ms introduces timing boundaries not in the prior revision",
+                    segment.start_ms, segment.end_ms,
+                ));
+            }
         }
     }
 
@@ -274,6 +288,22 @@ mod tests {
         }
     }
 
+    struct BoundaryCollapsingProcessor {
+        result: fn() -> StageProcess,
+    }
+
+    impl StageProcessor for BoundaryCollapsingProcessor {
+        fn id(&self) -> StageId {
+            StageId::LlmTransform
+        }
+        fn collapses_segment_boundaries(&self) -> bool {
+            true
+        }
+        fn process(&self, _transcript: &Transcript, _ctx: &StageContext<'_>) -> StageProcess {
+            (self.result)()
+        }
+    }
+
     struct PanicProcessor;
 
     impl StageProcessor for PanicProcessor {
@@ -289,13 +319,21 @@ mod tests {
         let caps = whisper_caps();
         let enablement = StageEnablement::default();
         let voice_activity = voice_activity();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let ctx = StageContext {
+            cancel_rx: &cancel_rx,
             context: None,
             family_capabilities: &caps,
-            stage_enabled: &enablement,
-            pause_ms_before_utterance: None,
             is_final: true,
+            llm_transform: None,
+            pause_ms_before_utterance: None,
             segment_diagnostics: &[],
+            stage_enabled: &enablement,
+            tokio_runtime: &runtime,
             vad_probabilities: &[],
             voice_activity: &voice_activity,
         };
@@ -306,13 +344,21 @@ mod tests {
         let caps = whisper_caps();
         let enablement = StageEnablement::default();
         let voice_activity = voice_activity();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let ctx = StageContext {
+            cancel_rx: &cancel_rx,
             context: None,
             family_capabilities: &caps,
-            stage_enabled: &enablement,
-            pause_ms_before_utterance: None,
             is_final: false,
+            llm_transform: None,
+            pause_ms_before_utterance: None,
             segment_diagnostics: &[],
+            stage_enabled: &enablement,
+            tokio_runtime: &runtime,
             vad_probabilities: &[],
             voice_activity: &voice_activity,
         };
@@ -642,5 +688,51 @@ mod tests {
         assert_eq!(transcript.segments[0].text, "first");
         let outcome = transcript.stage_history.last().unwrap();
         assert_eq!(outcome.status, StageStatus::Ok);
+    }
+
+    #[test]
+    fn boundary_collapsing_stage_may_replace_prior_segment_boundaries() {
+        let mut transcript = Transcript {
+            segments: vec![
+                TranscriptSegment {
+                    end_ms: 400,
+                    start_ms: 0,
+                    text: "first".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
+                },
+                TranscriptSegment {
+                    end_ms: 1_000,
+                    start_ms: 400,
+                    text: "second".to_string(),
+                    timestamp_granularity: TimestampGranularity::Segment,
+                    timestamp_source: TimestampSource::Engine,
+                },
+            ],
+            ..fresh_transcript()
+        };
+        let processors: Vec<Box<dyn StageProcessor>> =
+            vec![Box::new(BoundaryCollapsingProcessor {
+                result: || StageProcess::Ok {
+                    segments: vec![TranscriptSegment {
+                        end_ms: 1_000,
+                        start_ms: 0,
+                        text: "collapsed".to_string(),
+                        timestamp_granularity: TimestampGranularity::Utterance,
+                        timestamp_source: TimestampSource::None,
+                    }],
+                    payload: None,
+                },
+            })];
+
+        run(&mut transcript, processors);
+
+        assert_eq!(transcript.revision, 1);
+        assert_eq!(transcript.segments.len(), 1);
+        assert_eq!(transcript.segments[0].text, "collapsed");
+        assert_eq!(
+            transcript.stage_history.last().unwrap().status,
+            StageStatus::Ok
+        );
     }
 }

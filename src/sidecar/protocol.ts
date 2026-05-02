@@ -127,9 +127,16 @@ interface EnvelopeBase<TType extends string> {
 
 export interface HealthCommand extends EnvelopeBase<'health'> {}
 
+export interface LlmTransformConfig {
+  developerMode: boolean;
+  model: string;
+  prompt: string;
+}
+
 export interface StartSessionCommand extends EnvelopeBase<'start_session'> {
   accelerationPreference: AccelerationPreference;
   language: 'en';
+  llmTransform?: LlmTransformConfig;
   mode: ListeningMode;
   modelSelection: SelectedModel;
   modelStorePathOverride?: string;

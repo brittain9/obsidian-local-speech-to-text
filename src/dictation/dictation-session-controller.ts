@@ -10,6 +10,7 @@ import type { PluginLogger } from '../shared/plugin-logger';
 import type {
   ContextRequestEvent,
   ContextWindow,
+  LlmTransformConfig,
   QueueBackpressureTier,
   SessionState,
   SidecarEvent,
@@ -37,6 +38,7 @@ interface ActiveSessionSnapshot {
   accelerationPreference: PluginSettings['accelerationPreference'];
   dictationAnchor: PluginSettings['dictationAnchor'];
   listeningMode: PluginSettings['listeningMode'];
+  llmTransform: LlmTransformConfig | null;
   modelSelection: NonNullable<PluginSettings['selectedModel']>;
   modelStorePathOverride: string;
   sessionStartUnixMs: number;
@@ -118,6 +120,18 @@ export class DictationSessionController {
   }
 
   async dispose(): Promise<void> {
+    const activeSessionId = this.sessionId;
+    if (activeSessionId !== null) {
+      try {
+        await this.dependencies.sidecarConnection.stopSession(activeSessionId, 500);
+      } catch (error) {
+        this.dependencies.logger?.warn(
+          'session',
+          'timed out stopping dictation during unload',
+          error,
+        );
+      }
+    }
     this.releaseSidecarSubscription();
     await this.cleanupLocalSession();
     this.applyUiState('idle');
@@ -151,6 +165,7 @@ export class DictationSessionController {
       accelerationPreference: settings.accelerationPreference,
       dictationAnchor: settings.dictationAnchor,
       listeningMode: settings.listeningMode,
+      llmTransform: resolveLlmTransformSnapshot(settings),
       modelSelection: selectedModel,
       modelStorePathOverride: settings.modelStorePathOverride,
       sessionStartUnixMs: Date.now(),
@@ -217,6 +232,7 @@ export class DictationSessionController {
         await this.dependencies.sidecarConnection.startSession({
           accelerationPreference: snapshot.accelerationPreference,
           language: 'en',
+          ...(snapshot.llmTransform !== null ? { llmTransform: snapshot.llmTransform } : {}),
           mode: snapshot.listeningMode,
           modelSelection: snapshot.modelSelection,
           sessionStartUnixMs: snapshot.sessionStartUnixMs,
@@ -610,6 +626,20 @@ export class DictationSessionController {
 
 function createSessionId(): string {
   return `session-${randomUUID()}`;
+}
+
+function resolveLlmTransformSnapshot(settings: PluginSettings): LlmTransformConfig | null {
+  const model = settings.llmTransformModel.trim();
+
+  if (!settings.llmTransformEnabled || settings.showTimestamps || model.length === 0) {
+    return null;
+  }
+
+  return {
+    developerMode: settings.llmTransformDeveloperMode,
+    model,
+    prompt: settings.llmTransformPrompt,
+  };
 }
 
 function isAnchorVisibleSessionState(state: SessionState): boolean {

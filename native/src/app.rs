@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::catalog::ModelCatalog;
@@ -64,6 +65,7 @@ pub struct AppState {
 
 struct ActiveSession {
     context_required: bool,
+    cancel_tx: watch::Sender<bool>,
     draining: bool,
     last_reported_queue_tier: QueueBackpressureTier,
     last_reported_state: Option<SessionState>,
@@ -379,6 +381,7 @@ impl AppState {
             Command::StartSession {
                 acceleration_preference,
                 language,
+                llm_transform,
                 mode,
                 model_selection,
                 model_store_path_override,
@@ -409,6 +412,7 @@ impl AppState {
                             session_id: session_id.clone(),
                             style: speaking_style,
                         };
+                        let (cancel_tx, cancel_rx) = watch::channel(false);
                         let session = match (self.session_factory)(config) {
                             Ok(session) => session,
                             Err(SessionInitError::VadLoad(details)) => {
@@ -431,7 +435,9 @@ impl AppState {
                                 family_id: resolved_model.family_id,
                                 gpu_config: GpuConfig { use_gpu },
                                 language,
+                                llm_transform,
                                 model_file_path: resolved_model.resolved_path.clone(),
+                                cancel_rx,
                                 session_start_unix_ms,
                                 session_id: session_id.clone(),
                                 stage_enablement: StageEnablement::default(),
@@ -448,6 +454,7 @@ impl AppState {
                         }
 
                         self.active_session = Some(ActiveSession {
+                            cancel_tx,
                             context_required: resolved_model_supports_initial_prompt(
                                 self.registry.as_ref(),
                                 resolved_model.runtime_id,
@@ -503,8 +510,10 @@ impl AppState {
                 (ControlFlow::Continue, events)
             }
             Command::Shutdown => {
+                if let Some(active_session) = self.active_session.take() {
+                    let _ = active_session.cancel_tx.send(true);
+                }
                 let _ = self.transcription_worker.send(WorkerCommand::Shutdown);
-                self.active_session = None;
 
                 (ControlFlow::Shutdown, events)
             }
@@ -596,6 +605,7 @@ impl AppState {
         }
 
         let active_session = self.active_session.take()?;
+        let _ = active_session.cancel_tx.send(true);
         let session_id = active_session.session.config().session_id.clone();
         let _ = self.transcription_worker.send(WorkerCommand::EndSession {
             session_id: session_id.clone(),
@@ -616,9 +626,10 @@ impl AppState {
         }
 
         let active_session = self.active_session.as_mut()?;
+        let _ = active_session.cancel_tx.send(true);
         if !active_session.transcription_active {
             let session_id = active_session.session.config().session_id.clone();
-            self.active_session = None;
+            self.active_session.take()?;
             let _ = self.transcription_worker.send(WorkerCommand::EndSession {
                 session_id: session_id.clone(),
             });
@@ -658,7 +669,10 @@ impl AppState {
             SessionStopReason::UserStop
         };
 
-        self.active_session = None;
+        let Some(active_session) = self.active_session.take() else {
+            return false;
+        };
+        let _ = active_session.cancel_tx.send(true);
         let _ = self.transcription_worker.send(WorkerCommand::EndSession {
             session_id: session_id.to_owned(),
         });
@@ -2319,6 +2333,7 @@ mod tests {
         Command::StartSession {
             acceleration_preference: AccelerationPreference::Auto,
             language: "en".to_string(),
+            llm_transform: None,
             mode: ListeningMode::AlwaysOn,
             model_selection: SelectedModel::ExternalFile {
                 runtime_id: RuntimeId::WhisperCpp,

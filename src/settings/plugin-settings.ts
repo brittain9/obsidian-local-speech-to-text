@@ -20,12 +20,19 @@ export const SPEAKING_STYLES = [
   'patient',
 ] as const satisfies readonly SpeakingStyle[];
 
+export const DEFAULT_LLM_TRANSFORM_PROMPT =
+  "Clean up the transcript text. Preserve the speaker's meaning. Return only the final text.";
+
 export interface PluginSettings {
   accelerationPreference: AccelerationPreference;
   cudaLibraryPath: string;
   developerMode: boolean;
   dictationAnchor: DictationAnchor;
   listeningMode: ListeningMode;
+  llmTransformDeveloperMode: boolean;
+  llmTransformEnabled: boolean;
+  llmTransformModel: string;
+  llmTransformPrompt: string;
   modelStorePathOverride: string;
   selectedModel: SelectedModel | null;
   sidecarPathOverride: string;
@@ -43,6 +50,10 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   developerMode: false,
   dictationAnchor: 'at_cursor',
   listeningMode: 'always_on',
+  llmTransformDeveloperMode: false,
+  llmTransformEnabled: false,
+  llmTransformModel: '',
+  llmTransformPrompt: DEFAULT_LLM_TRANSFORM_PROMPT,
   modelStorePathOverride: '',
   selectedModel: null,
   sidecarPathOverride: '',
@@ -65,6 +76,19 @@ export function resolvePluginSettings(data: unknown): PluginSettings {
       ? raw.dictationAnchor
       : DEFAULT_PLUGIN_SETTINGS.dictationAnchor,
     listeningMode: readListeningMode(raw.listeningMode),
+    llmTransformDeveloperMode: readBoolean(
+      raw.llmTransformDeveloperMode,
+      DEFAULT_PLUGIN_SETTINGS.llmTransformDeveloperMode,
+    ),
+    llmTransformEnabled: readBoolean(
+      raw.llmTransformEnabled,
+      DEFAULT_PLUGIN_SETTINGS.llmTransformEnabled,
+    ),
+    llmTransformModel: readString(raw.llmTransformModel, DEFAULT_PLUGIN_SETTINGS.llmTransformModel),
+    llmTransformPrompt: readUserString(
+      raw.llmTransformPrompt,
+      DEFAULT_PLUGIN_SETTINGS.llmTransformPrompt,
+    ),
     modelStorePathOverride: readString(
       raw.modelStorePathOverride,
       DEFAULT_PLUGIN_SETTINGS.modelStorePathOverride,
@@ -107,6 +131,10 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
 
 function readString(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value.trim() : fallback;
+}
+
+function readUserString(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback;
 }
 
 function readPositiveInteger(value: unknown, fallback: number): number {

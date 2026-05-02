@@ -15,16 +15,15 @@ it needs to break.
 ## Contract
 
 Every dictated utterance has a stable `utterance_id` and a monotonic revision
-stream. Engine output creates revisions; speculative output is `is_final=false`,
-and one finalized engine revision is `is_final=true`. Post-engine quality stages
-run only on finalized revisions unless a stage is explicitly marked
-partial-safe with a narrower partial contract. Segment text is canonical, joined
-text is a projection, and timestamps are metadata with explicit provenance.
-Timestamp rendering happens only when a final revision is projected into the
-note. Per-utterance LLM cleanup is an alignment-preserving final-only stage.
+stream. Engine output creates the base revision; post-engine quality stages may
+create later finalized revisions. Post-engine quality stages run only on
+finalized revisions unless a stage is explicitly marked partial-safe with a
+narrower partial contract. Segment text is canonical, joined text is a
+projection, and timestamps are metadata with explicit provenance. Timestamp
+rendering happens only when a final revision is projected into the note.
+Per-utterance LLM cleanup is an alignment-preserving final-only stage.
 Whole-session LLM polish is a separate experimental artifact, not a normal
-transcript revision; in v1 it is mutually exclusive with rendered timestamps and
-with speculative transcription.
+transcript revision; in v1 it is mutually exclusive with rendered timestamps.
 
 ## UX Contract
 
@@ -32,8 +31,8 @@ Advanced features are session-scoped. Settings are snapshotted when dictation
 starts; changes made during active dictation apply to the next session. Features
 that cannot run together stay visible in settings, but disabled controls must
 name the active conflict. The default experience stays simple: hallucination
-filter on, timestamps off, live partials auto, LLM cleanup off, session polish
-off, diarization off. Partial text may be replaced until finalization, but the
+filter on, timestamps off, LLM cleanup off, session polish off, diarization off.
+Machine-owned projected text may be replaced by later revisions, but the
 user-wins latch is absolute. Empty filtered utterances are silent in the note
 and preserved in the journal/developer diagnostics.
 
@@ -75,13 +74,8 @@ word timing.
 
 | Combination | v1 | Contract |
 | --- | --- | --- |
-| Speculative + hallucination filter | Yes | Partial-safe mode may drop only obvious HARD artifacts; full SOFT/evidence filter runs on finals. Other post-engine stages skip on partials. |
-| Speculative + timestamps | Yes (read-only on partial) | Partials may carry provisional timing for diagnostics; timestamp markers render in the note only on `is_final=true`. |
-| Speculative + accumulate pauses | Yes | Same audio pipeline. Pause boundary triggers the final decode. |
-| Speculative + smart separator | Yes | Separator is a final-revision projection concern. |
 | Timestamps + hallucination filter | Yes | Filter is drop-only; kept segments retain timing. Dropped segments and their time ranges are recorded for the journal. |
 | Timestamps + LLM cleanup | No in v1 | Mutually exclusive. Settings UI gates one when the other is on. |
-| Speculative + LLM cleanup | No in v1 | LLM cleanup runs on `is_final=true` only and would mis-render against still-replacing partials. Settings UI gates. |
 | Hallucination filter + LLM cleanup | Yes | Filter runs first; LLM never sees obvious junk. |
 | Session polish + timestamps | No in v1 | Whole-session rewrite can destroy alignment, so timestamps are disabled for that session. |
 | Diarization + timestamps | Future yes | Speaker labels attach to timed segments; timestamp rendering remains projection-only. |
@@ -91,8 +85,8 @@ word timing.
 
 PRs 1 and 2 are the foundation — every later PR depends on the contract surface
 they establish. After that, the order optimizes for landing the user-visible
-filter fix (PR 3) early, then layering speculative + UX features on the stable
-finality and timing contracts.
+filter fix (PR 3) early, then layering UX features on the stable finality and
+timing contracts.
 
 ### PR 1 — Infrastructure baseline ✅ shipped (#61)
 
@@ -217,9 +211,9 @@ unconditionally; this PR replaces that with evidence-based classification.
 ### PR 4 — Queuing behavior + pause metadata
 
 Two-part PR. Closes #11 (always-on queuing) and lays the pause field that PR 5
-and PR 6 consume. Endpointing thresholds (`silence_end_frames`) stay as they
-are — current Responsive 400 ms / Balanced 1000 ms / Patient 2000 ms is
-already aligned with Deepgram / Google / iOS practice.
+consumes. Endpointing thresholds (`silence_end_frames`) stay as they are —
+current Responsive 400 ms / Balanced 1000 ms / Patient 2000 ms is already
+aligned with Deepgram / Google / iOS practice.
 
 **Queuing behavior (issue #11).** Today `MAX_QUEUED_UTTERANCES = 1` and
 overflow silently drops audio. Replace with a depth-tiered backpressure model
@@ -235,7 +229,7 @@ that processes in order and never drops audio:
 There is no pause-while-processing mode. The hard cap stops the session instead
 of silently dropping audio during normal processing.
 
-**Pause metadata (PR 5 / PR 6 prerequisite).**
+**Pause metadata (PR 5 prerequisite).**
 
 - `FinalizedUtterance.pause_ms_before_utterance: Option<u64>`, measured
   speech-to-speech (previous utterance's `speech_end_ms` to the current
@@ -246,8 +240,8 @@ of silently dropping audio during normal processing.
   boundary is a length cap, not a thought boundary, and downstream renderers
   must not treat it as a pause signal.
 - Flows through `WorkerCommand::TranscribeUtterance`, the engine stage
-  payload, and `StageContext` so PR 5's renderer and PR 6's separator can read
-  it without another wire round trip.
+  payload, and `StageContext` so PR 5's renderer can read it without another
+  wire round trip.
 - `MAX_UTTERANCE_FRAMES` cap and boundary-aware split unchanged.
 
 **Contract additions:** `pause_ms_before_utterance` on `FinalizedUtterance`,
@@ -303,41 +297,9 @@ What shipped:
 `NoteSurface` exposes `readProjectionContext()` + `appendProjection()`; renderer
 options are passed separately from placement options on session creation.
 
-### PR 6 — Speculative transcription
+### PR 6 — LLM cleanup (experimental, opt-in)
 
-Live partials on tiny.en / base.en. Depends on PRs 1-4 for the contract surface.
-
-- Whisper adapter only. Cohere is request-response; nothing to do.
-- Worker partial loop: re-decode-on-grow with an `audio_ctx` ramp. Skip below
-  1.0 s of audio; cadence is 400-750 ms by audio length; final decode at full
-  settings.
-- Partial decode params: `set_audio_ctx`, `set_no_context(true)`,
-  `set_single_segment(true)`, `set_temperature(0)`. Pad to ≥ 1.0 s with zeros
-  if needed.
-- LocalAgreement-2 per active utterance: `committed` + `buffer` lists. Two
-  consecutive decodes agree on a token at the same position → it moves to
-  `committed`. Volatile suffix is `buffer`. Port the n-gram dedup against
-  `committed_in_buffer`.
-- Each partial decode → `revision = N+1`, `is_final = false`. VAD finalization
-  → final decode at full settings → `is_final = true`. Buffer cleared.
-- Race guard: each decode carries an internal `(utterance_id,
-  requested_revision)` tuple. Worker writes only if `requested_revision >
-  last_committed_revision` and the utterance is not yet finalized; the final
-  decode supersedes any in-flight partial unconditionally.
-- `initial_prompt` is identical on every decode in an utterance. Do not feed
-  prior partial output back via `set_tokens`.
-- Settings: `livePartials: auto | always | off`. `auto` = on for tiny.en /
-  base.en, off otherwise.
-- Plugin uses `replace_anchor`; user-wins latch absorbs partial revisions
-  identically to final ones.
-
-**Contract additions:** worker becomes the canonical producer of
-`is_final = false` revisions; multiple `TranscriptReady` events per utterance
-with monotonic `revision`.
-
-### PR 7 — LLM cleanup (experimental, opt-in)
-
-Per-utterance disfluency cleanup. Park until PRs 1-6 are stable.
+Per-utterance disfluency cleanup. Park until PRs 1-5 are stable.
 
 - New runtime: `RuntimeId::LlamaCpp` via the `llama-cpp-2` binding (pinned
   exact version).
@@ -353,9 +315,9 @@ Per-utterance disfluency cleanup. Park until PRs 1-6 are stable.
   - GBNF grammar forbids leading "Sure, here is", code fences, "I cannot…",
     quote-wrapping the whole output.
   - Stop sequences: `\n\nInput:`, `\n\n#`.
-- Mutual exclusion: when LLM is on, timestamps and speculative are forced off
-  for the session. Settings UI surfaces the gate with a reason; runtime
-  double-checks against the session-scoped feature snapshot.
+- Mutual exclusion: when LLM is on, timestamps are forced off for the session.
+  Settings UI surfaces the gate with a reason; runtime double-checks against
+  the session-scoped feature snapshot.
 - Latch: cleaned utterances are revisions; user-wins latch absorbs them
   identically to any other downstream stage.
 

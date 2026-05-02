@@ -515,13 +515,24 @@ mod tests {
         context: Option<&'a ContextWindow>,
         is_final: bool,
     ) -> StageContext<'a> {
+        let runtime = Box::leak(Box::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        ));
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let cancel_rx = Box::leak(Box::new(cancel_rx));
         StageContext {
+            cancel_rx,
             context,
             family_capabilities: &CAPS,
-            stage_enabled: &ENABLEMENT,
             is_final,
+            llm_transform: None,
             pause_ms_before_utterance: None,
             segment_diagnostics: diagnostics,
+            stage_enabled: &ENABLEMENT,
+            tokio_runtime: runtime,
             vad_probabilities,
             voice_activity: &VOICE,
         }
@@ -846,12 +857,20 @@ mod tests {
             hallucination_filter: false,
         };
         let ctx = StageContext {
+            cancel_rx: Box::leak(Box::new(tokio::sync::watch::channel(false).1)),
             context: None,
             family_capabilities: &CAPS,
-            stage_enabled: &OFF,
             is_final: true,
+            llm_transform: None,
             pause_ms_before_utterance: None,
             segment_diagnostics: &[],
+            stage_enabled: &OFF,
+            tokio_runtime: Box::leak(Box::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+            )),
             vad_probabilities: &[],
             voice_activity: &VOICE,
         };

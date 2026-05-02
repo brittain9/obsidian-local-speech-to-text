@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_PLUGIN_SETTINGS, resolvePluginSettings } from '../src/settings/plugin-settings';
+import {
+  DEFAULT_LLM_TRANSFORM_PROMPT,
+  DEFAULT_PLUGIN_SETTINGS,
+  resolvePluginSettings,
+} from '../src/settings/plugin-settings';
 
 describe('resolvePluginSettings', () => {
   it('returns defaults when persisted data is missing', () => {
@@ -14,6 +18,10 @@ describe('resolvePluginSettings', () => {
         cudaLibraryPath: ' /run/host/usr/lib64 ',
         dictationAnchor: 'end_of_note',
         listeningMode: 'always_on',
+        llmTransformDeveloperMode: true,
+        llmTransformEnabled: true,
+        llmTransformModel: ' llama3.2:latest ',
+        llmTransformPrompt: '  Keep this exact prompt whitespace.  ',
         modelStorePathOverride: ' /tmp/models ',
         selectedModel: {
           familyId: 'whisper',
@@ -35,6 +43,10 @@ describe('resolvePluginSettings', () => {
       developerMode: false,
       dictationAnchor: 'end_of_note',
       listeningMode: 'always_on',
+      llmTransformDeveloperMode: true,
+      llmTransformEnabled: true,
+      llmTransformModel: 'llama3.2:latest',
+      llmTransformPrompt: '  Keep this exact prompt whitespace.  ',
       modelStorePathOverride: '/tmp/models',
       selectedModel: {
         familyId: 'whisper',
@@ -87,6 +99,10 @@ describe('resolvePluginSettings', () => {
       resolvePluginSettings({
         dictationAnchor: 'at_end',
         listeningMode: 'unsupported',
+        llmTransformDeveloperMode: 'yes',
+        llmTransformEnabled: 'yes',
+        llmTransformModel: 123,
+        llmTransformPrompt: false,
         modelStorePathOverride: 42,
         sidecarPathOverride: 12,
         sidecarRequestTimeoutMs: -1,
@@ -122,5 +138,11 @@ describe('resolvePluginSettings', () => {
 
   it('falls back speakingStyle to balanced when persisted value is invalid', () => {
     expect(resolvePluginSettings({ speakingStyle: 'loud' }).speakingStyle).toBe('balanced');
+  });
+
+  it('uses one default prompt constant for persisted fallback', () => {
+    expect(resolvePluginSettings({ llmTransformPrompt: null }).llmTransformPrompt).toBe(
+      DEFAULT_LLM_TRANSFORM_PROMPT,
+    );
   });
 });
